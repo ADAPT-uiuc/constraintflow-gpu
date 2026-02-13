@@ -1156,7 +1156,54 @@ class RepeatBlock(SparseBlock):
         else:
             new_block = self.block.clamp(max=const)
         return RepeatBlock(new_block, self.total_shape)
+
+
+class DummyBlock:
+    def __init__(self, block, total_shape):
+        self.total_shape = total_shape
+        self.block_type = 'Dummy'
+        self.block = None
     
+    def binary(self, sp_block, op):
+        ret = DummyBlock(sp_block.block, self.total_shape)
+        return ret
+    
+    def unary(self, op):
+        ret = DummyBlock(self.block, self.total_shape)
+        return ret
+    
+    def matmul_equal_dims(self, sp_block):
+        new_total_shape = self.total_shape.clone()
+        new_total_shape[-1] = sp_block.total_shape[-1]
+        return DummyBlock(sp_block.block, new_total_shape)
+    
+    def matmul_unequal_dims(self, sp_block):
+        new_total_shape = self.total_shape.clone()[:-1]
+        return DummyBlock(sp_block.block, new_total_shape)
+    
+    def sum(self, dim):
+        new_total_shape = torch.concat([self.total_shape[:dim], self.total_shape[dim+1:]])
+        return DummyBlock(self.block, new_total_shape)
+
+    def squeeze(self, index):
+        return DummyBlock(self.block, torch.concat([self.total_shape[:index], self.total_shape[index+1:]]))
+    
+    def unsqueeze(self, index):
+        return DummyBlock(self.block, torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]]))
+    
+    def get_dense(self):
+        return self.block
+
+    def repeat(self, repeat_dims):
+        return DummyBlock(self.block, self.total_shape * repeat_dims)
+    
+    def get_sub_block_custom_range(self, start_index, end_index, block_start_index):
+        return DummyBlock(self.block, end_index - start_index)
+    
+    def create_similar(self, block):
+        return DummyBlock(block, self.total_shape)
+
+
 def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock):
     if isinstance(x, ConstBlock):
         if x.block:
