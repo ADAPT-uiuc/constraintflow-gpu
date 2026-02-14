@@ -6,6 +6,7 @@ from constraintflow.gbcsr.op_helper import *
 from constraintflow.lib.globals import *
 
 dummy_mode = dummy_mode.get_flag()
+baseline_gpu_mode = baseline_gpu_mode.get_flag()
 
 def get_slice(start_index, end_index):
     dims = start_index.shape[0]
@@ -24,7 +25,21 @@ def get_diagonal(block, diag_index):
 
 def operation(x, y, op):
     start_time = time.time()
+    if baseline_gpu_mode:
+        x_is_tensor = isinstance(x, torch.Tensor)
+        y_is_tensor = isinstance(y, torch.Tensor)
+        if x_is_tensor:
+            x = x.to('cuda')
+        if y_is_tensor:
+            y = y.to('cuda')
     z = op(x, y)
+    if baseline_gpu_mode:
+        if x_is_tensor:
+            x = x.to('cpu')
+        if y_is_tensor:
+            y = y.to('cpu')
+        if x_is_tensor or y_is_tensor:
+            z = z.to('cpu')
     binary_time.update_op_time(time.time() - start_time)
     return z
 
