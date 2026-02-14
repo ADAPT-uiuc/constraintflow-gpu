@@ -23,6 +23,15 @@ dummy_mode = Flag()
 baseline_gpu_mode = Flag()
 baseline_gpu_mode.set_flag()
 
+class ProfileOperations:
+    def __init__(self):
+        self.ops = set()
+
+    def add_op(self, op):
+        self.ops.add(op)
+
+    def get_ops(self):
+        return self.ops
 class Time:
     def __init__(self):
         self.total_time = 0
@@ -85,3 +94,8 @@ check_time = Time()
 squeeze_time = Time()
 sanity_time = Time()
 sparse_tensor_init_time = Time()
+
+data_transfer_time = Time()
+actual_operation_time = Time()
+
+profile_operations = ProfileOperations()

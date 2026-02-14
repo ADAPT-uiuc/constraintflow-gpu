@@ -24,22 +24,35 @@ def get_diagonal(block, diag_index):
     return res.permute(permutation)
 
 def operation(x, y, op):
+    profile_operations.add_op(op)
     start_time = time.time()
     if baseline_gpu_mode:
         x_is_tensor = isinstance(x, torch.Tensor)
         y_is_tensor = isinstance(y, torch.Tensor)
         if x_is_tensor:
+            transfer_start = time.perf_counter()
             x = x.to('cuda')
+            data_transfer_time.update_total_time(time.perf_counter() - transfer_start)
         if y_is_tensor:
+            transfer_start = time.perf_counter()
             y = y.to('cuda')
+            data_transfer_time.update_total_time(time.perf_counter() - transfer_start)
+    op_start = time.perf_counter()
     z = op(x, y)
+    actual_operation_time.update_total_time(time.perf_counter() - op_start)
     if baseline_gpu_mode:
-        if x_is_tensor:
-            x = x.to('cpu')
-        if y_is_tensor:
-            y = y.to('cpu')
+        # if x_is_tensor:
+        #     transfer_start = time.perf_counter()
+        #     x = x.to('cpu')
+        #     data_transfer_time.update_total_time(time.perf_counter() - transfer_start)
+        # if y_is_tensor:
+        #     transfer_start = time.perf_counter()
+        #     y = y.to('cpu')
+        #     data_transfer_time.update_total_time(time.perf_counter() - transfer_start)
         if x_is_tensor or y_is_tensor:
+            transfer_start = time.perf_counter()
             z = z.to('cpu')
+            data_transfer_time.update_total_time(time.perf_counter() - transfer_start)
     binary_time.update_op_time(time.time() - start_time)
     return z
 
@@ -287,13 +300,37 @@ class DenseBlock(SparseBlock):
     
     def matmul_equal_dims(self, sp_block):
         start_time = time.time()
+        profile_operations.add_op('DenseBlock.matmul_equal_dims')
         if isinstance(sp_block, DenseBlock):
             a = self.block
+            if isinstance(a, torch.Tensor):
+                a = a.to('cuda')
             b = sp_block.block
+            if isinstance(b, torch.Tensor):
+                b = b.to('cuda')
             c = a @ b
+            # if isinstance(a, torch.Tensor):
+            #     a = a.to('cpu')
+            # if isinstance(b, torch.Tensor):
+            #     b = b.to('cpu')
+            if isinstance(c, torch.Tensor):
+                c = c.to('cpu')
             res = DenseBlock(c)
         elif isinstance(sp_block, DiagonalBlock):
-            res = DenseBlock(self.block * sp_block.block.unsqueeze(sp_block.diag_index-1))
+            a = self.block
+            if isinstance(a, torch.Tensor):
+                a = a.to('cuda')
+            b = sp_block.block
+            if isinstance(b, torch.Tensor):
+                b = b.to('cuda')
+            c = a * b.unsqueeze(sp_block.diag_index-1)
+            # if isinstance(a, torch.Tensor):
+            #     a = a.to('cpu')
+            # if isinstance(b, torch.Tensor):
+            #     b = b.to('cpu')
+            if isinstance(c, torch.Tensor):
+                c = c.to('cpu')
+            res = DenseBlock(c)
         elif isinstance(sp_block, KernelBlock):
             kernel = sp_block.block
             kx = sp_block.kx
@@ -326,17 +363,41 @@ class DenseBlock(SparseBlock):
             # if sp_block.repeat_dims[0]!=1 and sp_block.only_one_repeat:
             #     block_2 = sp_block.block 
             # else:
+            a = self.block
+            if isinstance(a, torch.Tensor):
+                a = a.to('cuda')
             block_2 = sp_block.get_dense()
-            res = DenseBlock(self.block @ block_2)
+            if isinstance(block_2, torch.Tensor):
+                block_2 = block_2.to('cuda')
+            c = a @ block_2
+            # if isinstance(a, torch.Tensor):
+            #     a = a.to('cpu')
+            # if isinstance(block_2, torch.Tensor):
+            #     block_2 = block_2.to('cpu')
+            if isinstance(c, torch.Tensor):
+                c = c.to('cpu')
+            res = DenseBlock(c)
         matmul_time.update_op_time(time.time() - start_time)
         return res
         
     def matmul_unequal_dims(self, sp_block):
         start_time = time.time()
+        profile_operations.add_op('DenseBlock.matmul_unequal_dims')
         if isinstance(sp_block, DenseBlock):
             a = self.block 
             b = sp_block.unsqueeze(-1).block
-            res = (a @ b).squeeze(-1)
+            if isinstance(a, torch.Tensor):
+                a = a.to('cuda')
+            if isinstance(b, torch.Tensor):
+                b = b.to('cuda')
+            c = a @ b
+            res = c.squeeze(-1)
+            # if isinstance(a, torch.Tensor):
+            #     a = a.to('cpu')
+            # if isinstance(b, torch.Tensor):
+            #     b = b.to('cpu')
+            if isinstance(res, torch.Tensor):
+                res = res.to('cpu')
             res = DenseBlock(res)
         elif isinstance(sp_block, DiagonalBlock):
             raise NotImplementedError
@@ -471,6 +532,7 @@ Output Size: {self.ox, self.oy} \n'
     
     def matmul_equal_dims(self, sp_block):
         start_time = time.time()
+        profile_operations.add_op('KernelBlock.matmul_equal_dims')
         if isinstance(sp_block, DiagonalBlock):
             # AUTO-LIRPA
             kernel = self.block
@@ -488,10 +550,20 @@ Output Size: {self.ox, self.oy} \n'
             num_channels = self.num_channels
             batch_size = sp_block.batch_size
             x = sp_block.block.view(batch_size, num_channels, ix, iy)
+            if isinstance(x, torch.Tensor):
+                x = x.to('cuda')
             x_unf = F.unfold(x, kernel_size=(kx, ky), padding=(px, py), stride=(sx, sy)) # batch_size, num_channels * kx * ky, ox * oy
             x_unf = x_unf.permute(0,2,1).repeat(1, num_kernels, 1)
             k_new = self.convert_to_patches().block
+            if isinstance(k_new, torch.Tensor):
+                k_new = k_new.to('cuda')
             patches = x_unf * k_new
+            # if isinstance(x, torch.Tensor):
+            #     x = x.to('cpu')
+            # if isinstance(k_new, torch.Tensor):
+            #     k_new = k_new.to('cpu')
+            if isinstance(patches, torch.Tensor):
+                patches = patches.to('cpu')
             res = PatchesBlock(patches, self.total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels)
         elif isinstance(sp_block, ConstBlock):
             if sp_block.block == 0:
@@ -501,15 +573,26 @@ Output Size: {self.ox, self.oy} \n'
             else:
                 raise NotImplementedError
         elif isinstance(sp_block, DenseBlock):
+            a = self.block
             b = sp_block.block # batch_size, prev_size, sym_size
             batch_size = b.shape[0]
             prev_size = b.shape[1]
             sym_size = b.shape[2]
+            if isinstance(a, torch.Tensor):
+                a = a.to('cuda')
+            if isinstance(b, torch.Tensor):
+                b = b.to('cuda')
             b = b.transpose(1,2) # batch_size, sym_size, prev_size
             b = b.reshape(b.shape[0]*b.shape[1], self.num_channels, self.ix, self.iy)
-            res = F.conv2d(b, self.block, stride=(self.sx, self.sy), padding=(self.px, self.py)) # batch_size*sym_size, num_kernels, ox, oy
+            res = F.conv2d(b, a, stride=(self.sx, self.sy), padding=(self.px, self.py)) # batch_size*sym_size, num_kernels, ox, oy
             res = res.reshape(batch_size, sym_size, -1)
             res = res.transpose(1,2) # batch_size, curr_size, sym_size
+            # if isinstance(a, torch.Tensor):
+            #     a = a.to('cpu')
+            # if isinstance(b, torch.Tensor):
+            #     b = b.to('cpu')
+            if isinstance(res, torch.Tensor):                   
+                res = res.to('cpu')
             res = DenseBlock(res)
         elif isinstance(sp_block, PatchesBlock):
             d_block = DenseBlock(sp_block.get_dense())
@@ -546,8 +629,14 @@ Output Size: {self.ox, self.oy} \n'
     
     def matmul_unequal_dims(self, sp_block):
         start_time = time.time()
+        profile_operations.add_op('KernelBlock.matmul_unequal_dims')
         if isinstance(sp_block, DenseBlock):
             kernel = self.block
+            spb = sp_block.block
+            if isinstance(kernel, torch.Tensor):
+                kernel = kernel.to('cuda')
+            if isinstance(spb, torch.Tensor):
+                spb = spb.to('cuda')
             sx = self.sx
             sy = self.sy
             px = self.px
@@ -556,9 +645,11 @@ Output Size: {self.ox, self.oy} \n'
             iy = self.iy
             num_channels = self.num_channels
             batch_size = sp_block.batch_size
-            input_tensor = sp_block.block.reshape(batch_size, num_channels, ix, iy)
+            input_tensor = spb.reshape(batch_size, num_channels, ix, iy)
             block = F.conv2d(input_tensor, kernel, stride=(sx, sy), padding=(px, py))
             block = block.reshape(batch_size, -1)
+            if isinstance(block, torch.Tensor):
+                block = block.to('cpu')
             res = DenseBlock(block)
         elif isinstance(sp_block, DiagonalBlock):
             raise NotImplementedError
@@ -681,16 +772,32 @@ class DiagonalBlock(SparseBlock):
 
     def matmul_equal_dims(self, sp_block):
         start_time = time.time()
+        profile_operations.add_op('DiagonalBlock.matmul_equal_dims')
         if isinstance(sp_block, DenseBlock):
-            a = self.block.unsqueeze(self.diag_index)
+            a = self.block
+            if isinstance(a, torch.Tensor):
+                a = a.to('cuda')
+            a = a.unsqueeze(self.diag_index)
             b = sp_block.block
-            res = DenseBlock(a * b)
+            if isinstance(b, torch.Tensor):
+                b = b.to('cuda')
+            c = a * b
+            if isinstance(c, torch.Tensor):
+                c = c.to('cpu')
+            res = DenseBlock(c)
         elif isinstance(sp_block, DiagonalBlock):
             raise NotImplementedError
         elif isinstance(sp_block, KernelBlock):
+            a = self.block
+            if isinstance(a, torch.Tensor):
+                a = a.to('cuda')
             block_2 = sp_block.convert_to_patches().block # batch_size, curr_size, num_channels * kx * ky
-            block_1 = self.block.unsqueeze(self.diag_index)
+            if isinstance(block_2, torch.Tensor):
+                block_2 = block_2.to('cuda')
+            block_1 = a.unsqueeze(self.diag_index)
             block = block_1 * block_2
+            if isinstance(block, torch.Tensor):
+                block = block.to('cpu')
             res = PatchesBlock(block, sp_block.total_shape, sp_block.ix, sp_block.iy, sp_block.ox, sp_block.oy, sp_block.sx, sp_block.sy, sp_block.px, sp_block.py, sp_block.kx, sp_block.ky, sp_block.num_channels, sp_block.num_kernels)
         elif isinstance(sp_block, RepeatBlock) and (sp_block.repeat_dims==1).all():
             sp_block = DenseBlock(sp_block.get_dense())
@@ -703,11 +810,20 @@ class DiagonalBlock(SparseBlock):
 
     def matmul_unequal_dims(self, sp_block):
         start_time = time.time()
+        profile_operations.add_op('DiagonalBlock.matmul_unequal_dims')
         if isinstance(sp_block, DenseBlock):
-            a = self.block.unsqueeze(self.diag_index)
-            b = sp_block.block.unsqueeze(-1)
+            a = self.block
+            if isinstance(a, torch.Tensor):
+                a = a.to('cuda')
+            a = a.unsqueeze(self.diag_index)
+            b = sp_block.block
+            if isinstance(b, torch.Tensor):
+                b = b.to('cuda')
+            b = b.unsqueeze(-1)
             res = a * b
             res = res.squeeze(-1)
+            if isinstance(res, torch.Tensor):
+                res = res.to('cpu')
             res = DenseBlock(res)
         elif isinstance(sp_block, RepeatBlock) and (sp_block.repeat_dims==1).all():
             sp_block = DenseBlock(sp_block.get_dense())
@@ -817,6 +933,7 @@ class PatchesBlock(SparseBlock):
 
     def matmul_equal_dims(self, sp_block):
         start_time = time.time()
+        profile_operations.add_op('PatchesBlock.matmul_equal_dims')
         # AVAL: understand the if case
         if isinstance(sp_block, KernelBlock):  
             flattened_patches = self.block.reshape(self.batch_size*self.num_kernels*self.ox*self.oy, self.num_channels, self.kx, self.ky)
@@ -834,6 +951,8 @@ class PatchesBlock(SparseBlock):
 
         elif isinstance(sp_block, DiagonalBlock):
             patches = self.block
+            if isinstance(patches, torch.Tensor):
+                patches = patches.to('cuda')
             px = self.px
             py = self.py
             sx = self.sx
@@ -846,6 +965,8 @@ class PatchesBlock(SparseBlock):
             num_channels = self.num_channels
             batch_size = sp_block.batch_size
             x = sp_block.block.view(batch_size, num_channels, ix, iy)
+            if isinstance(x, torch.Tensor):
+                x = x.to('cuda')
             x_unf = F.unfold(x, kernel_size=(kx, ky), padding=(px, py), stride=(sx, sy))
             x_unf = x_unf.transpose(1,2).repeat(1, num_kernels, 1)
             # x_unf = x_unf.unsqueeze(1).repeat(1, num_kernels, 1, 1)
@@ -854,6 +975,8 @@ class PatchesBlock(SparseBlock):
                 patches = patches.expand(batch_size, patches.size(1), patches.size(2))
             # patches = patches.repeat(batch_size, 1, 1, 1)
             patches = x_unf * patches
+            if isinstance(patches, torch.Tensor):
+                patches = patches.to('cpu')
             res = PatchesBlock(patches, self.total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels)
         else:
             print(type(sp_block))
@@ -864,8 +987,11 @@ class PatchesBlock(SparseBlock):
 
     def matmul_unequal_dims(self, sp_block):
         start_time = time.time()
+        profile_operations.add_op('PatchesBlock.matmul_unequal_dims')
         if isinstance(sp_block, DenseBlock):
             patches = self.block
+            if isinstance(patches, torch.Tensor):
+                patches = patches.to('cuda')
             sx = self.sx
             sy = self.sy
             px = self.px
@@ -878,12 +1004,16 @@ class PatchesBlock(SparseBlock):
             num_kernels = self.num_kernels
             batch_size = sp_block.batch_size
             x = sp_block.block.view(batch_size, num_channels, ix, iy)
+            if isinstance(x, torch.Tensor):
+                x = x.to('cuda')
             x_unf = F.unfold(x, kernel_size=(kx, ky), padding=(px, py), stride=(sx, sy))
             x_unf = x_unf.transpose(1,2).repeat(1, num_kernels, 1)
             if patches.shape[0] != batch_size:
                 patches = patches.expand(batch_size, patches.size(1), patches.size(2))
             patches = x_unf * patches
             ret = patches.sum(dim=-1)
+            if isinstance(ret, torch.Tensor):
+                ret = ret.to('cpu')
             res = DenseBlock(ret)
         elif isinstance(sp_block, ConstBlock) and sp_block.block == 0:
             res = ConstBlock(0, self.total_shape[:-1])
