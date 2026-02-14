@@ -18,6 +18,8 @@ debug_flag = Flag()
 debug_flag2 = Flag()
 debug_flag3 = Flag()
 debug_flag4 = Flag()
+dummy_mode = Flag()
+dummy_mode.set_flag()
 
 class Time:
     def __init__(self):
