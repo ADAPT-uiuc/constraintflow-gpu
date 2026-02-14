@@ -19,7 +19,9 @@ debug_flag2 = Flag()
 debug_flag3 = Flag()
 debug_flag4 = Flag()
 dummy_mode = Flag()
-dummy_mode.set_flag()
+# dummy_mode.set_flag()
+baseline_gpu_mode = Flag()
+baseline_gpu_mode.set_flag()
 
 class Time:
     def __init__(self):
