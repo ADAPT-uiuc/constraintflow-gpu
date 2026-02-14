@@ -13,7 +13,7 @@ from constraintflow.lib.globals import *
 from constraintflow.gbcsr.plot import *
 from constraintflow.gbcsr.op_helper import *
 
-
+dummy_mode = dummy_mode.get_flag()
 
 
 
@@ -57,7 +57,7 @@ def convert_dense_to_sparse(x, total_shape=None):
         if x.dtype == torch.bool:
             type = bool
             dense_const = False
-        return SparseTensor([torch.zeros(x.dim(), dtype=torch.int64)], [DummyBlock(None, x.shape)], x.dim(), torch.as_tensor(x.shape), type=type, dense_const=dense_const)
+        return SparseTensor([torch.zeros(x.dim(), dtype=torch.int64)], [DenseBlock(x)], x.dim(), torch.as_tensor(x.shape), type=type, dense_const=dense_const)
     elif isinstance(x, float):
         dense_const = x
         type = float
@@ -318,7 +318,7 @@ class SparseTensor:
         
         delete_indices = []
         for i in range(self.num_blocks):
-            if isinstance(self.blocks[i], DummyBlock):
+            if isinstance(self.blocks[i], ConstBlock):
                 if self.blocks[i].block == self.dense_const and (self.dense_const == 0.0 or self.dense_const == False):
                     delete_indices.append(i)
         delete_indices.reverse()
@@ -344,18 +344,18 @@ class SparseTensor:
             ax = fig.add_subplot(111, projection='3d')
         for idx, b in zip(self.start_indices, self.blocks):
             color = 'blue'
-            if isinstance(b, DummyBlock):
+            if isinstance(b, DiagonalBlock):
                 color = 'red'
-            elif isinstance(b, DummyBlock):
+            elif isinstance(b, KernelBlock):
                 color = 'green'
-            elif isinstance(b, DummyBlock):
+            elif isinstance(b, ConstBlock):
                 color = 'yellow'
-            elif isinstance(b, DummyBlock):
+            elif isinstance(b, PatchesBlock):
                 color = 'cyan'
-            elif isinstance(b, DummyBlock):
+            elif isinstance(b, RepeatBlock):
                 color = 'yellow'
             else:
-                assert(isinstance(b, DummyBlock))
+                assert(isinstance(b, DenseBlock))
             batch_idx, y_start, z_start = idx.tolist()
             x_size, y_size, z_size = b.total_shape  
 
@@ -398,6 +398,8 @@ Blocks Types: "
         return self
 
     def get_dense(self):
+        if dummy_mode:
+            return torch.empty(tuple(self.total_size.tolist()), device="meta")
         res = torch.ones(list(self.total_size), dtype=self.type)*self.dense_const
         for i in range(self.num_blocks):
             s = get_slice(self.start_indices[i], self.end_indices[i])
@@ -432,7 +434,7 @@ Blocks Types: "
                 return sparse_block.block
             else:
                 return sparse_block
-        if isinstance(sparse_block, DummyBlock) or isinstance(sparse_block, DummyBlock):
+        if isinstance(sparse_block, KernelBlock) or isinstance(sparse_block, PatchesBlock):
             if len(sparse_block.total_shape)==4:
                 if (block_start_index[:-1] == start_index[:-1]).all() and (self.end_indices[block_id][:-1] == end_index[:-1]).all():
                     res = sparse_block.create_similar(sparse_block.block)
@@ -449,7 +451,7 @@ Blocks Types: "
     def exists_block(self, start_index, end_index):
         for i in range(self.num_blocks):
             if full_overlap([self.start_indices[i], self.end_indices[i]], [start_index, end_index]):
-                if isinstance(self.blocks[i], DummyBlock):
+                if isinstance(self.blocks[i], ConstBlock):
                     if self.blocks[i].block == self.dense_const and (self.dense_const == 0.0 or self.dense_const == False):
                         return False
                 return True
@@ -458,7 +460,7 @@ Blocks Types: "
     def exists_sub_block(self, start_index, end_index):
         for i in range(self.num_blocks):
             if contained([start_index, end_index], [self.start_indices[i], self.end_indices[i]]):
-                if isinstance(self.blocks[i], DummyBlock):
+                if isinstance(self.blocks[i], ConstBlock):
                     if self.blocks[i].block == self.dense_const and (self.dense_const == 0.0 or self.dense_const == False):
                         return False
                 return True
@@ -496,7 +498,7 @@ Blocks Types: "
                 src_start_indices = intersection_start_indices - self.start_indices[i]
                 src_end_indices = intersection_end_indices - self.start_indices[i]
                 src_block = self.blocks[i].get_dense()[tuple(get_slice(src_start_indices, src_end_indices))]
-                blocks.append(DummyBlock(None, src_block.shape))
+                blocks.append(DenseBlock(src_block))
         end_time = time.time()
         get_sparse_range_time.update_total_time(end_time-start_time)
         return SparseTensor(res_start_indices, blocks, self.dims, self.total_size, res_end_indices, type=self.type, dense_const=self.dense_const)
@@ -748,7 +750,7 @@ Blocks Types: "
                 elif annihilator_element(op) == self.dense_const and dense_const == self.dense_const:
                     continue
                 else:
-                    temp_block = DummyBlock(self.dense_const, block.total_shape)
+                    temp_block = ConstBlock(self.dense_const, block.total_shape)
                     block = temp_block.binary(block, op)
             elif len(indices[i][1]) == 0:
                 block = self.get_sub_block_custom_range(start_index, end_index, indices[i][0][0], False)
@@ -757,14 +759,14 @@ Blocks Types: "
                 elif annihilator_element(op) == sp_tensor.dense_const and dense_const == sp_tensor.dense_const:
                     continue
                 else:
-                    temp_block = DummyBlock(sp_tensor.dense_const, block.total_shape)
+                    temp_block = ConstBlock(sp_tensor.dense_const, block.total_shape)
                     block = block.binary(temp_block, op)
             else:
                 block_1 = self.get_sub_block_custom_range(start_index, end_index, indices[i][0][0], False)
                 block_2 = sp_tensor.get_sub_block_custom_range(start_index, end_index, indices[i][1][0], False)
                 block = block_1.binary(block_2, op)
             
-            if isinstance(block, DummyBlock) and block.block == dense_const:
+            if isinstance(block, ConstBlock) and block.block == dense_const:
                 continue
             res_blocks.append(block)
             res_start_indices.append(start_indices[i])
@@ -803,11 +805,11 @@ Blocks Types: "
         
         if sp_tensor.dense_const != 0.0 and sp_tensor.check_dense()==False:
             dense_sp_tensor = sp_tensor.get_dense()
-            sp_tensor = SparseTensor([torch.tensor([0]*len(dense_sp_tensor.shape))], [DummyBlock(None, dense_sp_tensor.shape)], sp_tensor.dims, sp_tensor.total_size, type=float, dense_const=0.0)
+            sp_tensor = SparseTensor([torch.tensor([0]*len(dense_sp_tensor.shape))], [DenseBlock(dense_sp_tensor)], sp_tensor.dims, sp_tensor.total_size, type=float, dense_const=0.0)
 
             dense_self = self.get_dense()
             self.start_indices = [torch.tensor([0]*len(dense_self.shape))]
-            self.blocks = [DummyBlock(None, dense_self.shape)]
+            self.blocks = [DenseBlock(dense_self)]
             self.dims = len(dense_self.shape)
             self.total_size = torch.tensor(dense_self.shape)
             self.end_indices = [torch.tensor(dense_self.shape)]
@@ -1062,7 +1064,7 @@ def sp_where(x: SparseTensor, y: SparseTensor, z: SparseTensor):
     
     dummy_blocks = []
     for i in range(len(start_indices)):
-        dummy_blocks.append(DummyBlock(0, end_indices[i]-start_indices[i]))
+        dummy_blocks.append(ConstBlock(0, end_indices[i]-start_indices[i]))
     dummy_sp_tensor = SparseTensor(start_indices, dummy_blocks, y.dims, y.total_size, end_indices, y.type, y.dense_const)
     
     start_indices, end_indices, indices = x.union_tensors(dummy_sp_tensor, indices=True)
@@ -1097,12 +1099,12 @@ def sp_where(x: SparseTensor, y: SparseTensor, z: SparseTensor):
             z_indices = yz_indices[yz_index][1]
 
             if len(y_indices) == 0:
-                y_block = DummyBlock(y.dense_const, end_index-start_index)
+                y_block = ConstBlock(y.dense_const, end_index-start_index)
             else:
                 y_block = y.get_sub_block_custom_range(start_index, end_index, y_indices[0], False)
 
             if len(z_indices) == 0:
-                z_block = DummyBlock(z.dense_const, end_index-start_index)
+                z_block = ConstBlock(z.dense_const, end_index-start_index)
             else:
                 z_block = z.get_sub_block_custom_range(start_index, end_index, z_indices[0], False)
 

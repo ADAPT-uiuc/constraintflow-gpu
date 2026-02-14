@@ -5,6 +5,8 @@ import operator
 from constraintflow.gbcsr.op_helper import *
 from constraintflow.lib.globals import *
 
+dummy_mode = dummy_mode.get_flag()
+
 def get_slice(start_index, end_index):
     dims = start_index.shape[0]
     s = []
@@ -43,7 +45,12 @@ def where_block(x, y, z):
 
 class SparseBlock:
     repeat_dims = []
+    if dummy_mode:
+        def __new__(cls, *args, **kwargs):
+            return DummyBlock(block=None, total_shape=kwargs['total_shape'])
     def __init__(self, block, total_shape, block_type='D'):
+        if dummy_mode:
+            return
         if isinstance(block, bool) or (isinstance(block, torch.Tensor) and block.dtype == torch.bool):
             self.block = block 
         else:
@@ -223,7 +230,12 @@ class SparseBlock:
 
 
 class DenseBlock(SparseBlock):
+    if dummy_mode:
+        def __new__(cls, block):
+            return super().__new__(cls, total_shape=torch.tensor(block.shape))
     def __init__(self, block):
+        if dummy_mode:
+            return
         total_shape = torch.tensor(block.shape)
         super().__init__(block, total_shape, 'D')
         self.batch_size = total_shape[0]
@@ -374,7 +386,12 @@ class DenseBlock(SparseBlock):
         return DenseBlock(block)
 
 class KernelBlock(SparseBlock):
+    if dummy_mode:
+        def __new__(cls, block, total_shape, ix, iy, ox, oy, sx, sy, px, py):
+            return super().__new__(cls, total_shape=total_shape)
     def __init__(self, block, total_shape, ix, iy, ox, oy, sx, sy, px, py):
+        if dummy_mode:
+            return
         super().__init__(block, total_shape, 'K')
         self.ix = ix
         self.iy = iy
@@ -561,7 +578,13 @@ Output Size: {self.ox, self.oy} \n'
         return KernelBlock(block, self.total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py)
 
 class DiagonalBlock(SparseBlock):
+    if dummy_mode:
+        def __new__(cls, block, total_shape, diag_index):
+            return super().__new__(cls, total_shape=total_shape)
+    
     def __init__(self, block, total_shape, diag_index):
+        if dummy_mode:
+            return
         super().__init__(block, total_shape, 'Diag')
         self.diag_index = diag_index
         self.batch_size = total_shape[0]
@@ -709,7 +732,12 @@ class DiagonalBlock(SparseBlock):
         return super().binary(sp_block, op)
         
 class PatchesBlock(SparseBlock):
+    if dummy_mode:
+        def __new__(cls, block, total_shape, ix, iy, ox, oy, sx, sy, px, py, kx, ky, num_channels, num_kernels):
+            return super().__new__(cls, total_shape=total_shape)
     def __init__(self, block, total_shape, ix, iy, ox, oy, sx, sy, px, py, kx, ky, num_channels, num_kernels):
+        if dummy_mode:
+            return
         if block.dtype == torch.bool:
             block = block 
         else:
@@ -938,7 +966,12 @@ class PatchesBlock(SparseBlock):
         return self
 
 class ConstBlock(SparseBlock):
+    if dummy_mode:
+        def __new__(cls, block, total_shape):
+            return super().__new__(cls, total_shape=total_shape)
     def __init__(self, block, total_shape):
+        if dummy_mode:
+            return
         super().__init__(block, total_shape, 'C')
         # assert total_shape.dtype in {torch.int8, torch.int16, torch.int32, torch.int64}
 
@@ -1069,7 +1102,12 @@ class ConstBlock(SparseBlock):
 
 
 class RepeatBlock(SparseBlock):
+    if dummy_mode:
+        def __new__(cls, block, total_shape):
+            return super().__new__(cls, total_shape=total_shape)
     def __init__(self, block, total_shape):
+        if dummy_mode:
+            return
         super().__init__(block, total_shape, 'R')
         # assert total_shape.dtype in {torch.int8, torch.int16, torch.int32, torch.int64}
         self.repeat_dims = self.total_shape / torch.tensor(self.block.shape)
@@ -1162,7 +1200,7 @@ class DummyBlock:
     def __init__(self, block, total_shape):
         self.total_shape = total_shape
         self.block_type = 'Dummy'
-        self.block = None
+        self.block = torch.empty(tuple(self.total_shape.tolist()), device="meta")
     
     def binary(self, sp_block, op):
         ret = DummyBlock(sp_block.block, self.total_shape)
@@ -1192,7 +1230,7 @@ class DummyBlock:
         return DummyBlock(self.block, torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]]))
     
     def get_dense(self):
-        return self.block
+        return torch.empty(tuple(self.total_shape.tolist()), device="meta")
 
     def repeat(self, repeat_dims):
         return DummyBlock(self.block, self.total_shape * repeat_dims)
@@ -1202,9 +1240,23 @@ class DummyBlock:
     
     def create_similar(self, block):
         return DummyBlock(block, self.total_shape)
+    
+    def copy(self):
+        return DummyBlock(None, self.total_shape)
+    
+    def any(self):
+        return False
+    
+    def clamp(self, const, min_true):
+        return self
+    
+    def float(self):
+        return self
 
 
 def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock):
+    if dummy_mode:
+        return DummyBlock(None,y.total_shape.clone())
     if isinstance(x, ConstBlock):
         if x.block:
             return y
