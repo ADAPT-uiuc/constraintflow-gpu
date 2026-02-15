@@ -2,9 +2,11 @@ import os
 import sys
 import torch
 import typer
+import time
+import csv
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
-
+from constraintflow.lib.globals import *
 from constraintflow.compiler.compile import compile as _compile
 from constraintflow.verifier.provesound import provesound as _provesound
 
@@ -159,7 +161,8 @@ def run(
 
     network_file = get_network(network, network_format, dataset)
     X, y = get_dataset(batch_size, dataset, train=train)
-
+    filename =network_file.split('/')[-1]+f'_{dataset}_all_gpus.csv'
+    start_time = time.perf_counter()
     lb, ub = run(
         network_file,
         batch_size,
@@ -171,13 +174,51 @@ def run(
         print_intermediate_results=print_intermediate_results,
         no_sparsity=no_sparsity,
     )
+    end_time = time.perf_counter()
+    total_time = end_time - start_time
 
     typer.echo(f"Lower bound: {lb}")
     typer.echo(f"Upper bound: {ub}")
     precision = get_precision(lb)
     typer.echo(f"Precision: {precision}")
 
+    rows = [
+        [
+            "Total Time",
+            total_time,
+        ],
 
+        [
+            "Binary",
+            binary_profilier.get_actual_op_time(),
+            binary_profilier.get_data_transfer_time(),
+        ],
+        [
+            "Unary",
+            unary_profilier.get_actual_op_time(),
+            unary_profilier.get_data_transfer_time(),
+        ],
+        [
+            "Equal Matmul",
+            equal_matmul_profilier.get_actual_op_time(),
+            equal_matmul_profilier.get_data_transfer_time(),
+        ],
+        [
+            "Unequal Matmul",
+            unequal_matmul_profilier.get_actual_op_time(),
+            unequal_matmul_profilier.get_data_transfer_time(),
+        ],
+        [
+            "Clamp",
+            clamp_profilier.get_actual_op_time(),
+            clamp_profilier.get_data_transfer_time(),
+        ]
+    ]   
+
+    with open(filename, mode="w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Operation", "Op Time (s)", "Transfer Time (s)"])
+        writer.writerows(rows)
 def main():
     app()
 
