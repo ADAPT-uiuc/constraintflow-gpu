@@ -501,11 +501,11 @@ class DenseBlock(SparseBlock):
                 torch.cuda.synchronize()
             start_op = time.perf_counter()
             c = a @ b
-            res = c.squeeze(-1)
             if baseline_gpu_mode:                
                 torch.cuda.synchronize()
+        
             unequal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op)
-            
+            res = c.squeeze(-1)
             if baseline_gpu_mode:                
                 if isinstance(res, torch.Tensor):
                     start_transfer = time.perf_counter()
@@ -810,17 +810,19 @@ Output Size: {self.ox, self.oy} \n'
             iy = self.iy
             num_channels = self.num_channels
             batch_size = sp_block.batch_size
+            
+            
+            input_tensor = spb.reshape(batch_size, num_channels, ix, iy)
+            
             if baseline_gpu_mode:
                 torch.cuda.synchronize()
-            
             start_op = time.perf_counter()
-            input_tensor = spb.reshape(batch_size, num_channels, ix, iy)
             block = F.conv2d(input_tensor, kernel, stride=(sx, sy), padding=(px, py))
-            block = block.reshape(batch_size, -1)
-
             if baseline_gpu_mode:
                 torch.cuda.synchronize()
             unequal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op)
+            
+            block = block.reshape(batch_size, -1)
             if baseline_gpu_mode:
                 if isinstance(block, torch.Tensor):
                     start_transfer = time.perf_counter()
@@ -1163,7 +1165,7 @@ class PatchesBlock(SparseBlock):
 
 
     def matmul_equal_dims(self, sp_block):
-        start_time = time.perf_counter()
+        start_time_total = time.perf_counter()
         # AVAL: understand the if case
         if isinstance(sp_block, KernelBlock):  
             flattened_patches = self.block.reshape(self.batch_size*self.num_kernels*self.ox*self.oy, self.num_channels, self.kx, self.ky)
@@ -1232,11 +1234,11 @@ class PatchesBlock(SparseBlock):
             print(type(sp_block))
             raise NotImplementedError
 
-        equal_matmul_profilier.update_total_time(time.perf_counter() - start_time)
+        equal_matmul_profilier.update_total_time(time.perf_counter() - start_time_total)
         return res
 
     def matmul_unequal_dims(self, sp_block):
-        start_time = time.perf_counter()
+        start_time_total = time.perf_counter()
         if isinstance(sp_block, DenseBlock):
             patches = self.block
             if baseline_gpu_mode:
@@ -1264,21 +1266,26 @@ class PatchesBlock(SparseBlock):
                     torch.cuda.synchronize()
                     unequal_matmul_profilier.update_data_transfer_time(time.perf_counter() - start_transfer)
             
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
-
-            start_op = time.perf_counter()
             x_unf = F.unfold(x, kernel_size=(kx, ky), padding=(px, py), stride=(sx, sy))
             x_unf = x_unf.transpose(1,2).repeat(1, num_kernels, 1)
             if patches.shape[0] != batch_size:
                 patches = patches.expand(batch_size, patches.size(1), patches.size(2))
+            
+            if baseline_gpu_mode:
+                torch.cuda.synchronize()
+
+            start_op = time.perf_counter()
             patches = x_unf * patches
-            ret = patches.sum(dim=-1)
             
             if baseline_gpu_mode:
                 torch.cuda.synchronize()
 
             unequal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op)
+            
+
+
+            ret = patches.sum(dim=-1)
+            
             
             if baseline_gpu_mode:
                 if isinstance(ret, torch.Tensor):
@@ -1297,7 +1304,7 @@ class PatchesBlock(SparseBlock):
             print(type(sp_block), sp_block.block)
             raise NotImplementedError
 
-        unequal_matmul_profilier.update_total_time(time.perf_counter() - start_time)
+        unequal_matmul_profilier.update_total_time(time.perf_counter() - start_time_total)
         return res
         
     # AVAL: Understand this function
@@ -1606,6 +1613,7 @@ class RepeatBlock(SparseBlock):
         return self.block.any()
     
     def clamp(self, const, min_true):
+        start_time_total = time.perf_counter()
         block = self.block
         if isinstance(block, torch.Tensor):
              if baseline_gpu_mode:
@@ -1629,6 +1637,7 @@ class RepeatBlock(SparseBlock):
                 new_block = new_block.to('cpu')
                 torch.cuda.synchronize()
                 clamp_profilier.update_data_transfer_time(time.perf_counter() - start_transfer)
+        clamp_profilier.update_total_time(time.perf_counter() - start_time_total)
         return RepeatBlock(new_block, self.total_shape)
 
 

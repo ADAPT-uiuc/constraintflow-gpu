@@ -28,18 +28,22 @@ class OperationTime():
         self.total_time = 0
         self.data_transfer_time = 0
         self.actual_op_time = 0
+        self.num_ops = 0
     def update_total_time(self, time1):
         self.total_time += time1
     def update_data_transfer_time(self, time1):
         self.data_transfer_time += time1
     def update_actual_op_time(self, time1):
         self.actual_op_time += time1
+        self.num_ops += 1
     def get_total_time(self):
         return self.total_time
     def get_data_transfer_time(self):
         return self.data_transfer_time
     def get_actual_op_time(self):        
         return self.actual_op_time
+    def get_num_ops(self):
+        return self.num_ops
 
 
 class Time:

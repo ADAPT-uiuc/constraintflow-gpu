@@ -192,32 +192,42 @@ def run(
             "Binary",
             binary_profilier.get_actual_op_time(),
             binary_profilier.get_data_transfer_time(),
+            binary_profilier.get_num_ops(),
+            binary_profilier.get_total_time()
         ],
         [
             "Unary",
             unary_profilier.get_actual_op_time(),
             unary_profilier.get_data_transfer_time(),
+            unary_profilier.get_num_ops(),
+            unary_profilier.get_total_time()
         ],
         [
             "Equal Matmul",
             equal_matmul_profilier.get_actual_op_time(),
             equal_matmul_profilier.get_data_transfer_time(),
+            equal_matmul_profilier.get_num_ops(),
+            equal_matmul_profilier.get_total_time()
         ],
         [
             "Unequal Matmul",
             unequal_matmul_profilier.get_actual_op_time(),
             unequal_matmul_profilier.get_data_transfer_time(),
+            unequal_matmul_profilier.get_num_ops(),
+            unequal_matmul_profilier.get_total_time()
         ],
         [
             "Clamp",
             clamp_profilier.get_actual_op_time(),
             clamp_profilier.get_data_transfer_time(),
+            clamp_profilier.get_num_ops(),
+            clamp_profilier.get_total_time()
         ]
     ]   
 
     with open(filename, mode="w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["Operation", "Op Time (s)", "Transfer Time (s)"])
+        writer.writerow(["Operation", "Op Time (s)", "Transfer Time (s)", "Num Ops", "Total Op Time (s)"])
         writer.writerows(rows)
 def main():
     app()
