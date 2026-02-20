@@ -705,7 +705,7 @@ Blocks Types: "
     
 
     def binary(self, sp_tensor, op):
-        start_time = time.time()
+        total_start_time = time.time()
         if op not in all_ops:
             raise Exception(f"NOT IMPLEMENTED {op}")
         if (isinstance(sp_tensor, torch.Tensor) and sp_tensor.size()!=1):
@@ -734,16 +734,16 @@ Blocks Types: "
         res_start_indices = []
         res_end_indices = []
         res_blocks = []
-        # print(self)
-        # print(sp_tensor)
-        # for i in range(len(start_indices)):
-        #     print(i, start_indices[i], end_indices[i], indices[i])
-        # print(start_indices, end_indices, indices)
+        
+        fixed_cost3.update_total_time(time.time()-total_start_time)
+
+
         for i in range(len(start_indices)):
             start_index = start_indices[i]
             end_index = end_indices[i]
-            # print('!!!!!!!!!', indices[i])
+            
             if len(indices[i][0]) == 0:
+                start_time = time.time()
                 block = sp_tensor.get_sub_block_custom_range(start_index, end_index, indices[i][1][0], False)
                 if identity_element(op) == self.dense_const:
                     block = binary_to_identity_unary(op)(block)
@@ -752,7 +752,9 @@ Blocks Types: "
                 else:
                     temp_block = ConstBlock(self.dense_const, block.total_shape)
                     block = temp_block.binary(block, op)
+                binary_2_time.update_total_time(time.time()-start_time)
             elif len(indices[i][1]) == 0:
+                start_time = time.time()
                 block = self.get_sub_block_custom_range(start_index, end_index, indices[i][0][0], False)
                 if identity_element(op) == sp_tensor.dense_const:
                     pass 
@@ -761,18 +763,22 @@ Blocks Types: "
                 else:
                     temp_block = ConstBlock(sp_tensor.dense_const, block.total_shape)
                     block = block.binary(temp_block, op)
+                binary_3_time.update_total_time(time.time()-start_time)
             else:
+                start_time = time.time()
                 block_1 = self.get_sub_block_custom_range(start_index, end_index, indices[i][0][0], False)
                 block_2 = sp_tensor.get_sub_block_custom_range(start_index, end_index, indices[i][1][0], False)
                 block = block_1.binary(block_2, op)
+                binary_4_time.update_total_time(time.time()-start_time)
             
             if isinstance(block, ConstBlock) and block.block == dense_const:
                 continue
             res_blocks.append(block)
             res_start_indices.append(start_indices[i])
             res_end_indices.append(end_indices[i])
-        return SparseTensor(res_start_indices, res_blocks, self.dims, self.total_size, res_end_indices, new_type, dense_const)
-    
+        res = SparseTensor(res_start_indices, res_blocks, self.dims, self.total_size, res_end_indices, new_type, dense_const)
+        binary_1_time.update_total_time(time.time()-total_start_time)
+        return res
             
         
 

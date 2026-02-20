@@ -78,6 +78,7 @@ def checkShapes(x, y):
             raise Exception('SHAPE MISMATCH')
 
 def sanityCheck(x, y):
+    return
     start_time = time.time()
     checkTypes(x, y)
     checkShapes(x, y)
@@ -121,13 +122,20 @@ def all(x):
 def binary(x, y, op):
     start_time = time.time()
     # time.sleep(0.0025)
+    new_start_time = time.time()
     sanityCheck(x, y)
+    new_sanity_time.update_total_time(time.time() - new_start_time)
     if isinstance(x, SparseTensor):
         res = x.binary(y, op)
     elif isinstance(y, SparseTensor):
-        res = convert_dense_to_sparse(x, y.total_size).binary(y, op)
+        new_start_time = time.time()
+        temp = convert_dense_to_sparse(x, y.total_size)
+        binary_6_time.update_total_time(time.time() - new_start_time)
+        res = temp.binary(y, op)
     else:
+        new_start_time = time.time()
         res = op(x, y)
+        binary_5_time.update_total_time(time.time() - new_start_time)
     binary_time.update_total_time(time.time() - start_time)
     return res
 
@@ -373,7 +381,8 @@ def get_max_priority(sp_tensor, active_vertices):
 
 def filter_trav_exp_stop(trav_exp, stop):
     stop_float = convert_to_float(stop)
-    polyexp_stop_mat = trav_exp.mat.binary(stop_float, operator.mul)
+    # polyexp_stop_mat = trav_exp.mat.binary(stop_float, operator.mul)
+    polyexp_stop_mat = binary(trav_exp.mat, stop_float, operator.mul)
     polyexp_stop = trav_exp.create_similar(mat = polyexp_stop_mat)
     return polyexp_stop
 
@@ -383,7 +392,8 @@ def filter_trav_exp_not_stop(trav_exp, stop):
     else:
         polyexp_not_stop_const = 0
     stop_float = convert_to_float(stop.unary(operator.not_))
-    polyexp_not_stop_mat = trav_exp.mat.binary(stop_float, operator.mul)
+    # polyexp_not_stop_mat = trav_exp.mat.binary(stop_float, operator.mul)
+    polyexp_not_stop_mat = binary(trav_exp.mat, stop_float, operator.mul)
     polyexp_not_stop = trav_exp.create_similar(mat = polyexp_not_stop_mat, const = polyexp_not_stop_const)
     return polyexp_not_stop
 
