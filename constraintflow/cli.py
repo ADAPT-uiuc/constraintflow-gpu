@@ -161,7 +161,7 @@ def run(
 
     network_file = get_network(network, network_format, dataset)
     X, y = get_dataset(batch_size, dataset, train=train)
-    filename =network_file.split('/')[-1]+f'_{dataset}_all_gpus.csv'
+    filename =network_file.split('/')[-1]+f'_{dataset}_cpu.csv'
     start_time = time.perf_counter()
     lb, ub = run(
         network_file,
@@ -181,6 +181,11 @@ def run(
     typer.echo(f"Upper bound: {ub}")
     precision = get_precision(lb)
     typer.echo(f"Precision: {precision}")
+    typer.echo(f"Total fixed time: {fixed_cost1.get_total_time():.3f} seconds")
+    typer.echo(f"Total fixed num calls: {fixed_cost1.num_used} calls")
+
+    typer.echo(f"Total fixed time: {fixed_cost2.get_total_time():.3f} seconds")
+    typer.echo(f"Total fixed num calls: {fixed_cost2.num_used} calls")
 
     rows = [
         [
@@ -193,41 +198,61 @@ def run(
             binary_profilier.get_actual_op_time(),
             binary_profilier.get_data_transfer_time(),
             binary_profilier.get_num_ops(),
-            binary_profilier.get_total_time()
+            binary_profilier.get_total_time(),
+            binary_time.num_used,
+            binary_time.get_total_time(),
+            binary_1_time.num_used,
+            binary_1_time.get_total_time(),
+            binary_2_time.num_used,
+            binary_2_time.get_total_time(),
+            binary_3_time.num_used,
+            binary_3_time.get_total_time(),
+            binary_4_time.num_used,
+            binary_4_time.get_total_time(),
+            binary_5_time.num_used,
+            binary_5_time.get_total_time(),
+            binary_6_time.num_used,
+            binary_6_time.get_total_time(),
+            new_sanity_time.num_used,
+            new_sanity_time.get_total_time(),
         ],
         [
             "Unary",
             unary_profilier.get_actual_op_time(),
             unary_profilier.get_data_transfer_time(),
             unary_profilier.get_num_ops(),
-            unary_profilier.get_total_time()
+            unary_profilier.get_total_time(),
+            unary_time.get_total_time()
         ],
         [
             "Equal Matmul",
             equal_matmul_profilier.get_actual_op_time(),
             equal_matmul_profilier.get_data_transfer_time(),
             equal_matmul_profilier.get_num_ops(),
-            equal_matmul_profilier.get_total_time()
+            equal_matmul_profilier.get_total_time(),
+            matmul_time.get_total_time()
         ],
         [
             "Unequal Matmul",
             unequal_matmul_profilier.get_actual_op_time(),
             unequal_matmul_profilier.get_data_transfer_time(),
             unequal_matmul_profilier.get_num_ops(),
-            unequal_matmul_profilier.get_total_time()
+            unequal_matmul_profilier.get_total_time(),
+            matmul_time.get_total_time()
         ],
         [
             "Clamp",
             clamp_profilier.get_actual_op_time(),
             clamp_profilier.get_data_transfer_time(),
             clamp_profilier.get_num_ops(),
-            clamp_profilier.get_total_time()
+            clamp_profilier.get_total_time(),
+            clamp_time.get_total_time()
         ]
     ]   
 
     with open(filename, mode="w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["Operation", "Op Time (s)", "Transfer Time (s)", "Num Ops", "Total Op Time (s)"])
+        writer.writerow(["Operation", "Op Time (s)", "Transfer Time (s)", "Num Ops", "Total Op Time (s)", "Tensor Time (s)"])
         writer.writerows(rows)
 def main():
     app()
