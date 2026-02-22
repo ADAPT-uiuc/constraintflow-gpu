@@ -276,7 +276,7 @@ def split_blocks(start_index_1, end_index_1, start_index_2, end_index_2, block_i
 
 class SparseTensor:
     def __init__(self, start_indices, blocks, dims, total_size, end_indices = None, type=float, dense_const = 0.0):
-        t1 = time.time()
+        t1 = time.perf_counter()
         self.start_indices = start_indices
         self.blocks = blocks
         self.total_size = total_size
@@ -307,7 +307,7 @@ class SparseTensor:
         #             print(start_indices[j], self.end_indices[j])
         #         assert(not(block_overlap([start_indices[i], self.end_indices[i]], [start_indices[j], self.end_indices[j]])))
         
-        sparse_tensor_init_time.update_op_time(time.time()-t1)
+        sparse_tensor_init_time.update_op_time(time.perf_counter()-t1)
         
         if self.num_blocks > 0:
             if (self.end_indices[0]-self.start_indices[0] == self.total_size).all():
@@ -323,7 +323,7 @@ class SparseTensor:
                     delete_indices.append(i)
         delete_indices.reverse()
 
-        sparse_tensor_init_time.update_total_time(time.time()-t1)
+        sparse_tensor_init_time.update_total_time(time.perf_counter()-t1)
 
 
         # if self.num_blocks > len(delete_indices):
@@ -426,7 +426,7 @@ Blocks Types: "
 
     # NOTE: Use at your own risk. It does not create a copy.
     def get_sub_block_custom_range(self, start_index, end_index, block_id, tensor=True):
-        start_time = time.time()
+        start_time = time.perf_counter()
         block_start_index = self.start_indices[block_id]
         sparse_block = self.blocks[block_id]
         if (block_start_index == start_index).all() and (self.end_indices[block_id] == end_index).all():
@@ -444,7 +444,7 @@ Blocks Types: "
         res = self.blocks[block_id].get_sub_block_custom_range(start_index, end_index, block_start_index)
         if tensor:
             return res.block
-        end_time = time.time()
+        end_time = time.perf_counter()
         sub_block_custom_range_time.update_total_time(end_time-start_time)
         return res
     
@@ -480,7 +480,7 @@ Blocks Types: "
         return res, res_start_indices, res_end_indices
     
     def get_sparse_custom_range(self, start_index, end_index):
-        start_time = time.time()
+        start_time = time.perf_counter()
         new_index = [start_index, end_index]
         blocks = []
         res_start_indices = []
@@ -499,21 +499,21 @@ Blocks Types: "
                 src_end_indices = intersection_end_indices - self.start_indices[i]
                 src_block = self.blocks[i].get_dense()[tuple(get_slice(src_start_indices, src_end_indices))]
                 blocks.append(DenseBlock(src_block))
-        end_time = time.time()
+        end_time = time.perf_counter()
         get_sparse_range_time.update_total_time(end_time-start_time)
         return SparseTensor(res_start_indices, blocks, self.dims, self.total_size, res_end_indices, type=self.type, dense_const=self.dense_const)
     
 
 
     def reduce_size(self, start_index, end_index, total_size):
-        start_time = time.time()
+        start_time = time.perf_counter()
         start_indices = []
         end_indices = []
         for i in range(self.num_blocks):
             # assert(contained([self.start_indices[i], self.end_indices[i]], [start_index, end_index]))
             start_indices.append((self.start_indices[i]-start_index))
             end_indices.append((self.end_indices[i]-start_index))
-        end_time = time.time()
+        end_time = time.perf_counter()
         reduce_size_time.update_total_time(end_time-start_time)
         return SparseTensor(start_indices, self.blocks, self.dims, total_size, end_indices, type=self.type, dense_const=self.dense_const) 
 
@@ -554,7 +554,7 @@ Blocks Types: "
 
     
     def union_tensors(self, sp_tensor, indices=False):
-        start_time = time.time()
+        start_time = time.perf_counter()
         assert((self.total_size == sp_tensor.total_size).all())
         if sp_tensor.num_blocks == 0:
             res_start_indices = [i for i in self.start_indices]
@@ -661,7 +661,7 @@ Blocks Types: "
                 res_end_indices += temp_end_indices
                 res_indices += temp_res_indices
 
-        end_time = time.time()
+        end_time = time.perf_counter()
         union_tensors_time.update_total_time(end_time - start_time)
         if indices:
             return res_start_indices, res_end_indices, res_indices
@@ -705,7 +705,8 @@ Blocks Types: "
     
 
     def binary(self, sp_tensor, op):
-        total_start_time = time.time()
+        binary_sparse_tensor_count.update_num_used()
+        total_start_time = time.perf_counter()
         if op not in all_ops:
             raise Exception(f"NOT IMPLEMENTED {op}")
         if (isinstance(sp_tensor, torch.Tensor) and sp_tensor.size()!=1):
@@ -735,7 +736,7 @@ Blocks Types: "
         res_end_indices = []
         res_blocks = []
         
-        fixed_cost3.update_total_time(time.time()-total_start_time)
+        binary_sparse_tensor_expenses.update_total_time(time.perf_counter()-total_start_time)
 
 
         for i in range(len(start_indices)):
@@ -743,41 +744,57 @@ Blocks Types: "
             end_index = end_indices[i]
             
             if len(indices[i][0]) == 0:
-                start_time = time.time()
+                start_time = time.perf_counter()
                 block = sp_tensor.get_sub_block_custom_range(start_index, end_index, indices[i][1][0], False)
+                binary_sparse_tensor_dom2_expenses.update_total_time(time.perf_counter()-start_time)
+                start = time.perf_counter()
                 if identity_element(op) == self.dense_const:
                     block = binary_to_identity_unary(op)(block)
+                    binary_fixed_costs.update_total_time(time.perf_counter()-start)
                 elif annihilator_element(op) == self.dense_const and dense_const == self.dense_const:
+                    binary_fixed_costs.update_total_time(time.perf_counter()-start)
                     continue
                 else:
                     temp_block = ConstBlock(self.dense_const, block.total_shape)
+                    binary_fixed_costs.update_total_time(time.perf_counter()-start)
                     block = temp_block.binary(block, op)
-                binary_2_time.update_total_time(time.time()-start_time)
+                binary_sparse_tensor_dom2.update_total_time(time.perf_counter()-start_time)
             elif len(indices[i][1]) == 0:
-                start_time = time.time()
+                start_time = time.perf_counter()
                 block = self.get_sub_block_custom_range(start_index, end_index, indices[i][0][0], False)
+                binary_sparse_tensor_dom1_expenses.update_total_time(time.perf_counter()-start_time)
+                start = time.perf_counter()
                 if identity_element(op) == sp_tensor.dense_const:
+                    binary_fixed_costs.update_total_time(time.perf_counter()-start)
                     pass 
                 elif annihilator_element(op) == sp_tensor.dense_const and dense_const == sp_tensor.dense_const:
+                    binary_fixed_costs.update_total_time(time.perf_counter()-start)
                     continue
                 else:
                     temp_block = ConstBlock(sp_tensor.dense_const, block.total_shape)
+                    binary_fixed_costs.update_total_time(time.perf_counter()-start_time)
                     block = block.binary(temp_block, op)
-                binary_3_time.update_total_time(time.time()-start_time)
+                binary_sparse_tensor_dom1.update_total_time(time.perf_counter()-start_time)
             else:
-                start_time = time.time()
+                start_time = time.perf_counter()
                 block_1 = self.get_sub_block_custom_range(start_index, end_index, indices[i][0][0], False)
                 block_2 = sp_tensor.get_sub_block_custom_range(start_index, end_index, indices[i][1][0], False)
+                binary_sparse_tensor_overlap_expenses.update_total_time(time.perf_counter()-start_time)
                 block = block_1.binary(block_2, op)
-                binary_4_time.update_total_time(time.time()-start_time)
+                binary_sparse_tensor_overlap.update_total_time(time.perf_counter()-start_time)
             
+            start = time.perf_counter()
             if isinstance(block, ConstBlock) and block.block == dense_const:
+                binary_fixed_costs.update_total_time(time.perf_counter()-start)
                 continue
             res_blocks.append(block)
             res_start_indices.append(start_indices[i])
             res_end_indices.append(end_indices[i])
+            binary_fixed_costs.update_total_time(time.perf_counter()-start)
+        start = time.perf_counter()
         res = SparseTensor(res_start_indices, res_blocks, self.dims, self.total_size, res_end_indices, new_type, dense_const)
-        binary_1_time.update_total_time(time.time()-total_start_time)
+        binary_fixed_costs.update_total_time(time.perf_counter()-start)
+        total_binary_sparse_tensor.update_total_time(time.perf_counter()-total_start_time)
         return res
             
         
@@ -800,6 +817,7 @@ Blocks Types: "
         return res 
     
     def matmul(self, sp_tensor):
+        total_start_time = time.perf_counter()
         
         if isinstance(sp_tensor, torch.Tensor):
             sp_tensor = convert_dense_to_sparse(sp_tensor)
@@ -839,76 +857,108 @@ Blocks Types: "
 
         multiplicands = []
 
-        
-
         if self.dims == sp_tensor.dims:
             res_total_size = torch.concat([self.total_size[:-1], sp_tensor.total_size[-1:]])
+            matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-total_start_time)
             for i in range(self.num_blocks):
                 for j in range(sp_tensor.num_blocks):
+                    start = time.perf_counter()
                     if sp_tensor.dims == 2:
                         start_index = torch.concat([self.start_indices[i][:-1], sp_tensor.start_indices[j][-1:]])
                         end_index = torch.concat([self.end_indices[i][:-1], sp_tensor.end_indices[j][-1:]])
+                        matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
                     else:
                         if not block_overlap([self.start_indices[i][:-2], self.end_indices[i][:-2]], [sp_tensor.start_indices[j][:-2], sp_tensor.end_indices[j][:-2]]):
+                            matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
                             continue
                         if not block_overlap([self.start_indices[i][-1:], self.end_indices[i][-1:]], [sp_tensor.start_indices[j][-2:-1], sp_tensor.end_indices[j][-2:-1]]):
+                            matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
                             continue
-                        
-                        if full_overlap([self.start_indices[i][-1:], self.end_indices[i][-1:]], [sp_tensor.start_indices[j][-2:-1], sp_tensor.end_indices[j][-2:-1]]):    
+                        matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
+
+                        start = time.perf_counter()
+                        if full_overlap([self.start_indices[i][-1:], self.end_indices[i][-1:]], [sp_tensor.start_indices[j][-2:-1], sp_tensor.end_indices[j][-2:-1]]):
+                            matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
                             block = self.blocks[i].matmul_equal_dims(sp_tensor.blocks[j])
                         elif contained([self.start_indices[i][-1:], self.end_indices[i][-1:]], [sp_tensor.start_indices[j][-2:-1], sp_tensor.end_indices[j][-2:-1]]):    
                             start_index = torch.concat((sp_tensor.start_indices[j][:-2], self.start_indices[i][-1:], sp_tensor.start_indices[j][-1:]))
                             end_index = torch.concat((sp_tensor.end_indices[j][:-2], self.end_indices[i][-1:], sp_tensor.end_indices[j][-1:]))
                             block_1 = sp_tensor.get_sub_block_custom_range(start_index, end_index, j, tensor=False)
+                            matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
                             block = self.blocks[i].matmul_equal_dims(block_1)
                         elif contained([sp_tensor.start_indices[j][-2:-1], sp_tensor.end_indices[j][-2:-1]], [self.start_indices[i][-1:], self.end_indices[i][-1:]]):    
                             start_index = torch.concat((self.start_indices[i][:-1], sp_tensor.start_indices[j][-2:-1]))
                             end_index = torch.concat((self.end_indices[i][:-1], sp_tensor.end_indices[j][-2:-1]))
                             block_1 = self.get_sub_block_custom_range(start_index, end_index, i, tensor=False)
+                            matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
                             block = block_1.matmul_equal_dims(sp_tensor.blocks[j])
                         
+                        start = time.perf_counter()
                         blocks.append(block)
                         start_index = torch.concat([torch.min(sp_tensor.start_indices[j][:-2], self.start_indices[i][:-2]), self.start_indices[i][-2:-1], sp_tensor.start_indices[j][-1:]])
                         end_index = torch.concat([torch.max(sp_tensor.end_indices[j][:-2], self.end_indices[i][:-2]), self.end_indices[i][-2:-1], sp_tensor.end_indices[j][-1:]])
+                        matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
+                    start = time.perf_counter()
                     start_indices.append(start_index)
                     end_indices.append(end_index)
                     multiplicands.append((i, j))
+                    matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
         elif self.dims > sp_tensor.dims:
             res_total_size = self.total_size[:-1]
+            matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-total_start_time)
             for i in range(self.num_blocks):
                 for j in range(sp_tensor.num_blocks):
+                    start = time.perf_counter()
                     if sp_tensor.dims == 1:
                         start_index = self.start_indices[i][:-1]
                         end_index = self.end_indices[i][:-1]
+                        matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
                     else:
                         if not block_overlap([self.start_indices[i][:-2], self.end_indices[i][:-2]], [sp_tensor.start_indices[j][:-1], sp_tensor.end_indices[j][:-1]]):
+                            matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
                             continue
                         if not block_overlap([self.start_indices[i][-1:], self.end_indices[i][-1:]], [sp_tensor.start_indices[j][-1:], sp_tensor.end_indices[j][-1:]]):
+                            matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
                             continue
+                        
+                        matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
+                        start = time.perf_counter()
+                        
                         if full_overlap([self.start_indices[i][-1:], self.end_indices[i][-1:]], [sp_tensor.start_indices[j][-1:], sp_tensor.end_indices[j][-1:]]):       
-                            block_1 = self.blocks[i]               
+                            block_1 = self.blocks[i]
+                            matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)               
                             block = block_1.matmul_unequal_dims(sp_tensor.blocks[j])
                         elif contained([self.start_indices[i][-1:], self.end_indices[i][-1:]], [sp_tensor.start_indices[j][-1:], sp_tensor.end_indices[j][-1:]]):
                             start_index = torch.concat((sp_tensor.start_indices[j][:-1], self.start_indices[i][-1:]))
                             end_index = torch.concat((sp_tensor.end_indices[j][:-1], self.end_indices[i][-1:]))
                             block_1 = sp_tensor.get_sub_block_custom_range(start_index, end_index, j, tensor=False)
+                            matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
                             block = self.blocks[i].matmul_unequal_dims(block_1)
                         elif contained([sp_tensor.start_indices[j][-1:], sp_tensor.end_indices[j][-1:]], [self.start_indices[i][-1:], self.end_indices[i][-1:]]):
                             start_index = torch.concat((self.start_indices[i][:-1], sp_tensor.start_indices[j][-1:]))
                             end_index = torch.concat((self.end_indices[i][:-1], sp_tensor.end_indices[j][-1:]))
                             block_1 = self.get_sub_block_custom_range(start_index, end_index, i, tensor=False)
+                            matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
                             block = block_1.matmul_unequal_dims(sp_tensor.blocks[j])
+                        
+                        start = time.perf_counter()
                         blocks.append(block)
                         start_index = torch.concat([torch.min(sp_tensor.start_indices[j][:-1], self.start_indices[i][:-2]), self.start_indices[i][-2:-1]])
                         end_index = torch.concat([torch.max(sp_tensor.end_indices[j][:-1], self.end_indices[i][:-2]), self.end_indices[i][-2:-1]])
+                        matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
 
+                    start = time.perf_counter()
                     start_indices.append(start_index)
                     end_indices.append(end_index)
+                    matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
         else:
+            matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-total_start_time)
             assert(False)
 
+        start = time.perf_counter()
         overlap_classes = find_connected_blocks(start_indices, end_indices)
         res = sp_tensor_from_overlap_classes(overlap_classes, start_indices, blocks, res_total_size, len(res_total_size), self.dense_const, self.type)
+        matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
         return res
     
     def add_block_no_overlap(self, start_index, end_index, block):
@@ -979,7 +1029,7 @@ Blocks Types: "
         return self
         
     def squeeze(self, index):
-        start_time = time.time()
+        start_time = time.perf_counter()
         # time.sleep(0.005)
         assert(self.total_size[index].item() == 1)
         dims = self.dims-1
@@ -992,12 +1042,12 @@ Blocks Types: "
             start_indices.append(torch.concat([self.start_indices[i][:index], self.start_indices[i][index+1:]]))
             end_indices.append(torch.concat([self.end_indices[i][:index], self.end_indices[i][index+1:]]))
         x = SparseTensor(start_indices, blocks, dims, total_size, end_indices, self.type, self.dense_const)
-        end_time = time.time()
+        end_time = time.perf_counter()
         squeeze_time.update_total_time(end_time - start_time)
         return x
     
     def unsqueeze(self, index):
-        start_time = time.time()
+        start_time = time.perf_counter()
         dims = self.dims+1
         total_size = torch.concat([self.total_size[:index], torch.tensor([1]), self.total_size[index:]])
         total_size = total_size.type(torch.int64)
@@ -1008,7 +1058,7 @@ Blocks Types: "
             blocks.append(self.blocks[i].unsqueeze(index))
             start_indices.append(torch.concat([self.start_indices[i][:index], torch.tensor([0]), self.start_indices[i][index:]]))
             end_indices.append(torch.concat([self.end_indices[i][:index], torch.tensor([1]), self.end_indices[i][index:]]))
-        end_time = time.time()
+        end_time = time.perf_counter()
         unsqueeze_time.update_total_time(end_time-start_time)
         return SparseTensor(start_indices, blocks, dims, total_size, end_indices, self.type, self.dense_const)
     
