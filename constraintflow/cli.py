@@ -244,6 +244,10 @@ def run(
     typer.echo(f"Matmul Expenses Time: {round((matmul_tensor_ops_expenses.get_total_time()+matmul_sparse_tensor_expenses.get_total_time()+unequal_matmul_profilier.get_total_time()+equal_matmul_profilier.get_total_time()-unequal_matmul_profilier.get_actual_op_time()-equal_matmul_profilier.get_actual_op_time()), 5)} seconds")
     typer.echo(f"Matmul Actual Op Time: {round((unequal_matmul_profilier.get_actual_op_time()+equal_matmul_profilier.get_actual_op_time()), 5)} seconds")
 
+    typer.echo(f'Total Clamp Time: {round(clamp_total_time.get_total_time(), 5)} seconds')
+    typer.echo(f'Clamp Expense Time: {round(clamp_const_block_expense.get_total_time() + clamp_sparse_block_expense.get_total_time() + clamp_repeat_block_expense.get_total_time(), 5)} seconds')
+    typer.echo(f'Clamp Actual Op Time: {round(clamp_sparse_block_op_time.get_total_time() + clamp_repeat_block_op_time.get_total_time() + clamp_const_block_op_time.get_total_time(), 5)} seconds')
+
 
 def main():
     app()

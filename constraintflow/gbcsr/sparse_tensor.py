@@ -1074,9 +1074,14 @@ Blocks Types: "
         return SparseTensor(start_indices, blocks, self.dims, total_size, end_indices, self.type, self.dense_const)
     
     def clamp(self, const, min_true):
+        start_time = time.perf_counter()
         blocks = []
+        clamp_sparse_tensor_expense.update_total_time(time.perf_counter()-start_time)
         for i in range(self.num_blocks):
-            blocks.append(self.blocks[i].clamp(const, min_true))
+            cr = self.blocks[i].clamp(const, min_true)
+            append_start_time = time.perf_counter()
+            blocks.append(cr)
+            clamp_sparse_tensor_expense.update_total_time(time.perf_counter()-append_start_time)
         return SparseTensor(self.start_indices, blocks, self.dims, self.total_size, self.end_indices, self.type, self.dense_const)
 
             
