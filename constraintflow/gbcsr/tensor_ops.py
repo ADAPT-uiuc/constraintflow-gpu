@@ -455,12 +455,16 @@ def clamp(mat, min_true, const):
                 res = mat 
             else:
                 res = const
+        clamp_op_expense.update_total_time(time.perf_counter() - start_time)
     elif isinstance(mat, torch.Tensor):
         if min_true:
+            clamp_op_expense.update_total_time(time.perf_counter() - start_time)
             res = mat.clamp(min=const)
         else:
+            clamp_op_expense.update_total_time(time.perf_counter() - start_time)
             res = mat.clamp(max=const)
     else:
         res = mat.clamp(const, min_true)
-    clamp_time.update_total_time(time.perf_counter() - start_time)
+    clamp_total_time.update_total_time(time.perf_counter() - start_time)
+    # clamp_time.update_total_time(time.perf_counter() - start_time)
     return res

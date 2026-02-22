@@ -232,16 +232,21 @@ class SparseBlock:
         start_time_total = time.perf_counter()
         if baseline_gpu_mode:
             torch.cuda.synchronize()
-        start_op_time = time.perf_counter()
         if min_true:
+            clamp_sparse_block_expense.update_total_time(time.perf_counter() - start_time_total)
+            start_op_time = time.perf_counter()
             new_block = self.block.clamp(min=const)
+            clamp_sparse_block_op_time.update_total_time(time.perf_counter() - start_op_time)
         else:
+            clamp_sparse_block_expense.update_total_time(time.perf_counter() - start_time_total)
+            start_op_time = time.perf_counter()
             new_block = self.block.clamp(max=const)
+            clamp_sparse_block_op_time.update_total_time(time.perf_counter() - start_op_time)
+        start_time = time.perf_counter()
         if baseline_gpu_mode:
             torch.cuda.synchronize()
-        clamp_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
         res = self.create_similar(block=new_block)
-        clamp_profilier.update_total_time(time.perf_counter() - start_time_total)
+        clamp_sparse_block_expense.update_total_time(time.perf_counter() - start_time)
         return res
     
     def type(self):
@@ -1185,6 +1190,7 @@ class ConstBlock(SparseBlock):
             pass
     
     def clamp(self, const, min_true):
+        start_time = time.perf_counter()
         if min_true:
             if self.block >= const:
                 res = self
@@ -1195,6 +1201,7 @@ class ConstBlock(SparseBlock):
                 res = self
             else:
                 res = ConstBlock(const, self.total_shape)
+        clamp_const_block_expense.update_total_time(time.perf_counter() - start_time)
         return res
 
 
@@ -1336,15 +1343,19 @@ class RepeatBlock(SparseBlock):
         start_total_time = time.perf_counter()
         if baseline_gpu_mode:
             torch.cuda.synchronize()
-        start_time = time.perf_counter()
+        clamp_repeat_block_expense.update_total_time(time.perf_counter() - start_total_time)
         if min_true:
+            start_time = time.perf_counter()
             new_block = self.block.clamp(min=const)
+            clamp_repeat_block_op_time.update_op_time(time.perf_counter() - start_time)
         else:
+            start_time = time.perf_counter()
             new_block = self.block.clamp(max=const)
+            clamp_repeat_block_op_time.update_op_time(time.perf_counter() - start_time)
+        start_time = time.perf_counter()
         if baseline_gpu_mode:
             torch.cuda.synchronize()
-        clamp_profilier.update_actual_op_time(time.perf_counter() - start_time)
-        clamp_profilier.update_total_time(time.perf_counter() - start_total_time)
+        clamp_repeat_block_expense.update_total_time(time.perf_counter() - start_time)
         return RepeatBlock(new_block, self.total_shape)
 
 

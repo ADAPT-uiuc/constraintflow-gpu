@@ -158,3 +158,14 @@ matmul_tensor_ops_expenses = Time()
 matmul_sparse_tensor_expenses = Time()
 matmul_block_all= Time()
 matmul_block_op = Time()
+
+# Added by Heng
+clamp_total_time = Time()
+clamp_op_expense = Time()
+clamp_sparse_tensor_expense = Time()
+clamp_sparse_block_expense = Time()
+clamp_sparse_block_op_time = Time()
+clamp_const_block_expense = Time()
+clamp_const_block_op_time = Time() # Should be 0, added for uniformity.
+clamp_repeat_block_expense = Time()
+clamp_repeat_block_op_time = Time()
