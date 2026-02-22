@@ -1,3 +1,4 @@
+from numpy import block
 import torch 
 import torch.nn.functional as F
 import time
@@ -25,13 +26,11 @@ def get_diagonal(block, diag_index):
 
 def operation(x, y, op):
     start_time = time.perf_counter()
-    if baseline_gpu_mode:
-       torch.cuda.synchronize()
-    start_op_time = time.perf_counter()
+    # if baseline_gpu_mode:
+    #    torch.cuda.synchronize()
     z = op(x, y)
-    if baseline_gpu_mode:
-        torch.cuda.synchronize()
-    binary_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
+    # if baseline_gpu_mode:
+        # torch.cuda.synchronize()
     binary_profilier.update_total_time(time.perf_counter() - start_time)
     return z
 
@@ -106,22 +105,31 @@ class SparseBlock:
     
     def binary(self, sp_block, op):
         # assert((self.total_shape == sp_block.total_shape).all())
+        start_time = time.perf_counter()
         if isinstance(sp_block, ConstBlock):
             if sp_block.block == identity_element(op):
+                binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
                 return self
             elif sp_block.block == annihilator_element(op):
+                binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
                 return sp_block
             if op(0, sp_block.block) in [0, False]:
-                return self.create_similar(block=operation(self.block, sp_block.block, op)) 
+                res = self.create_similar(block=operation(self.block, sp_block.block, op)) 
+                binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
+                return res
         if op in disjunction_ops:
-            return self.disjunctive_binary(sp_block, op)
+            res = self.disjunctive_binary(sp_block, op)
+            binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
+            return res
         elif op in conjunction_ops:
-            return self.conjunctive_binary(sp_block, op)
+            res = self.conjunctive_binary(sp_block, op)
+            binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
+            return res
         else:
             # assert(False)
+            binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
             pass
     
-
     def disjunctive_binary(self, sp_block, op):
         if isinstance(self, type(sp_block)):
             if not isinstance(self, (KernelBlock, PatchesBlock)) or self.parameters() == sp_block.parameters():
@@ -300,21 +308,13 @@ class DenseBlock(SparseBlock):
         if isinstance(sp_block, DenseBlock):
             a = self.block
             b = sp_block.block
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
             start_op_time = time.perf_counter()
             c = a @ b
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
             equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
             res = DenseBlock(c)
         elif isinstance(sp_block, DiagonalBlock):
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
             start_op_time = time.perf_counter()
             res = DenseBlock(self.block * sp_block.block.unsqueeze(sp_block.diag_index-1))
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
             equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
         elif isinstance(sp_block, KernelBlock):
             kernel = sp_block.block
@@ -333,10 +333,11 @@ class DenseBlock(SparseBlock):
             curr_size = self.block.shape[-2]
             new_px = (ix + 2*px - kx) % sx
             new_py = (iy + 2*py - ky) % sy
+            start_op_time = time.perf_counter()
             input_tensor = self.block.reshape(batch_size*curr_size, num_kernels, ox, oy)
             output_tensor = F.conv_transpose2d(input_tensor, kernel, stride=(sx, sy), padding=(px, py), output_padding=(new_px, new_py))
-            
             res = DenseBlock(output_tensor.reshape(batch_size, curr_size, -1))
+            equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
         elif isinstance(sp_block, ConstBlock):
             if sp_block.block == 0:
                 new_total_shape = self.total_shape.clone()
@@ -349,12 +350,8 @@ class DenseBlock(SparseBlock):
             #     block_2 = sp_block.block 
             # else:
             block_2 = sp_block.get_dense()
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
             start_op_time = time.perf_counter()
             c = self.block @ block_2
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
             equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
             res = DenseBlock(c)
         equal_matmul_profilier.update_total_time(time.perf_counter() - start_time_total)
@@ -365,15 +362,14 @@ class DenseBlock(SparseBlock):
         if isinstance(sp_block, DenseBlock):
             a = self.block 
             b = sp_block.unsqueeze(-1).block
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
+            # if baseline_gpu_mode:
+            #     torch.cuda.synchronize()
             start_op_time = time.perf_counter()
             c = a @ b
-            res = (a @ b).squeeze(-1)
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
+            res = (c).squeeze(-1)
+            # if baseline_gpu_mode:
+            #     torch.cuda.synchronize()
             unequal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
-            res = c.squeeze(-1)
             res = DenseBlock(res)
         elif isinstance(sp_block, DiagonalBlock):
             raise NotImplementedError
@@ -524,17 +520,21 @@ Output Size: {self.ox, self.oy} \n'
             num_kernels = self.num_kernels
             num_channels = self.num_channels
             batch_size = sp_block.batch_size
+            
+            start_op_time = time.perf_counter()
             x = sp_block.block.view(batch_size, num_channels, ix, iy)
             x_unf = F.unfold(x, kernel_size=(kx, ky), padding=(px, py), stride=(sx, sy)) # batch_size, num_channels * kx * ky, ox * oy
             x_unf = x_unf.permute(0,2,1).repeat(1, num_kernels, 1)
+            equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
+            
+            
             k_new = self.convert_to_patches().block
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
+            # if baseline_gpu_mode:
+            #     torch.cuda.synchronize()
             start_op_time = time.perf_counter()
             patches = x_unf * k_new
-
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
+            # if baseline_gpu_mode:
+            #     torch.cuda.synchronize()
             equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
             res = PatchesBlock(patches, self.total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels)
         elif isinstance(sp_block, ConstBlock):
@@ -549,8 +549,8 @@ Output Size: {self.ox, self.oy} \n'
             batch_size = b.shape[0]
             prev_size = b.shape[1]
             sym_size = b.shape[2]
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
+            # if baseline_gpu_mode:
+            #     torch.cuda.synchronize()
             start_op_time = time.perf_counter()
             b = b.transpose(1,2) # batch_size, sym_size, prev_size
             b = b.reshape(b.shape[0]*b.shape[1], self.num_channels, self.ix, self.iy)
@@ -558,8 +558,8 @@ Output Size: {self.ox, self.oy} \n'
             res = res.reshape(batch_size, sym_size, -1)
             res = res.transpose(1,2) # batch_size, curr_size, sym_size
             
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
+            # if baseline_gpu_mode:
+            #     torch.cuda.synchronize()
             equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
             res = DenseBlock(res)
         elif isinstance(sp_block, PatchesBlock):
@@ -608,20 +608,18 @@ Output Size: {self.ox, self.oy} \n'
             num_channels = self.num_channels
             batch_size = sp_block.batch_size
             
-
+            start_op_time = time.perf_counter()
             input_tensor = sp_block.block.reshape(batch_size, num_channels, ix, iy)
             
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
-            start_op_time = time.perf_counter()
+            # if baseline_gpu_mode:
+            #     torch.cuda.synchronize()
             block = F.conv2d(input_tensor, kernel, stride=(sx, sy), padding=(px, py))
             
 
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
-            unequal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
-            
+            # if baseline_gpu_mode:
+            #     torch.cuda.synchronize()
             block = block.reshape(batch_size, -1)
+            unequal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
             res = DenseBlock(block)
         elif isinstance(sp_block, DiagonalBlock):
             raise NotImplementedError
@@ -743,29 +741,30 @@ class DiagonalBlock(SparseBlock):
             return DenseBlock(self.block)
 
     def matmul_equal_dims(self, sp_block):
-        start_time = time.perf_counter()
+        total_start_time = time.perf_counter()
         if isinstance(sp_block, DenseBlock):
+            start_op_time = time.perf_counter()
             a = self.block.unsqueeze(self.diag_index)
             b = sp_block.block
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
-            start_op_time = time.perf_counter()
+            # if baseline_gpu_mode:
+            #     torch.cuda.synchronize()
             c = a * b
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
+            # if baseline_gpu_mode:
+            #     torch.cuda.synchronize()
             equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
             res = DenseBlock(c)
         elif isinstance(sp_block, DiagonalBlock):
             raise NotImplementedError
         elif isinstance(sp_block, KernelBlock):
             block_2 = sp_block.convert_to_patches().block # batch_size, curr_size, num_channels * kx * ky
-            block_1 = self.block.unsqueeze(self.diag_index)
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
             start_op_time = time.perf_counter()
+            block_1 = self.block.unsqueeze(self.diag_index)
+            # if baseline_gpu_mode:
+            #     torch.cuda.synchronize()
+            
             block = block_1 * block_2
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
+            # if baseline_gpu_mode:
+            #     torch.cuda.synchronize()
             equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
             res = PatchesBlock(block, sp_block.total_shape, sp_block.ix, sp_block.iy, sp_block.ox, sp_block.oy, sp_block.sx, sp_block.sy, sp_block.px, sp_block.py, sp_block.kx, sp_block.ky, sp_block.num_channels, sp_block.num_kernels)
         elif isinstance(sp_block, RepeatBlock) and (sp_block.repeat_dims==1).all():
@@ -773,7 +772,7 @@ class DiagonalBlock(SparseBlock):
             res = self.matmul_equal_dims(sp_block)
         else:
             raise Exception(f'Unrecognized sparse block type: {type(sp_block)}')
-        equal_matmul_profilier.update_total_time(time.perf_counter() - start_time)
+        equal_matmul_profilier.update_total_time(time.perf_counter() - total_start_time)
 
         return res
         
@@ -781,16 +780,16 @@ class DiagonalBlock(SparseBlock):
     def matmul_unequal_dims(self, sp_block):
         start_time_total = time.perf_counter()
         if isinstance(sp_block, DenseBlock):
+            start_op_time = time.perf_counter()
             a = self.block.unsqueeze(self.diag_index)
             b = sp_block.block.unsqueeze(-1)
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
-            start_op_time = time.perf_counter()
+            # if baseline_gpu_mode:
+            #     torch.cuda.synchronize()
             res = a * b
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
-            unequal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
+            # if baseline_gpu_mode:
+            #     torch.cuda.synchronize()
             res = res.squeeze(-1)
+            unequal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
             res = DenseBlock(res)
         elif isinstance(sp_block, RepeatBlock) and (sp_block.repeat_dims==1).all():
             sp_block = DenseBlock(sp_block.get_dense())
@@ -814,18 +813,21 @@ class DiagonalBlock(SparseBlock):
         return DiagonalBlock(block, self.total_shape, self.diag_index)    
     
     def binary(self, sp_block, op):
+        start_time_total = time.perf_counter()
         if isinstance(sp_block, RepeatBlock):
             if (sp_block.repeat_dims[self.diag_index] > 1) and sp_block.only_one_repeat:
                 block_1 = self.block 
                 block_2 = sp_block.block.squeeze(self.diag_index)
                 block = operation(block_1, block_2, op)
                 res = self.create_similar(block)
+                binary_block_expenses.update_total_time(time.perf_counter() - start_time_total)
                 return res
             elif (sp_block.repeat_dims[self.diag_index-1] > 1) and sp_block.only_one_repeat:
                 block_1 = self.block 
                 block_2 = sp_block.block.squeeze(self.diag_index-1)
                 block = operation(block_1, block_2, op)
                 res = self.create_similar(block)
+                binary_block_expenses.update_total_time(time.perf_counter() - start_time_total)
                 return res
         return super().binary(sp_block, op)
         
@@ -901,17 +903,18 @@ class PatchesBlock(SparseBlock):
     def matmul_equal_dims(self, sp_block):
         start_time_total = time.perf_counter()
         # AVAL: understand the if case
-        if isinstance(sp_block, KernelBlock):  
+        if isinstance(sp_block, KernelBlock):
+            start_op = time.perf_counter()  
             flattened_patches = self.block.reshape(self.batch_size*self.num_kernels*self.ox*self.oy, self.num_channels, self.kx, self.ky)
-            start_time = time.time()
             patches = F.conv_transpose2d(flattened_patches, sp_block.block, stride=(sp_block.sx, sp_block.sy))
-            end_time = time.time()
             kx = patches.shape[-2]
             ky = patches.shape[-1]
+            patches = patches.reshape(self.batch_size, self.num_kernels*self.ox*self.oy, -1)
+            equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op)
+
             # assert(kx == (self.kx-1)*sp_block.sx + sp_block.kx)
             # assert(ky == (self.ky-1)*sp_block.sy + sp_block.ky)
             new_padding, new_stride = self.compute_patches_stride_padding(patches_padding=(self.px, self.py), patches_stride=(self.sx, self.sy), op_padding=(sp_block.px, sp_block.py), op_stride=(sp_block.sx, sp_block.sy))
-            patches = patches.reshape(self.batch_size, self.num_kernels*self.ox*self.oy, -1)
             new_total_shape = torch.concat([torch.max(self.total_shape[:-2], sp_block.total_shape[:-2]), self.total_shape[-2:-1], sp_block.total_shape[-1:]])
             res = PatchesBlock(patches, new_total_shape, sp_block.ix, sp_block.iy, self.ox, self.oy, new_stride[0], new_stride[1], new_padding[0], new_padding[1], kx, ky, sp_block.num_channels, self.num_kernels)
 
@@ -928,10 +931,11 @@ class PatchesBlock(SparseBlock):
             num_kernels = self.num_kernels
             num_channels = self.num_channels
             batch_size = sp_block.batch_size
-            x = sp_block.block.view(batch_size, num_channels, ix, iy)
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
             start_op_time = time.perf_counter()
+            x = sp_block.block.view(batch_size, num_channels, ix, iy)
+            # if baseline_gpu_mode:
+            #     torch.cuda.synchronize()
+            
             x_unf = F.unfold(x, kernel_size=(kx, ky), padding=(px, py), stride=(sx, sy))
             x_unf = x_unf.transpose(1,2).repeat(1, num_kernels, 1)
             # x_unf = x_unf.unsqueeze(1).repeat(1, num_kernels, 1, 1)
@@ -940,8 +944,8 @@ class PatchesBlock(SparseBlock):
                 patches = patches.expand(batch_size, patches.size(1), patches.size(2))
             # patches = patches.repeat(batch_size, 1, 1, 1)
             patches = x_unf * patches
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
+            # if baseline_gpu_mode:
+            #     torch.cuda.synchronize()
             equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
             res = PatchesBlock(patches, self.total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels)
         else:
@@ -966,22 +970,25 @@ class PatchesBlock(SparseBlock):
             num_channels = self.num_channels
             num_kernels = self.num_kernels
             batch_size = sp_block.batch_size
+
+            start_op_time = time.perf_counter()
             x = sp_block.block.view(batch_size, num_channels, ix, iy)
             x_unf = F.unfold(x, kernel_size=(kx, ky), padding=(px, py), stride=(sx, sy))
             x_unf = x_unf.transpose(1,2).repeat(1, num_kernels, 1)
             if patches.shape[0] != batch_size:
                 patches = patches.expand(batch_size, patches.size(1), patches.size(2))
             
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
-            start_op_time = time.perf_counter()
+            # if baseline_gpu_mode:
+            #     torch.cuda.synchronize()
+            
             patches = x_unf * patches
-            if baseline_gpu_mode:
-                torch.cuda.synchronize()
-            unequal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
+            # if baseline_gpu_mode:
+            #     torch.cuda.synchronize()
+            
             
             
             ret = patches.sum(dim=-1)
+            unequal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
             res = DenseBlock(ret)
         elif isinstance(sp_block, ConstBlock) and sp_block.block == 0:
             res = ConstBlock(0, self.total_shape[:-1])
@@ -1064,12 +1071,14 @@ class PatchesBlock(SparseBlock):
             raise NotImplementedError
         
     def binary(self, sp_block, op):
+        start_time = time.perf_counter()
         if isinstance(sp_block, RepeatBlock):
             if sp_block.only_one_repeat and sp_block.repeat_dims[-1] > 1:
                 block_1 = self.block 
                 block_2 = sp_block.block.expand(self.block.shape)
                 block = operation(block_1, block_2, op)
                 res = self.create_similar(block)
+                binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
                 return res
         return super().binary(sp_block, op)
     
@@ -1133,20 +1142,33 @@ class ConstBlock(SparseBlock):
             raise NotImplementedError
         
     def binary(self, sp_block, op):
+        start_time = time.perf_counter()
         if self.block == identity_element(op):
+            start = time.perf_counter()
             block = unary_operation(sp_block.block, binary_to_identity_unary(op))
-            return sp_block.create_similar(block)
+            binary_profilier.update_total_time(time.perf_counter() - start)
+            res =sp_block.create_similar(block)
+            binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
+            return res
         elif self.block == annihilator_element(op):
+            binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
             return self
         elif self.block == 0 and op == operator.truediv:
+            binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
             return self
         elif op!=operator.truediv and op(self.block, 0) in [0, False]:
             block = operation(self.block, sp_block.block, op)
-            return sp_block.create_similar(block)
+            res = sp_block.create_similar(block)
+            binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
+            return res
         elif op in disjunction_ops:
-            return self.disjunctive_binary(sp_block, op)
+            res = self.disjunctive_binary(sp_block, op)
+            binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
+            return res
         elif op in conjunction_ops:
-            return self.conjunctive_binary(sp_block, op)
+            res = self.conjunctive_binary(sp_block, op)
+            binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
+            return res
         else:
             raise NotImplementedError
         
@@ -1177,24 +1199,24 @@ class ConstBlock(SparseBlock):
 
 
     def matmul_equal_dims(self, sp_block):
-        start_time = time.time()
+        # start_time = time.perf_counter()
         if self.block==0:
             new_total_shape = self.total_shape.clone()
             new_total_shape[-1] = sp_block.total_shape[-1]
             res = ConstBlock(0, new_total_shape)
         else:
             raise NotImplementedError
-        matmul_time.update_op_time(time.time() - start_time)
+        # matmul_time.update_op_time(time.time() - start_time)
         return res
             
     def matmul_unequal_dims(self, sp_block):
-        start_time = time.time()
+        # start_time = time.perf_counter()
         if self.block == 0:
             new_total_shape = self.total_shape.clone()[:-1]
             res = ConstBlock(0, new_total_shape)
         else:
             raise NotImplementedError
-        matmul_time.update_op_time(time.time() - start_time)
+        # matmul_time.update_op_time(time.time() - start_time)
         return res
         
     def get_sub_block_custom_range(self, start_index, end_index, block_start_index):
@@ -1267,18 +1289,21 @@ class RepeatBlock(SparseBlock):
         return DenseBlock(self.get_dense()).matmul_unequal_dims(sp_block)
     
     def binary(self, sp_block, op):
+        start_time = time.perf_counter()
         if isinstance(sp_block, DiagonalBlock):
             if (self.repeat_dims[sp_block.diag_index] > 1) and self.only_one_repeat:
                 block_1 = self.block.squeeze(sp_block.diag_index)
                 block_2 = sp_block.block 
                 block = operation(block_1, block_2, op)
                 res = sp_block.create_similar(block)
+                binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
                 return res
             elif (self.repeat_dims[sp_block.diag_index-1] > 1) and self.only_one_repeat:
                 block_1 = self.block.squeeze(sp_block.diag_index-1)
                 block_2 = sp_block.block 
                 block = operation(block_1, block_2, op)
                 res = sp_block.create_similar(block)
+                binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
                 return res
         if isinstance(sp_block, PatchesBlock):
             if self.only_one_repeat and self.repeat_dims[-1] > 1 and len(sp_block.total_shape) == 3: #last condition means patches was not unsqueezed
@@ -1287,18 +1312,24 @@ class RepeatBlock(SparseBlock):
                 block_2 = sp_block.block 
                 block = operation(block_1, block_2, op)
                 res = sp_block.create_similar(block)
+                binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
                 return res
         if isinstance(sp_block, KernelBlock):
             if self.only_one_repeat and self.repeat_dims[-1] > 1:
                 block = sp_block.convert_to_patches()
+                binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
                 return self.binary(block, op)
+        
         block_1 = DenseBlock(self.get_dense())
+        binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
         return block_1.binary(sp_block, op)
     
     def unary(self, op):
         return self.create_similar(unary_operation(self.block, op))
     
     def any(self):
+        if isinstance(self.block, torch.Tensor) and self.block.is_meta:
+            return False
         return self.block.any()
     
     def clamp(self, const, min_true):
@@ -1366,6 +1397,7 @@ class DummyBlock:
         return DummyBlock(None, self.total_shape)
     
     def any(self):
+        # Meta tensors cannot be converted to bool (`Tensor.item()` is unsupported).
         return False
     
     def clamp(self, const, min_true):

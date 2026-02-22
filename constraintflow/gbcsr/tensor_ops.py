@@ -78,40 +78,40 @@ def checkShapes(x, y):
             raise Exception('SHAPE MISMATCH')
 
 def sanityCheck(x, y):
-    return
-    start_time = time.time()
+    # return
+    start_time = time.perf_counter()
     checkTypes(x, y)
     checkShapes(x, y)
-    end_time = time.time()
+    end_time = time.perf_counter()
     sanity_time.update_total_time(end_time - start_time)
 
 def unary(x, op):
-    start_time = time.time()
+    start_time = time.perf_counter()
     if isinstance(x, torch.Tensor):
         res = op(x)
     elif isinstance(x, SparseTensor):
         res = x.unary(op)
     else:
         res = op(x)
-    unary_time.update_total_time(time.time() - start_time)
+    unary_time.update_total_time(time.perf_counter() - start_time)
     return res
 
 def any(x):
-    start_time = time.time()
+    start_time = time.perf_counter()
     if type(x)!=torch.Tensor and type(x)!=SparseTensor:
         raise Exception('TYPE MISMATCH')
     
     res = x.any()
-    any_time.update_total_time(time.time() - start_time)
+    any_time.update_total_time(time.perf_counter() - start_time)
     return res
 
 def all(x):
-    start_time = time.time()
+    start_time = time.perf_counter()
     if type(x)!=torch.Tensor and type(x)!=SparseTensor:
         raise Exception('TYPE MISMATCH')
     
     res = x.all()
-    all_time.update_total_time(time.time() - start_time)
+    all_time.update_total_time(time.perf_counter() - start_time)
     return res
 
 # def all(x):
@@ -120,47 +120,50 @@ def all(x):
 #     return x.all()
 
 def binary(x, y, op):
-    start_time = time.time()
-    # time.sleep(0.0025)
-    new_start_time = time.time()
+    total_start_time = time.perf_counter()
+    start_time = time.perf_counter()
     sanityCheck(x, y)
-    new_sanity_time.update_total_time(time.time() - new_start_time)
+    binary_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
     if isinstance(x, SparseTensor):
+        start_time = time.perf_counter()
         res = x.binary(y, op)
+        binary_tensor_ops_x_sparsity.update_total_time(time.perf_counter() - start_time)
+        
     elif isinstance(y, SparseTensor):
-        new_start_time = time.time()
+        start_time = time.perf_counter()
         temp = convert_dense_to_sparse(x, y.total_size)
-        binary_6_time.update_total_time(time.time() - new_start_time)
+        binary_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
         res = temp.binary(y, op)
+        binary_tensor_ops_y_sparsity.update_total_time(time.perf_counter() - start_time)
     else:
-        new_start_time = time.time()
+        start_time = time.perf_counter()
         res = op(x, y)
-        binary_5_time.update_total_time(time.time() - new_start_time)
-    binary_time.update_total_time(time.time() - start_time)
+        binary_tensor_ops_no_sparse.update_total_time(time.perf_counter() - start_time)
+    total_binary_tensor_ops.update_total_time(time.perf_counter() - total_start_time)
     return res
 
 def cf_max(x, y):
-    start_time = time.time()
+    start_time = time.perf_counter()
     sanityCheck(x, y)
     if isinstance(x, SparseTensor):
         if isinstance(y, SparseTensor):
             res = sparse_max(x, y)
-            where_time.update_total_time(time.time() - start_time)
+            where_time.update_total_time(time.perf_counter() - start_time)
             return res
     res = torch.max(x, y)
-    where_time.update_total_time(time.time() - start_time)
+    where_time.update_total_time(time.perf_counter() - start_time)
     return res
 
 def cf_min(x, y):
-    start_time = time.time()
+    start_time = time.perf_counter()
     sanityCheck(x, y)
     if isinstance(x, SparseTensor):
         if isinstance(y, SparseTensor):
             res = sparse_min(x, y)
-            where_time.update_total_time(time.time() - start_time)
+            where_time.update_total_time(time.perf_counter() - start_time)
             return res
     res = torch.min(x, y)
-    where_time.update_total_time(time.time() - start_time)
+    where_time.update_total_time(time.perf_counter() - start_time)
     return res
 
 def lcm(a, b):
@@ -178,7 +181,7 @@ def const_to_sparse(c, total_size):
     return SparseTensor([], [], total_size.shape[0], total_size, type=type(c), dense_const=c)
 
 def where(x, y, z):
-    start_time = time.time()
+    start_time = time.perf_counter()
     if isinstance(x, torch.Tensor) and isinstance(y, torch.Tensor) and isinstance(z, torch.Tensor):
         checkShapes(x, y)
         sanityCheck(y, z)
@@ -236,13 +239,15 @@ def where(x, y, z):
     sanityCheck(y1, z1)
 
     res = sp_where(x1, y1, z1)
-    where_time.update_total_time(time.time() - start_time)
+    where_time.update_total_time(time.perf_counter() - start_time)
     return res
 
 def inner_prod(x, y):
-    t1 = time.time()
+    total_start_time = time.perf_counter()
     # time.sleep(0.00625)
     checkTypes(x, y)
+    matmul_tensor_ops_expenses.just_update_total_time(time.perf_counter() - total_start_time)
+    start_time = time.perf_counter()
     if isinstance(x, SparseTensor):
         if isinstance(y, SparseTensor):
             if x.total_size.shape[0] == y.total_size.shape[0]:
@@ -262,6 +267,7 @@ def inner_prod(x, y):
             else:
                 print(x.total_size, y.total_size)
                 raise Exception('SHAPE MISMATCH')
+            matmul_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
             res = x.matmul(y)
         else:
             if x.total_size.shape[0] == y.shape.shape[0]:
@@ -281,6 +287,7 @@ def inner_prod(x, y):
             else:
                 print(x.total_size, y.shape)
                 raise Exception('SHAPE MISMATCH')
+            matmul_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
             res = x.matmul(y)
     elif isinstance(y, SparseTensor):
         if x.shape.shape[0] == y.total_size.shape[0]:
@@ -300,7 +307,9 @@ def inner_prod(x, y):
         else:
             print(x.shape, y.total_size)
             raise Exception('SHAPE MISMATCH')
-        res = convert_dense_to_sparse(x).matmul(y)
+        x = convert_dense_to_sparse(x)
+        matmul_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
+        res = x.matmul(y)
     else:
         if x.shape.shape[0] == y.shape.shape[0]:
             if x.shape[-1] != y.shape[-2]:
@@ -319,9 +328,10 @@ def inner_prod(x, y):
         else:
             print(x.shape, y.shape)
             raise Exception('SHAPE MISMATCH')
+        matmul_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
         res = x@y
 
-    matmul_time.update_total_time(time.time() - t1)
+    matmul_tensor_ops.update_total_time(time.perf_counter() - total_start_time)
     return res
 
 
@@ -422,18 +432,18 @@ def get_shape_0(x):
     return x.shape[0]
 
 def repeat(mat, repeat_dims):
-    start_time = time.time()
+    start_time = time.perf_counter()
     if isinstance(mat, float):
         res = mat*torch.ones(*(repeat_dims.tolist()))
     elif isinstance(mat, torch.Tensor):
         res = mat.repeat(*(repeat_dims.tolist()))
     else:
         res = mat.repeat(repeat_dims)
-    repeat_time.update_total_time(time.time() - start_time)
+    repeat_time.update_total_time(time.perf_counter() - start_time)
     return res
 
 def clamp(mat, min_true, const):
-    start_time = time.time()
+    start_time = time.perf_counter()
     if isinstance(mat, float):
         if min_true:
             if mat>const:
@@ -452,5 +462,5 @@ def clamp(mat, min_true, const):
             res = mat.clamp(max=const)
     else:
         res = mat.clamp(const, min_true)
-    clamp_time.update_total_time(time.time() - start_time)
+    clamp_time.update_total_time(time.perf_counter() - start_time)
     return res

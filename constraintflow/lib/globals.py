@@ -31,11 +31,12 @@ class OperationTime():
         self.num_ops = 0
     def update_total_time(self, time1):
         self.total_time += time1
+        self.num_ops += 1
     def update_data_transfer_time(self, time1):
         self.data_transfer_time += time1
     def update_actual_op_time(self, time1):
         self.actual_op_time += time1
-        self.num_ops += 1
+        
     def get_total_time(self):
         return self.total_time
     def get_data_transfer_time(self):
@@ -63,9 +64,13 @@ operation time: {self.op_time: 8.3f}s, \
 index time: {self.total_time - self.op_time: 8.3f}s, \
 num used: {self.num_used}'
     
-
+    def just_update_total_time(self, time1):
+        self.total_time += time1
     def update_total_time(self, time1):
         self.total_time += time1
+        self.num_used += 1
+
+    def update_num_used(self):
         self.num_used += 1
 
     def update_op_time(self, time1):
@@ -104,6 +109,7 @@ binary_3_time = Time()
 binary_4_time = Time()
 binary_5_time = Time()
 binary_6_time = Time()
+binary_7_time = Time()
 relu_time = Time()
 affine_time = Time()
 l_time = Time()
@@ -113,7 +119,6 @@ check_time = Time()
 
 squeeze_time = Time()
 sanity_time = Time()
-new_sanity_time = Time()
 sparse_tensor_init_time = Time()
 
 binary_profilier = OperationTime()
@@ -121,3 +126,35 @@ unary_profilier = OperationTime()
 equal_matmul_profilier = OperationTime()
 unequal_matmul_profilier = OperationTime()
 clamp_profilier = OperationTime()
+
+sparse_tensor_time = Time()
+
+
+binary_tensor_ops_expenses = Time()
+binary_tensor_ops_x_sparsity = Time()
+binary_tensor_ops_y_sparsity = Time()
+binary_tensor_ops_no_sparse = Time()
+total_binary_tensor_ops = Time()
+
+binary_sparse_tensor_expenses = Time()
+binary_sparse_tensor_dom2 = Time()
+binary_sparse_tensor_dom1 = Time()
+binary_sparse_tensor_overlap = Time()
+binary_sparse_tensor_overlap_expenses = Time()
+binary_sparse_tensor_dom1_expenses = Time()
+binary_sparse_tensor_dom2_expenses = Time()
+total_binary_sparse_tensor = Time()
+
+binary_sparse_tensor_count = Time()
+binary_block_level_tensor_count = Time()
+
+binary_block_expenses = Time()
+
+binary_fixed_costs = Time()
+
+
+matmul_tensor_ops = Time()
+matmul_tensor_ops_expenses = Time()
+matmul_sparse_tensor_expenses = Time()
+matmul_block_all= Time()
+matmul_block_op = Time()
