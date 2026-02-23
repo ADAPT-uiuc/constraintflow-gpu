@@ -19,9 +19,43 @@ debug_flag2 = Flag()
 debug_flag3 = Flag()
 debug_flag4 = Flag()
 dummy_mode = Flag()
-# dummy_mode.set_flag()
-baseline_gpu_mode = Flag()
-# baseline_gpu_mode.set_flag()
+
+class DeviceMode:
+    _DEVICE_MAP = {
+        'cpu':    'cpu',
+        'gpu':    'cuda',
+        'gpumac': 'mps',
+    }
+
+    def __init__(self):
+        self._device = 'cpu'
+
+    def set_cpu(self):
+        self._device = 'cpu'
+
+    def set_gpu(self):
+        self._device = 'cuda'
+
+    def set_gpumac(self):
+        self._device = 'mps'
+
+    def set_mode(self, mode: str):
+        if mode not in self._DEVICE_MAP:
+            raise ValueError(f"Unknown device mode '{mode}'. Choose from: {list(self._DEVICE_MAP)}")
+        self._device = self._DEVICE_MAP[mode]
+
+    def get_device(self) -> str:
+        return self._device
+
+    def is_accelerated(self) -> bool:
+        return self._device != 'cpu'
+
+    def sync(self):
+        if self._device == 'cuda':
+            import torch
+            torch.cuda.synchronize()
+
+device_mode = DeviceMode()
 
 class OperationTime():
     def __init__(self):
@@ -96,38 +130,17 @@ get_sparse_range_time = Time()
 reduce_size_time = Time()
 filter_non_live_time = Time()
 union_tensors_time = Time()
-mat_to_patches_time = Time()
 patches_to_mat_time = Time()
-union_tensors_time = Time()
 sub_block_custom_range_time = Time()
-fixed_cost1 = Time()
-fixed_cost2 = Time()
-fixed_cost3 = Time()
-binary_1_time = Time()
-binary_2_time = Time()
-binary_3_time = Time()
-binary_4_time = Time()
-binary_5_time = Time()
-binary_6_time = Time()
-binary_7_time = Time()
-relu_time = Time()
-affine_time = Time()
-l_time = Time()
-u_time = Time()
-mult_time = Time()
-check_time = Time()
-
 squeeze_time = Time()
 sanity_time = Time()
 sparse_tensor_init_time = Time()
-
 binary_profilier = OperationTime()
 unary_profilier = OperationTime()
 equal_matmul_profilier = OperationTime()
 unequal_matmul_profilier = OperationTime()
 clamp_profilier = OperationTime()
 
-sparse_tensor_time = Time()
 
 
 binary_tensor_ops_expenses = Time()

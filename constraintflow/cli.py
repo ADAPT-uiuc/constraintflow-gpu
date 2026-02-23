@@ -14,56 +14,8 @@ from constraintflow.verifier.provesound import provesound as _provesound
 app = typer.Typer(help="ConstraintFlow CLI for verification and compilation of DSL programs.")
 
 
-
-def binary(total_time, filename):
-    round_num = 5
-    all_expenses_time = (
-        binary_sparse_tensor_expenses.get_total_time()
-        + binary_sparse_tensor_overlap_expenses.get_total_time()
-        + binary_sparse_tensor_dom1_expenses.get_total_time()
-        + binary_sparse_tensor_dom2_expenses.get_total_time()
-        + binary_block_expenses.get_total_time()
-        - binary_profilier.get_total_time()
-        + binary_tensor_ops_expenses.get_total_time()
-    )
-    total_binary_time = total_binary_tensor_ops.get_total_time() - binary_tensor_ops_no_sparse.get_total_time() - binary_fixed_costs.get_total_time()
-    rows = [
-        ["Total Time", total_time, 1],
-        ["total_binary_tensor_ops", round(total_binary_time,round_num), total_binary_tensor_ops.num_used],
-        ["binary_tensor_ops_expenses", round(binary_tensor_ops_expenses.get_total_time(),round_num), binary_tensor_ops_expenses.num_used],
-        ["binary_tensor_ops_x_sparsity", round(binary_tensor_ops_x_sparsity.get_total_time(),round_num), binary_tensor_ops_x_sparsity.num_used],
-        ["binary_tensor_ops_y_sparsity", round(binary_tensor_ops_y_sparsity.get_total_time(),round_num), binary_tensor_ops_y_sparsity.num_used],
-        ["binary_tensor_ops_no_sparse", round(binary_tensor_ops_no_sparse.get_total_time(),round_num), binary_tensor_ops_no_sparse.num_used],
-        ["total_binary_sparse_tensor", round(total_binary_sparse_tensor.get_total_time(),round_num), total_binary_sparse_tensor.num_used],
-        ["binary_sparse_tensor_expenses", round(binary_sparse_tensor_expenses.get_total_time(),round_num), binary_sparse_tensor_expenses.num_used],
-        ["binary_sparse_tensor_dom2", round(binary_sparse_tensor_dom2.get_total_time(),round_num), binary_sparse_tensor_dom2.num_used],
-        ["binary_sparse_tensor_dom1", round(binary_sparse_tensor_dom1.get_total_time(),round_num), binary_sparse_tensor_dom1.num_used],
-        ["binary_sparse_tensor_overlap", round(binary_sparse_tensor_overlap.get_total_time(),round_num), binary_sparse_tensor_overlap.num_used],
-        ["binary_sparse_tensor_overlap_expenses", round(binary_sparse_tensor_overlap_expenses.get_total_time(),round_num), binary_sparse_tensor_overlap_expenses.num_used],
-        ["binary_sparse_tensor_dom1_expenses", round(binary_sparse_tensor_dom1_expenses.get_total_time(),round_num), binary_sparse_tensor_dom1_expenses.num_used],
-        ["binary_sparse_tensor_dom2_expenses", round(binary_sparse_tensor_dom2_expenses.get_total_time(),round_num), binary_sparse_tensor_dom2_expenses.num_used],
-        ["binary_profilier", round(binary_profilier.get_total_time(),round_num), binary_profilier.get_num_ops()],
-        ["binary_block_expenses", round(binary_block_expenses.get_total_time(),round_num), binary_block_expenses.num_used],
-        ["all_expenses", round(all_expenses_time, round_num), -1],
-        ["expenses_percentage", round((all_expenses_time/total_binary_time)*100), -1],
-        ["block_operations_percentage", round((binary_profilier.get_total_time()/total_binary_time)*100), -1],
-    ]
-
-    from anytree import Node, RenderTree
-    binary_tensor_ops_node = Node(f"binary_tensor_ops {total_binary_tensor_ops.num_used} ")
-    binary_tensor_both_sparsity_node = Node(f"binary_tensor_ops_x&y {binary_tensor_ops_x_sparsity.num_used+binary_tensor_ops_y_sparsity.num_used}", parent=binary_tensor_ops_node)
-    binary_tensor_ops_no_sparse_node = Node(f"binary_tensor_ops_no_sparse {binary_tensor_ops_no_sparse.num_used}", parent=binary_tensor_ops_node)
-    binary_sparse_tensor_dom1_node = Node(f"binary_sparse_tensor_dom1 {binary_sparse_tensor_dom1.num_used}", parent=binary_tensor_both_sparsity_node)
-    binary_sparse_tensor_dom2_node = Node(f"binary_sparse_tensor_dom2 {binary_sparse_tensor_dom2.num_used}", parent=binary_tensor_both_sparsity_node)
-    binary_sparse_tensor_overlap_node = Node(f"binary_sparse_tensor_overlap {binary_sparse_tensor_overlap.num_used}", parent=binary_tensor_both_sparsity_node)
-    assert(binary_sparse_tensor_count.num_used == (binary_tensor_ops_x_sparsity.num_used + binary_tensor_ops_y_sparsity.num_used))
-    from anytree.exporter import UniqueDotExporter
-    for pre, fill, node in RenderTree(binary_tensor_ops_node):
-        print("%s%s" % (pre, node.name))
-    with open(filename, mode="w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["Operations","Total_Time", "Num_Ops"])
-        writer.writerows(rows)
+ 
+    
 
 # --------------------------
 # Utility Functions
@@ -193,7 +145,7 @@ def run(
     train: bool = typer.Option(False, help="Run on training dataset"),
     print_intermediate_results: bool = typer.Option(False, help="Print intermediate results"),
     no_sparsity: bool = typer.Option(False, help="Disable sparsity optimizations"),
-    gpu: bool = typer.Option(False, "--gpu/--no-gpu", help="Enable GPU execution path"),
+    device: str = typer.Option("cpu", help="Device mode: cpu, gpu (CUDA), or gpumac (Apple MPS)"),
     output_path: str = typer.Option("output/", help="Path where compiled program is stored"),
     compile: bool = typer.Option(False, help="Run compilation before execution"),
 ):
@@ -209,11 +161,19 @@ def run(
     if compile:
         compile_code(program_file, output_path)
 
-    if gpu:
-        if not torch.cuda.is_available():
-            typer.echo("Error: --gpu was provided but CUDA is not available in this environment.")
-            raise typer.Exit(code=1)
-        baseline_gpu_mode.set_flag()
+    valid_devices = {"cpu", "gpu", "gpumac"}
+    if device not in valid_devices:
+        typer.echo(f"Error: unknown device '{device}'. Choose from: {sorted(valid_devices)}")
+        raise typer.Exit(code=1)
+    if device == "gpu" and not torch.cuda.is_available():
+        typer.echo("Error: device='gpu' requested but CUDA is not available.")
+        raise typer.Exit(code=1)
+    if device == "gpumac" and not torch.backends.mps.is_available():
+        typer.echo("Error: device='gpumac' requested but MPS is not available.")
+        raise typer.Exit(code=1)
+    device_mode.set_mode(device)
+
+    
         
     sys.path.insert(0, os.path.abspath(output_path))
     from main import run  # compiled code provides this
@@ -235,11 +195,16 @@ def run(
     )
     end_time = time.perf_counter()
     total_time = end_time - start_time
-    filename = network_file.split('/')[-1]+f'_{dataset}_cpu.csv'
-    if gpu:
-        filename = network_file.split('/')[-1]+f'_{dataset}_gpu.csv'
+
+    typer.echo(f"Lower bounds: {lb}")
+    typer.echo(f"Upper bounds: {ub}")
+    if eps == 0:
+        assert(lb == ub).all(), "Bounds should be equal when eps=0"
+
+    filename = network_file.split('/')[-1] + f'_{dataset}_{device}.csv'
     
     typer.echo(f"Total time: {total_time:.2f} seconds")
+    typer.echo("Matmul Statistics")
     typer.echo(f"Total Matmul Time: {round(matmul_tensor_ops.get_total_time(), 5)} seconds")
     typer.echo(f"Matmul Expenses Time: {round((matmul_tensor_ops_expenses.get_total_time()+matmul_sparse_tensor_expenses.get_total_time()+unequal_matmul_profilier.get_total_time()+equal_matmul_profilier.get_total_time()-unequal_matmul_profilier.get_actual_op_time()-equal_matmul_profilier.get_actual_op_time()), 5)} seconds")
     typer.echo(f"Matmul Actual Op Time: {round((unequal_matmul_profilier.get_actual_op_time()+equal_matmul_profilier.get_actual_op_time()), 5)} seconds")
@@ -247,6 +212,28 @@ def run(
     typer.echo(f'Total Clamp Time: {round(clamp_total_time.get_total_time(), 5)} seconds')
     typer.echo(f'Clamp Expense Time: {round(clamp_const_block_expense.get_total_time() + clamp_sparse_block_expense.get_total_time() + clamp_repeat_block_expense.get_total_time(), 5)} seconds')
     typer.echo(f'Clamp Actual Op Time: {round(clamp_sparse_block_op_time.get_total_time() + clamp_repeat_block_op_time.get_total_time() + clamp_const_block_op_time.get_total_time(), 5)} seconds')
+    percentage_matmul_operator_time = round(((unequal_matmul_profilier.get_actual_op_time() + equal_matmul_profilier.get_actual_op_time()) / matmul_tensor_ops.get_total_time()) * 100, 5)
+    percentage_matmul_expenses_time = round(((matmul_tensor_ops_expenses.get_total_time() + matmul_sparse_tensor_expenses.get_total_time() + unequal_matmul_profilier.get_total_time() + equal_matmul_profilier.get_total_time() - unequal_matmul_profilier.get_actual_op_time() - equal_matmul_profilier.get_actual_op_time()) / matmul_tensor_ops.get_total_time()) * 100, 5)
+    typer.echo(f"Percentage Matmul Operator Time: {percentage_matmul_operator_time}%")
+    typer.echo(f"Percentage Matmul Expenses Time: {percentage_matmul_expenses_time}%")
+
+    round_num = 5
+    all_expenses_time = (
+        binary_sparse_tensor_expenses.get_total_time()
+        + binary_sparse_tensor_overlap_expenses.get_total_time()
+        + binary_sparse_tensor_dom1_expenses.get_total_time()
+        + binary_sparse_tensor_dom2_expenses.get_total_time()
+        + binary_block_expenses.get_total_time()
+        - binary_profilier.get_total_time()
+        + binary_tensor_ops_expenses.get_total_time()
+    )
+    total_binary_time = total_binary_tensor_ops.get_total_time() - binary_tensor_ops_no_sparse.get_total_time() - binary_fixed_costs.get_total_time()
+
+    percentage_binary_operator_time = round((binary_profilier.get_total_time() / total_binary_time) * 100, round_num)
+    percentage_binary_transfer_time = round((all_expenses_time / total_binary_time) * 100, round_num)
+    typer.echo(f"Percentage Binary Operator Time: {percentage_binary_operator_time}%")
+    typer.echo(f"Percentage Binary Expenses Time: {percentage_binary_transfer_time}%")
+
 
 
 def main():
