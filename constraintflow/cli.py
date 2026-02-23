@@ -201,39 +201,103 @@ def run(
     if eps == 0:
         assert(lb == ub).all(), "Bounds should be equal when eps=0"
 
-    filename = network_file.split('/')[-1] + f'_{dataset}_{device}.csv'
+    # filename = network_file.split('/')[-1] + f'_{dataset}_{device}.csv'
+    # typer.echo(f"Total time: {total_time:.2f} seconds")
+    # typer.echo("Matmul Statistics")
+    # typer.echo(f"Total Matmul Time: {round(matmul_tensor_ops.get_total_time(), 5)} seconds")
+    # typer.echo(f"Matmul Expenses Time: {round((matmul_tensor_ops_expenses.get_total_time()+matmul_sparse_tensor_expenses.get_total_time()+unequal_matmul_profilier.get_total_time()+equal_matmul_profilier.get_total_time()-unequal_matmul_profilier.get_actual_op_time()-equal_matmul_profilier.get_actual_op_time()), 5)} seconds")
+    # typer.echo(f"Matmul Actual Op Time: {round((unequal_matmul_profilier.get_actual_op_time()+equal_matmul_profilier.get_actual_op_time()), 5)} seconds")
+
+    # percentage_matmul_operator_time = round(((unequal_matmul_profilier.get_actual_op_time() + equal_matmul_profilier.get_actual_op_time()) / matmul_tensor_ops.get_total_time()) * 100, 5)
+    # percentage_matmul_expenses_time = round(((matmul_tensor_ops_expenses.get_total_time() + matmul_sparse_tensor_expenses.get_total_time() + unequal_matmul_profilier.get_total_time() + equal_matmul_profilier.get_total_time() - unequal_matmul_profilier.get_actual_op_time() - equal_matmul_profilier.get_actual_op_time()) / matmul_tensor_ops.get_total_time()) * 100, 5)
+    # typer.echo(f"Percentage Matmul Operator Time: {percentage_matmul_operator_time}%")
+    # typer.echo(f"Percentage Matmul Expenses Time: {percentage_matmul_expenses_time}%")
+    # assert(percentage_matmul_operator_time + percentage_matmul_expenses_time <= 100.0), "Percentages should sum to at most 100%"
+
+    # round_num = 5
+    # all_expenses_time = (
+    #     binary_sparse_tensor_expenses.get_total_time()
+    #     + binary_sparse_tensor_overlap_expenses.get_total_time()
+    #     + binary_sparse_tensor_dom1_expenses.get_total_time()
+    #     + binary_sparse_tensor_dom2_expenses.get_total_time()
+    #     + binary_block_expenses.get_total_time()
+    #     - binary_profilier.get_total_time()
+    #     + binary_tensor_ops_expenses.get_total_time()
+    # )
+    # total_binary_time = total_binary_tensor_ops.get_total_time() - binary_tensor_ops_no_sparse.get_total_time() - binary_fixed_costs.get_total_time()
+
+    # percentage_binary_operator_time = round((binary_profilier.get_total_time() / total_binary_time) * 100, round_num)
+    # percentage_binary_transfer_time = round((all_expenses_time / total_binary_time) * 100, round_num)
+    # typer.echo(f"Percentage Binary Operator Time: {percentage_binary_operator_time}%")
+    # typer.echo(f"Percentage Binary Expenses Time: {percentage_binary_transfer_time}%")
+    # assert(percentage_binary_operator_time + percentage_binary_transfer_time <= 100.0), "Percentages should sum to at most 100%"
+
+    # typer.echo(f'Total Clamp Time: {round(clamp_total_time.get_total_time(), 5)} seconds')
+    # typer.echo(f'Clamp Expense Time: {round(clamp_const_block_expense.get_total_time() + clamp_sparse_block_expense.get_total_time() + clamp_repeat_block_expense.get_total_time(), 5)} seconds')
+    # typer.echo(f'Clamp Actual Op Time: {round(clamp_sparse_block_op_time.get_total_time() + clamp_repeat_block_op_time.get_total_time() + clamp_const_block_op_time.get_total_time(), 5)} seconds')
     
+    # percentage_clamp_operator_time = round(((clamp_sparse_block_op_time.get_total_time() + clamp_repeat_block_op_time.get_total_time() + clamp_const_block_op_time.get_total_time()) / clamp_total_time.get_total_time()) * 100, 5)
+    # percentage_clamp_expenses_time = round(((clamp_const_block_expense.get_total_time() + clamp_sparse_block_expense.get_total_time() + clamp_repeat_block_expense.get_total_time()) / clamp_total_time.get_total_time()) * 100, 5)
+    # typer.echo(f'Percentage Clamp Operator Time: {percentage_clamp_operator_time}%')
+    # typer.echo(f'Percentage Clamp Expenses Time: {percentage_clamp_expenses_time}%')
+    # assert(percentage_clamp_operator_time + percentage_clamp_expenses_time <= 100.0), "Percentages should sum to at most 100%"
+
+    base = network_file.split('/')[-1] + f'_{dataset}_{device}'
+
+    # ── derived quantities ────────────────────────────────────────────────
+    matmul_total    = matmul_tensor_ops.get_total_time()
+    matmul_actual   = unequal_matmul_profilier.get_actual_op_time() + equal_matmul_profilier.get_actual_op_time()
+    matmul_expenses = (matmul_tensor_ops_expenses.get_total_time()
+                       + matmul_sparse_tensor_expenses.get_total_time()
+                       + unequal_matmul_profilier.get_total_time()
+                       + equal_matmul_profilier.get_total_time()
+                       - matmul_actual)
+
+    binary_total    = (total_binary_tensor_ops.get_total_time()
+                       - binary_tensor_ops_no_sparse.get_total_time()
+                       - binary_fixed_costs.get_total_time())
+    binary_actual   = binary_profilier.get_total_time()
+    binary_expenses = (binary_sparse_tensor_expenses.get_total_time()
+                       + binary_sparse_tensor_overlap_expenses.get_total_time()
+                       + binary_sparse_tensor_dom1_expenses.get_total_time()
+                       + binary_sparse_tensor_dom2_expenses.get_total_time()
+                       + binary_block_expenses.get_total_time()
+                       - binary_actual
+                       + binary_tensor_ops_expenses.get_total_time())
+
+    clamp_total    = clamp_total_time.get_total_time()
+    clamp_actual   = (clamp_sparse_block_op_time.get_total_time()
+                      + clamp_repeat_block_op_time.get_total_time()
+                      + clamp_const_block_op_time.get_total_time())
+    clamp_expenses = (clamp_const_block_expense.get_total_time()
+                      + clamp_sparse_block_expense.get_total_time()
+                      + clamp_repeat_block_expense.get_total_time())
+
+    # ── raw times ─────────────────────────────────────────────────────────
+    raw_file = 'stats/' + base + '_stats_raw.csv'
+    with open(raw_file, mode='w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Operation', 'Total_Time', 'Expenses_Time', 'Actual_Op_Time'])
+        writer.writerow(['Total',  round(total_time,    5), '-', '-'])
+        writer.writerow(['Matmul', round(matmul_total,  5), round(matmul_expenses,  5), round(matmul_actual,  5)])
+        writer.writerow(['Binary', round(binary_total,  5), round(binary_expenses,  5), round(binary_actual,  5)])
+        writer.writerow(['Clamp',  round(clamp_total,   5), round(clamp_expenses,   5), round(clamp_actual,   5)])
+
+    # ── percentages ───────────────────────────────────────────────────────
+    def safe_pct(numerator, denominator):
+        return round((numerator / denominator) * 100, 5) if denominator else 0.0
+
+    pct_file = 'stats/' + base + '_stats_pct.csv'
+    with open(pct_file, mode='w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Operation', 'Pct_Operator_Time', 'Pct_Expenses_Time'])
+        writer.writerow(['Matmul', safe_pct(matmul_actual,  matmul_total), safe_pct(matmul_expenses,  matmul_total)])
+        writer.writerow(['Binary', safe_pct(binary_actual,  binary_total), safe_pct(binary_expenses,  binary_total)])
+        writer.writerow(['Clamp',  safe_pct(clamp_actual,   clamp_total),  safe_pct(clamp_expenses,   clamp_total)])
+
     typer.echo(f"Total time: {total_time:.2f} seconds")
-    typer.echo("Matmul Statistics")
-    typer.echo(f"Total Matmul Time: {round(matmul_tensor_ops.get_total_time(), 5)} seconds")
-    typer.echo(f"Matmul Expenses Time: {round((matmul_tensor_ops_expenses.get_total_time()+matmul_sparse_tensor_expenses.get_total_time()+unequal_matmul_profilier.get_total_time()+equal_matmul_profilier.get_total_time()-unequal_matmul_profilier.get_actual_op_time()-equal_matmul_profilier.get_actual_op_time()), 5)} seconds")
-    typer.echo(f"Matmul Actual Op Time: {round((unequal_matmul_profilier.get_actual_op_time()+equal_matmul_profilier.get_actual_op_time()), 5)} seconds")
-
-    typer.echo(f'Total Clamp Time: {round(clamp_total_time.get_total_time(), 5)} seconds')
-    typer.echo(f'Clamp Expense Time: {round(clamp_const_block_expense.get_total_time() + clamp_sparse_block_expense.get_total_time() + clamp_repeat_block_expense.get_total_time(), 5)} seconds')
-    typer.echo(f'Clamp Actual Op Time: {round(clamp_sparse_block_op_time.get_total_time() + clamp_repeat_block_op_time.get_total_time() + clamp_const_block_op_time.get_total_time(), 5)} seconds')
-    percentage_matmul_operator_time = round(((unequal_matmul_profilier.get_actual_op_time() + equal_matmul_profilier.get_actual_op_time()) / matmul_tensor_ops.get_total_time()) * 100, 5)
-    percentage_matmul_expenses_time = round(((matmul_tensor_ops_expenses.get_total_time() + matmul_sparse_tensor_expenses.get_total_time() + unequal_matmul_profilier.get_total_time() + equal_matmul_profilier.get_total_time() - unequal_matmul_profilier.get_actual_op_time() - equal_matmul_profilier.get_actual_op_time()) / matmul_tensor_ops.get_total_time()) * 100, 5)
-    typer.echo(f"Percentage Matmul Operator Time: {percentage_matmul_operator_time}%")
-    typer.echo(f"Percentage Matmul Expenses Time: {percentage_matmul_expenses_time}%")
-
-    round_num = 5
-    all_expenses_time = (
-        binary_sparse_tensor_expenses.get_total_time()
-        + binary_sparse_tensor_overlap_expenses.get_total_time()
-        + binary_sparse_tensor_dom1_expenses.get_total_time()
-        + binary_sparse_tensor_dom2_expenses.get_total_time()
-        + binary_block_expenses.get_total_time()
-        - binary_profilier.get_total_time()
-        + binary_tensor_ops_expenses.get_total_time()
-    )
-    total_binary_time = total_binary_tensor_ops.get_total_time() - binary_tensor_ops_no_sparse.get_total_time() - binary_fixed_costs.get_total_time()
-
-    percentage_binary_operator_time = round((binary_profilier.get_total_time() / total_binary_time) * 100, round_num)
-    percentage_binary_transfer_time = round((all_expenses_time / total_binary_time) * 100, round_num)
-    typer.echo(f"Percentage Binary Operator Time: {percentage_binary_operator_time}%")
-    typer.echo(f"Percentage Binary Expenses Time: {percentage_binary_transfer_time}%")
-
+    typer.echo(f"Raw stats written to:        {raw_file}")
+    typer.echo(f"Percentage stats written to: {pct_file}")
 
 
 def main():
