@@ -298,6 +298,7 @@ def run(
     typer.echo(f"Total time: {total_time:.2f} seconds")
     typer.echo(f"Raw stats written to:        {raw_file}")
     typer.echo(f"Percentage stats written to: {pct_file}")
+    typer.echo(f'Stop condition time: {round(stop_condition_time.get_total_time(), 5)} seconds')
 
 
 def main():
