@@ -182,3 +182,5 @@ clamp_const_block_expense = Time()
 clamp_const_block_op_time = Time() # Should be 0, added for uniformity.
 clamp_repeat_block_expense = Time()
 clamp_repeat_block_op_time = Time()
+
+stop_condition_time = Time()
