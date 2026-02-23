@@ -12,6 +12,8 @@ class ImageDataset:
     mnist_std = torch.tensor([0.3081]).reshape(-1, 1)
     cifar10_mean = torch.tensor([0.4914, 0.4822, 0.4465]).reshape(1, -1, 1, 1)
     cifar10_std = torch.tensor([0.2023, 0.1994, 0.2010]).reshape(1, -1, 1, 1)
+    imagenet_mean = torch.tensor([0.485, 0.456, 0.406]).reshape(1, -1, 1, 1)
+    imagenet_std = torch.tensor([0.229, 0.224, 0.225]).reshape(1, -1, 1, 1)
     
     def __init__(self):
         pass
@@ -20,9 +22,13 @@ class ImageDataset:
         l = torch.clip(image - eps, min=0., max=1.)
         if dataset == 'mnist':
             l = (l - ImageDataset.mnist_mean) / ImageDataset.mnist_std
-        else:
+        elif dataset in ['cifar10', 'cifar']:
             mean = ImageDataset.cifar10_mean.expand(l.shape)
             std = ImageDataset.cifar10_std.expand(l.shape)
+            l = (l - mean) / std
+        elif dataset in ['tinyimagenet', 'imagenet']:
+            mean = ImageDataset.imagenet_mean.expand(l.shape)
+            std = ImageDataset.imagenet_std.expand(l.shape)
             l = (l - mean) / std
         l = l.reshape(batch_size,-1)
         l = create_sparse_init(l, float('-inf'), batch_size, network_size, no_sparsity)
@@ -32,12 +38,15 @@ class ImageDataset:
         u = torch.clip(image + eps, min=0., max=1.)
         if dataset == 'mnist':
             u = (u - ImageDataset.mnist_mean) / ImageDataset.mnist_std
-        else:
+        elif dataset in ['cifar10', 'cifar']:
             u = (u - ImageDataset.cifar10_mean) / ImageDataset.cifar10_std
+        elif dataset in ['tinyimagenet', 'imagenet']:
+            u = (u - ImageDataset.imagenet_mean) / ImageDataset.imagenet_std
         u = u.reshape(batch_size, -1)
         u = create_sparse_init(u, float('inf'), batch_size, network_size, no_sparsity)
         return u
     
+    # TODO: I think this function is not used?
     def get_dataset(data_name = '~/temp/constraintflow/data', n=1, train=False, mnist=True):
         transform = transforms.ToTensor()
         if mnist:
