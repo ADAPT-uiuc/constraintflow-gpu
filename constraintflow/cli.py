@@ -51,7 +51,7 @@ def get_dataset(batch_size: int, dataset: str, train: bool = False):
         if train:
             data = datasets.ImageFolder(root=data_dir, transform=transform)
             # -----
-            data = torch.utils.data.Subset(data, range(batch_size))
+            # data = torch.utils.data.Subset(data, range(batch_size))
             # -----
         else:
             # TinyImageNet test: all images in one folder
