@@ -41,7 +41,8 @@ def get_dataset(batch_size: int, dataset: str, train: bool = False):
     elif dataset == "tinyimagenet":
         train = True
         transform = transforms.Compose([
-            transforms.Resize((64, 64)),  # TinyImageNet images are 64x64
+            # But its onnx model expects 56x56, why?
+            transforms.Resize((56, 56)),  # TinyImageNet images are 64x64
             transforms.ToTensor(),
         ])
         root_dir = "tinyimagenet/tiny-imagenet-200"
@@ -49,6 +50,9 @@ def get_dataset(batch_size: int, dataset: str, train: bool = False):
         data_dir = os.path.join(root_dir, split)
         if train:
             data = datasets.ImageFolder(root=data_dir, transform=transform)
+            # -----
+            data = torch.utils.data.Subset(data, range(batch_size))
+            # -----
         else:
             # TinyImageNet test: all images in one folder
             from torchvision.datasets.folder import default_loader
