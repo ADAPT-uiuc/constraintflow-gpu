@@ -18,3 +18,4 @@ build/
 .venv/
 tinyimagenet/
 stats/
+test_model/
