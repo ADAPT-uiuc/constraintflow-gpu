@@ -147,5 +147,6 @@ def get_network_and_input_spec(network_file, batch_size, X, y, dataset, eps, tra
     L = create_L(l, network, batch_size, no_sparsity)
     U = create_U(u, network, batch_size, no_sparsity)
     Z = create_Z(l, u, network, no_sparsity)
+    # llist type: torch Tensor of bool
     llist = create_llist(network)
     return network, l, u, L, U, Z, llist
