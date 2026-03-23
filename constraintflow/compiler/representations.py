@@ -21,6 +21,7 @@ class Graph:
         self.nodes = []
         self.predecessors = {}
         self.successors = {}
+        # ir type: dict[int -> ir.IrBlock]
         self.ir = {}
         self.counter = 0
         self.entry_node = -1

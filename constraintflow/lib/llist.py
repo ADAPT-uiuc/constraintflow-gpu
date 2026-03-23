@@ -8,18 +8,26 @@ from constraintflow.gbcsr.sparse_tensor import SparseTensor
 
 class Llist:
     def __init__(self, network, initial_shape, start=None, end=None, llist=None):
+        # network type: lib.network.Network
         self.network = network
         self.initial_shape = initial_shape
         self.start = start
         self.end = end
+        # llist type: list[int]
+        # list of layers by their layer No. (index in `Network`, which is a
+        # list of `Layer`s)
         self.llist = llist
         self.llist_flag = True
         if llist==None:
             self.llist_flag = False
 
     def get_metadata(self, elem, batch_size):
+        # ---- Is this true, and why? ----
+        # Currently, get_metadata only supports consecutive intervals of
+        # layers. Must coalesce successfully first.
         self.coalesce()
         if not self.llist_flag:
+            # type of ret: list[gbscr.sparse_block.SparseBlock]
             ret = []
             start_indices = []
             temp = 0
@@ -98,6 +106,8 @@ class Llist:
     def coalesce(self):
         if not self.llist_flag:
             return True
+        # Can coalesce only if currently operated layers (llist) are
+        # consecutive.
         for i in range(len(self.llist)-1):
             if self.llist[i]!=self.llist[i+1]-1:
                 return False

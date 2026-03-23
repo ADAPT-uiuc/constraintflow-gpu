@@ -1,7 +1,10 @@
 from enum import Enum
+import inspect
 
+tp = type
 
 class Network(list):
+    # element type of this list: lib.network.Layer
     def __init__(self, net_name=None, input_name=None, input_shape=None, input_size = 0, input_start=0, input_end=0, num_layers=0, torch_net=None, net_format='torch', no_sparsity=False):  
         super().__init__()
         self.net_name = net_name
@@ -34,11 +37,22 @@ class Network(list):
 
 class Layer:
     def __init__(self, weight=None, bias=None, type=None, shape=None, start=None, end=None, size = 0, prev = {}, prev_weight = {}, mean = 0, sigma = 1, identifier = 0, parents = []):
+        # print(f'Layer construction'
+        #       f'shape: {shape}, start: {start}, end: {end}, size: {size}')
+        # caller_info = inspect.getframeinfo(inspect.currentframe().f_back)
+        # print(f'Called from {caller_info.filename}:{caller_info.lineno} in function {caller_info.function}')
         self.weight = weight
         self.bias = bias
-        self.type = type
+        # type of self.type: LayerType
+        self.type= type
+        # type of self.shape: list[int]
         self.shape = shape 
         self.size = size 
+        # start, end: All the *neurons* in the DNN are numbered using a unique
+        #   integer identifier.
+        # Each layer is a list of consecutive neurons.
+        # So start and end just encode that consecutive list.
+        # start, end type: int
         self.start = start
         self.end = end
         self.prev = prev 
@@ -47,6 +61,7 @@ class Layer:
         self.mean = mean
         self.sigma = sigma
         self.identifier = identifier
+        # parents type: list[int]
         self.parents = parents
         self.children = list()
         self.last_layer = False

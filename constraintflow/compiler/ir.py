@@ -1188,6 +1188,8 @@ class IrProgram(IrAst):
     def __init__(self, shape, tstore, fstore, irNodes):
         super().__init__()
         self.shape = shape
+        # tstore: map { certifier name -> list of abstract transformers of operators of this CF program }
+        # tstore type: dict[str -> list[IrOpStmt with elem: op, cfg]]
         self.tstore = tstore
         self.fstore = fstore
         self.irNodes = irNodes

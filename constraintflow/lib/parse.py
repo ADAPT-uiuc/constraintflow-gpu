@@ -30,6 +30,8 @@ def get_net(net_name, spec_weight, spec_bias, no_sparsity):
     net_format = get_net_format(net_name)
     if net_format == 'onnx':
         net_onnx = onnx.load(net_name)
+        # net type: constraintflow.lib.network.Network (inherits list)
+        # net element type: constraintflow.lib.network.Layer
         net = parse_onnx_layers(net_onnx, spec_weight, spec_bias, no_sparsity)
     else:
         raise ValueError("Unsupported net format!")
