@@ -30,6 +30,10 @@ def operation(x, y, op):
     start_time = time.perf_counter()
     # if baseline_gpu_mode:
     #    torch.cuda.synchronize()
+    if isinstance(x, DummyBlock):
+        assert isinstance(y, DummyBlock)
+        return x.copy()
+    # print(f'{type(x)} {type(y)} {x.device} {y.device}')
     z = op(x, y)
     # if baseline_gpu_mode:
         # torch.cuda.synchronize()
@@ -1419,8 +1423,8 @@ class DummyBlock:
         return self
 
 
-def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock):
-    if dummy_mode:
+def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=False):
+    if dummy_mode or dummy:
         return DummyBlock(None,y.total_shape.clone())
     if isinstance(x, ConstBlock):
         if x.block:

@@ -1,6 +1,8 @@
 from enum import Enum
 import inspect
 
+import torch
+
 tp = type
 
 class Network(list):
@@ -10,10 +12,12 @@ class Network(list):
         self.net_name = net_name
         self.input_name = input_name
         self.input_shape = input_shape
+        # input_size == the product of all elements in input_shape
         self.input_size = input_size
         self.size = 0
         self.input_start = input_start
         self.input_end = input_end
+        # Why num_layers != length of this list?
         self.num_layers = num_layers
         self.torch_net = torch_net
         self.net_format = net_format 
@@ -42,6 +46,7 @@ class Layer:
         # caller_info = inspect.getframeinfo(inspect.currentframe().f_back)
         # print(f'Called from {caller_info.filename}:{caller_info.lineno} in function {caller_info.function}')
         self.weight = weight
+        # type of self.bias: torch.Tensor
         self.bias = bias
         # type of self.type: LayerType
         self.type= type

@@ -7,9 +7,13 @@ from constraintflow.gbcsr.sparse_block import DenseBlock, KernelBlock, ConstBloc
 from constraintflow.gbcsr.sparse_tensor import SparseTensor
 
 class Llist:
+    """List of layers."""
     def __init__(self, network, initial_shape, start=None, end=None, llist=None):
         # network type: lib.network.Network
         self.network = network
+        # Is this understanding correct:
+        # initial_shape is the prefixing dimensions for structural/shape
+        # convenience, like batching dimensions?
         self.initial_shape = initial_shape
         self.start = start
         self.end = end
@@ -21,7 +25,13 @@ class Llist:
         if llist==None:
             self.llist_flag = False
 
-    def get_metadata(self, elem, batch_size):
+    def get_metadata(self, elem, batch_size, dummy: bool=False):
+        """
+        Metadata is neural network-specific information.
+        Not certifier-specific information.
+        """
+        if dummy:
+            return self.get_metadata_dummy(elem, batch_size)
         # ---- Is this true, and why? ----
         # Currently, get_metadata only supports consecutive intervals of
         # layers. Must coalesce successfully first.
@@ -77,6 +87,8 @@ class Llist:
                     start_indices.append(start_index)
                     temp += self.network[k].size
                 elif elem == 'layer':
+                    # When elem == 'layer', give the layer number of the layer
+                    #   which the neuron belongs to.
                     # block = DenseBlock(torch.ones(self.network[k].size, dtype=int)*k)
                     block = ConstBlock(k, torch.tensor([self.network[k].size]))
                     for i in range(len(self.initial_shape)):
@@ -86,9 +98,99 @@ class Llist:
                     start_indices.append(start_index)
                     temp += self.network[k].size
                 elif elem == 'last_layer':
+                    # When elem == 'last_layer', give whether the neuron
+                    #   belongs to the last layer or not.
                     # block = DenseBlock(torch.ones(self.network[k].size, dtype=int)*k)
                     mat = (k == len(self.network)-1)
                     block = ConstBlock(int(mat), torch.tensor([self.network[k].size]))
+                    for i in range(len(self.initial_shape)):
+                        block = block.unsqueeze(0)
+                    ret.append(block)
+                    start_index = torch.tensor([0]*len(self.initial_shape) + [temp])
+                    start_indices.append(start_index)
+                    temp += self.network[k].size
+                else:
+                    raise NotImplementedError
+            total_shape = start_indices[-1] + ret[-1].total_shape
+            dim = len(total_shape)
+            return SparseTensor(start_indices, ret, dim, total_shape)
+        else:
+            raise NotImplementedError
+    
+    def get_metadata_dummy(self, elem, batch_size):
+        """
+        Compile-time counterpart of `get_metadata`.
+        All sparse blocks replaced with dummy blocks.
+        Shape information
+        """
+        self.coalesce()
+        if not self.llist_flag:
+            # type of ret: list[gbscr.sparse_block.SparseBlock]
+            ret = []
+            start_indices = []
+            temp = 0
+            for k in range(self.start, self.end):
+                if elem == 'weight' or elem == 'w':
+                    if self.network[k].type == LayerType.Linear:
+                        block = DummyBlock(None, torch.tensor(self.network[k].weight.shape))
+                        if not self.network[k].last_layer:
+                            for i in range(len(self.initial_shape)):
+                                block = block.unsqueeze(0)
+                            repeat_dims = [batch_size]
+                            for i in range(len(block.total_shape)-1):
+                                repeat_dims.append(1)
+                            repeat_dims = torch.tensor(repeat_dims)
+                            block = block.repeat(repeat_dims)
+                        ret.append(block)
+                        start_index = torch.tensor([0]*len(self.initial_shape) + [temp, 0])
+                        start_indices.append(start_index)
+                        temp += self.network[k].weight.shape[0]
+                    elif self.network[k].type == LayerType.Conv2D:
+                        ix, iy = self.network[self.network[k].parents[0]].shape[-2:]
+                        ox, oy = self.network[k].shape[-2:]
+                        sx, sy = self.network[k].stride
+                        px, py = self.network[k].padding
+                        block = DummyBlock(None, torch.tensor([self.network[k].size, self.network[self.network[k].parents[0]].size]))
+                        if self.network.no_sparsity:
+                            block = DummyBlock(None, torch.tensor(block.get_dense().squeeze(0).shape))
+                        for i in range(len(self.initial_shape)):
+                            block = block.unsqueeze(0)
+                        repeat_dims = [batch_size]
+                        for i in range(len(block.total_shape)-1):
+                            repeat_dims.append(1)
+                        repeat_dims = torch.tensor(repeat_dims)
+                        block = block.repeat(repeat_dims)
+                        ret.append(block)
+                        start_index = torch.tensor([0]*len(self.initial_shape) + [temp, 0])
+                        start_indices.append(start_index)
+                        temp += self.network[k].size
+                    else:
+                        raise NotImplementedError
+                elif elem == 'bias' or elem == 'b':
+                    block = DummyBlock(None, torch.tensor(self.network[k].bias.shape))
+                    for i in range(len(self.initial_shape)):
+                        block = block.unsqueeze(0)
+                    ret.append(block)
+                    start_index = torch.tensor([0]*len(self.initial_shape) + [temp])
+                    start_indices.append(start_index)
+                    temp += self.network[k].size
+                elif elem == 'layer':
+                    # When elem == 'layer', give the layer number of the layer
+                    #   which the neuron belongs to.
+                    # block = DenseBlock(torch.ones(self.network[k].size, dtype=int)*k)
+                    block = DummyBlock(None, torch.tensor([self.network[k].size]))
+                    for i in range(len(self.initial_shape)):
+                        block = block.unsqueeze(0)
+                    ret.append(block)
+                    start_index = torch.tensor([0]*len(self.initial_shape) + [temp])
+                    start_indices.append(start_index)
+                    temp += self.network[k].size
+                elif elem == 'last_layer':
+                    # When elem == 'last_layer', give whether the neuron
+                    #   belongs to the last layer or not.
+                    # block = DenseBlock(torch.ones(self.network[k].size, dtype=int)*k)
+                    mat = (k == len(self.network)-1)
+                    block = DummyBlock(None, torch.tensor([self.network[k].size]))
                     for i in range(len(self.initial_shape)):
                         block = block.unsqueeze(0)
                     ret.append(block)
