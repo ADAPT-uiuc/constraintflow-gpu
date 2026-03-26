@@ -15,6 +15,7 @@ import time
 class Flow:
     def __init__(self, abs_elem: Abs_elem_sparse, transformer, model: Network, print_intermediate_results=False, no_sparsity=False):
         self.abs_elem = abs_elem 
+        # type of self.transformer: generated abstract transformer.
         self.transformer = transformer 
         self.model = model
         self.input_size = model.input_size

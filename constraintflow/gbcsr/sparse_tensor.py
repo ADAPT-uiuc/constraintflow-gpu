@@ -397,8 +397,8 @@ Blocks Types: "
         self.total_size[-1] = symexp_count
         return self
 
-    def get_dense(self):
-        if dummy_mode:
+    def get_dense(self, dummy: bool=False):
+        if dummy_mode or dummy:
             return torch.empty(tuple(self.total_size.tolist()), device="meta")
         res = torch.ones(list(self.total_size), dtype=self.type)*self.dense_const
         for i in range(self.num_blocks):
@@ -704,7 +704,9 @@ Blocks Types: "
         return SparseTensor(self.start_indices, blocks, self.dims, self.total_size, end_indices=self.end_indices, type=self.type, dense_const=dense_const)
     
 
-    def binary(self, sp_tensor, op):
+    def binary(self, sp_tensor, op, dummy: bool=False):
+        # if dummy:
+        #     ConstBlock = DummyBlock
         binary_sparse_tensor_count.update_num_used()
         total_start_time = time.perf_counter()
         if op not in all_ops:
@@ -784,7 +786,7 @@ Blocks Types: "
                 binary_sparse_tensor_overlap.update_total_time(time.perf_counter()-start_time)
             
             start = time.perf_counter()
-            if isinstance(block, ConstBlock) and block.block == dense_const:
+            if (not dummy) and isinstance(block, ConstBlock) and block.block == dense_const:
                 binary_fixed_costs.update_total_time(time.perf_counter()-start)
                 continue
             res_blocks.append(block)

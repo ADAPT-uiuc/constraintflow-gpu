@@ -211,6 +211,8 @@ def parse_onnx_layers(net, spec_weight, spec_bias, no_sparsity):
 
 
         else:
+            # Some layers are skipped and regarded as identity?
+            # How can soundness still hold then?
             if len(net.graph.node[cur_layer].input)>0:
                 if str(net.graph.node[cur_layer].input[0]) in names_hash:
                     names_hash[str(net.graph.node[cur_layer].output[0])] = names_hash[str(net.graph.node[cur_layer].input[0])]
