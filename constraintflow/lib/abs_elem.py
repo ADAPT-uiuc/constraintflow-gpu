@@ -3,6 +3,7 @@ import copy
 from constraintflow.lib.polyexp import *
 from constraintflow.lib.symexp import *
 from constraintflow.lib.llist import Llist
+from constraintflow.lib.globals import dummy_mode
 
 class Abs_elem_sparse:
     def __init__(self, d, types, network, batch_size=1, no_sparsity=False):
@@ -290,8 +291,8 @@ class Abs_elem_sparse:
             elif self.types[key] == 'SymExp':
                 raise Exception('NOT IMPLEMENTED')
             
-    def update(self, llist, abs_shape, dummy: bool=False):
-        if dummy:
+    def update(self, llist, abs_shape):
+        if dummy_mode:
             return self.update_dummy(llist, abs_shape)
         llist.decoalesce()
         assert(len(llist.llist) == 1)

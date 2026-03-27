@@ -6,7 +6,7 @@ import operator
 from constraintflow.gbcsr.op_helper import *
 from constraintflow.lib.globals import *
 
-dummy_mode = dummy_mode.get_flag()
+# dummy_mode = dummy_mode.get_flag()
 
 def _sync():
     device_mode.sync()

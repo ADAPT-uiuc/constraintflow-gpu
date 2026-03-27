@@ -13,7 +13,7 @@ from constraintflow.lib.globals import *
 from constraintflow.gbcsr.plot import *
 from constraintflow.gbcsr.op_helper import *
 
-dummy_mode = dummy_mode.get_flag()
+# dummy_mode = dummy_mode.get_flag()
 
 
 
@@ -786,7 +786,7 @@ Blocks Types: "
                 binary_sparse_tensor_overlap.update_total_time(time.perf_counter()-start_time)
             
             start = time.perf_counter()
-            if (not dummy) and isinstance(block, ConstBlock) and block.block == dense_const:
+            if (not dummy) and (not dummy_mode) and isinstance(block, ConstBlock) and block.block == dense_const:
                 binary_fixed_costs.update_total_time(time.perf_counter()-start)
                 continue
             res_blocks.append(block)
