@@ -5,6 +5,7 @@ from constraintflow.lib.polyexp import *
 from constraintflow.lib.network import LayerType
 from constraintflow.gbcsr.sparse_block import DenseBlock, KernelBlock, ConstBlock, DiagonalBlock
 from constraintflow.gbcsr.sparse_tensor import SparseTensor
+from constraintflow.lib.globals import dummy_mode
 
 class Llist:
     """List of layers."""
@@ -25,12 +26,12 @@ class Llist:
         if llist==None:
             self.llist_flag = False
 
-    def get_metadata(self, elem, batch_size, dummy: bool=False):
+    def get_metadata(self, elem, batch_size):
         """
         Metadata is neural network-specific information.
         Not certifier-specific information.
         """
-        if dummy:
+        if dummy_mode:
             return self.get_metadata_dummy(elem, batch_size)
         # ---- Is this true, and why? ----
         # Currently, get_metadata only supports consecutive intervals of

@@ -5,5 +5,5 @@ import torch
 
 
 class NetworkAnalyzer:
-    def __init__(self, network: Network, initial_shape: list[int]) -> None:
-        pass
+    def __init__(self, network: Network) -> None:
+        self.network = network
