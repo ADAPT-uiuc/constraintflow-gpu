@@ -125,6 +125,7 @@ class Llist:
         Shape information
         """
         self.coalesce()
+        # print(self.start, self.end)
         if not self.llist_flag:
             # type of ret: list[gbscr.sparse_block.SparseBlock]
             ret = []
