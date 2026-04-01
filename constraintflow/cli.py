@@ -7,9 +7,13 @@ import csv
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 from constraintflow.gbcsr.tensor_ops import binary
+from constraintflow.lib.abs_elem import Abs_elem_sparse
+from constraintflow.lib.llist import Llist
+from constraintflow.lib.flow_sparse import Flow
 from constraintflow.lib.globals import *
 from constraintflow.compiler.compile import compile as _compile
 from constraintflow.verifier.provesound import provesound as _provesound
+from constraintflow.lib.spec import get_network_and_input_spec
 
 app = typer.Typer(help="ConstraintFlow CLI for verification and compilation of DSL programs.")
 
@@ -152,6 +156,7 @@ def run(
     device: str = typer.Option("cpu", help="Device mode: cpu, gpu (CUDA), or gpumac (Apple MPS)"),
     output_path: str = typer.Option("output/", help="Path where compiled program is stored"),
     compile: bool = typer.Option(False, help="Run compilation before execution"),
+    opt: bool = typer.Option(False, help="Static shape analysis and direct computation over blocks."),
 ):
     """
     Run a compiled ConstraintFlow program.
@@ -161,6 +166,24 @@ def run(
     except OSError as e:
         typer.echo(f"Error creating folder '{output_path}': {e}")
         raise typer.Exit(code=1)
+    
+    if opt:
+        sys.path.insert(0, os.path.abspath(output_path))
+        from transformers import deeppoly
+        global dummy_mode
+        dummy_mode = True
+        network_file = get_network(network, network_format, dataset)
+        dataset_X, dataset_y = get_dataset(batch_size, dataset, train=train)
+        ntwk, l, u, L, U, Z, llist = get_network_and_input_spec(network_file, batch_size, dataset_X, dataset_y, dataset, eps=eps, train=train, no_sparsity=no_sparsity)
+        print(f'network: {[l.type for l in ntwk]}')
+        print(f'layer shapes: {[l.shape for l in ntwk]}')
+        abs_elem = Abs_elem_sparse({'llist' : llist, 'l' : l, 'u' : u, 'L' : L, 'U' : U}, {'l': 'Float', 'u': 'Float', 'L': 'PolyExp', 'U': 'PolyExp', 'llist': 'bool'}, ntwk, batch_size=batch_size, no_sparsity=no_sparsity)
+        flow = Flow(abs_elem, deeppoly(), ntwk, print_intermediate_results, no_sparsity)
+        flow.flow()
+        all_ll = Llist(ntwk, [1], start=0, end=7, llist=None)
+        print(abs_elem.get_elem('L', all_ll).get_mat(abs_elem))
+        return
+
 
     if compile:
         compile_code(program_file, output_path)
