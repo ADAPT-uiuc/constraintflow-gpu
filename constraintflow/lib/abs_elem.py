@@ -22,7 +22,6 @@ class Abs_elem_sparse:
         # {'l': 'Float', 'u': 'Float', 'L': 'PolyExp', 'U': 'PolyExp', 'llist': 'bool'}
         self.types = types 
         self.network = network
-        print(network.num_layers)
         self.batch_size = batch_size
         self.no_sparsity = no_sparsity
     
