@@ -72,6 +72,7 @@ def divide_metadata(m1, m2):
     else:
         lhs_multiplicands = collect_multiplicands(m1)
         rhs_multiplicands = collect_multiplicands(m2)
+        # Computes (∏ lhs) / (∏ rhs). Must ensure: rhs ⊆ lhs.
         new_metadata = []
         for i in range(len(lhs_multiplicands)):
             new_metadata.append(lhs_multiplicands[i])
@@ -107,6 +108,7 @@ class IrMetadataElement:
     def is_expanded(self):
         for i in self.broadcast:
             if i != 1:
+                # Some dimension's broadcast ≠ 1 means not yet expanded.
                 return False 
         return True
     
@@ -134,6 +136,7 @@ def expand_irMetadata(irMetadata):
             if not check_eq(res[i].shape[j], 1):
                 print(check_eq(res[i].shape[j], 1))
                 print(check_eq(res[i].broadcast[j], 1))
+            # If broadcast[j] ≠ 1, then shape[j] must == 1.
             assert(check_eq(res[i].shape[j], 1))
             res[i].shape[j] = res[i].broadcast[j]
             res[i].broadcast[j] = 1
@@ -153,6 +156,12 @@ def copy_metadata(irMetadata):
 #     return 0 
 
 def checkEqualMetadata(irMetadata1, irMetadata2):
+    """
+    Checks that irMetadata1 and 2 have the same expression form of shape, not
+      only semantically the same shape.
+    That is, their shapes and broadcasts must be equal at each index (same
+      expansion status).
+    """
     if len(irMetadata1) != len(irMetadata2):
         return False
     for i in range(len(irMetadata1)):
