@@ -170,11 +170,20 @@ def checkEqualMetadata(irMetadata1, irMetadata2):
         for j in range(len(irMetadata1[i].shape)):
             if not check_eq(irMetadata1[i].shape[j], irMetadata2[i].shape[j]):
                 return False
-            if not check_eq(irMetadata1[i].broadcast[j], irMetadata2[i].broadcast[j]):
+            if not check_eq(irMetadata1[i].broadcast[j], y=irMetadata2[i].broadcast[j]):
                 return False
     return True
 
 def createLcm(irMetadata1, irMetadata2):
+    """
+    Make two IR metadata's compatible by expanding any side whose shape is 1 to
+      match the other side's non-1 shape, as long as allowed by `broadcast`.
+    Does not mutate arguments, returns changed copies.
+    Returns
+    - flag[1/2]: Whether irMetadata[1/2] is expanded. Caller may need to
+      construct IrRepeat node(s) accordingly.
+    - newIrMetadata[1/2]: Updated IR metadata copies after expansion.
+    """
     flag1 = False 
     flag2 = False
     newIrMetadata1 = copy_metadata(irMetadata1)
@@ -203,6 +212,10 @@ def createLcm(irMetadata1, irMetadata2):
 
 
 def canRepeat(irMetadata1, irMetadata2):
+    """
+    Checks if irMetadata1 can be repeated to match irMetadata2's shape (up to
+      broadcast semantics), or vice versa.
+    """
     if len(irMetadata1) != len(irMetadata2):
         return False 
     for i in range(len(irMetadata1)):
@@ -223,15 +236,24 @@ def canAddDimension(irMetadataElement1, irMetadataElement2):
             return False
     for i in range(len(irMetadataElement1.shape), len(irMetadataElement2.shape)):
         if irMetadataElement2.shape[i]!=1:
+            # If the extra dimensions of irMetadataElement2 are not 1, then
+            #   they are not just placeholders (have extra meanings).
+            # They cannot be directly  added to irMetadataElement1.
             return False
     return True
 
 def matchDims(lhsIr, rhsIr):
+    """
+    Aligns two IR nodes before operation by wrapping around them.
+    After that, the IR nodes are dimension-compatible.
+    """
     lhsIrMetadata = lhsIr.irMetadata
     rhsIrMetadata = rhsIr.irMetadata
     if checkEqualMetadata(lhsIr.irMetadata, rhsIr.irMetadata):
         return lhsIr, rhsIr
     if lhsIrMetadata[-1].isConst:
+        # QUESTION: What if lhsIrMetadata[-1].isConst but not
+        #   lhsIrMetadata[i].isConst for some other i?
         updated_irMetadata = copy_metadata(rhsIrMetadata)
         for i in range(len(updated_irMetadata)):
             updated_irMetadata[i].isConst = True 
