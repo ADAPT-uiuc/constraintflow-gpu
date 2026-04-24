@@ -818,6 +818,7 @@ Blocks Types: "
             for i in range(10):
                 if os.path.exists(f"jit_binary/binary_{layer_index}_{counter}.json"):
                     counter += 0.1
+                    counter = round(counter, 1)
             #Currently I am assuming that dummy mode is always on
             json_blocks = []
             for block in res_blocks:
