@@ -29,6 +29,8 @@ class CodeGen(irVisitor.IRVisitor):
         self.indent += 1
         self.visited = set()
 
+        self.counter = 0
+
     def write(self, str, flag=True):
         self.file.write('\t'*self.indent + str)
         if flag:
@@ -82,7 +84,7 @@ class CodeGen(irVisitor.IRVisitor):
 
             transformerIr = node.tstore[transformer_name]
             for j, opStmtIr in enumerate(transformerIr):
-                self.write('def ' + opStmtIr.op + '(self, abs_elem, prev, curr, poly_size, curr_size, prev_size, input_size, batch_size):')
+                self.write('def ' + opStmtIr.op + '(self, abs_elem, prev, curr, poly_size, curr_size, prev_size, input_size, batch_size, layer_index = None):')
                 self.indent += 1
                 
                 cfg = opStmtIr.cfg
@@ -131,7 +133,10 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrAssignment(self, node):
         var = str(self.visit(node.children[0]))
         expr = str(self.visit(node.children[1]))
-        self.write(var + ' = ' + expr)
+        self.write(var + ' = ' + expr + '#' + str(self.counter))
+        node.counter = self.counter
+        self.counter += 1
+        
 
     def visitIrBreak(self, node):
         self.write('break')
@@ -311,7 +316,8 @@ class CodeGen(irVisitor.IRVisitor):
         if flag:
             return op_name + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ')'
         else:
-            return 'binary(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ')'
+            # asdasds
+            return 'binary(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(self.counter) + ')'
     
     def visitIrUnaryOp(self, node):
         op_name = None 

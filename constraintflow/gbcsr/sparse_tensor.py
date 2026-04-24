@@ -12,7 +12,9 @@ from constraintflow.lib.globals import *
 
 from constraintflow.gbcsr.plot import *
 from constraintflow.gbcsr.op_helper import *
-
+import json
+import os
+import pdb
 # dummy_mode = dummy_mode.get_flag()
 
 
@@ -704,7 +706,7 @@ Blocks Types: "
         return SparseTensor(self.start_indices, blocks, self.dims, self.total_size, end_indices=self.end_indices, type=self.type, dense_const=dense_const)
     
 
-    def binary(self, sp_tensor, op, dummy: bool=False):
+    def binary(self, sp_tensor, op, layer_index = None, counter = None, dummy: bool=False):
         # if dummy:
         #     ConstBlock = DummyBlock
         binary_sparse_tensor_count.update_num_used()
@@ -751,7 +753,9 @@ Blocks Types: "
                 binary_sparse_tensor_dom2_expenses.update_total_time(time.perf_counter()-start_time)
                 start = time.perf_counter()
                 if identity_element(op) == self.dense_const:
+                    # Index Dependant
                     block = binary_to_identity_unary(op)(block)
+                    print(f"block type: {type(block)}")
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
                 elif annihilator_element(op) == self.dense_const and dense_const == self.dense_const:
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
@@ -759,7 +763,9 @@ Blocks Types: "
                 else:
                     temp_block = ConstBlock(self.dense_const, block.total_shape)
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
+                    # Index Dependant
                     block = temp_block.binary(block, op)
+                    print(f"block type: {type(block)}")
                 binary_sparse_tensor_dom2.update_total_time(time.perf_counter()-start_time)
             elif len(indices[i][1]) == 0:
                 start_time = time.perf_counter()
@@ -775,14 +781,18 @@ Blocks Types: "
                 else:
                     temp_block = ConstBlock(sp_tensor.dense_const, block.total_shape)
                     binary_fixed_costs.update_total_time(time.perf_counter()-start_time)
+                    # Index Dependant
                     block = block.binary(temp_block, op)
+                    print(f"block type: {type(block)}")
                 binary_sparse_tensor_dom1.update_total_time(time.perf_counter()-start_time)
             else:
                 start_time = time.perf_counter()
                 block_1 = self.get_sub_block_custom_range(start_index, end_index, indices[i][0][0], False)
                 block_2 = sp_tensor.get_sub_block_custom_range(start_index, end_index, indices[i][1][0], False)
                 binary_sparse_tensor_overlap_expenses.update_total_time(time.perf_counter()-start_time)
+                # Index Dependant
                 block = block_1.binary(block_2, op)
+                print(f"block type: {type(block)}")
                 binary_sparse_tensor_overlap.update_total_time(time.perf_counter()-start_time)
             
             start = time.perf_counter()
@@ -793,10 +803,44 @@ Blocks Types: "
             res_start_indices.append(start_indices[i])
             res_end_indices.append(end_indices[i])
             binary_fixed_costs.update_total_time(time.perf_counter()-start)
+        
+        
+        
+        
+
+       
         start = time.perf_counter()
         res = SparseTensor(res_start_indices, res_blocks, self.dims, self.total_size, res_end_indices, new_type, dense_const)
         binary_fixed_costs.update_total_time(time.perf_counter()-start)
         total_binary_sparse_tensor.update_total_time(time.perf_counter()-total_start_time)
+        if layer_index is not None and counter is not None:
+            os.makedirs("jit_binary", exist_ok=True)
+            for i in range(10):
+                if os.path.exists(f"jit_binary/binary_{layer_index}_{counter}.json"):
+                    counter += 0.1
+            #Currently I am assuming that dummy mode is always on
+            json_blocks = []
+            for block in res_blocks:
+                assert(block.block_type=="Dummy")
+                json_blocks.append(block.total_shape)
+            
+            def tensor_to_list(tensor):
+                if isinstance(tensor, torch.Tensor):
+                    return tensor.tolist()
+                return tensor
+
+            def tensor_list_to_list(lst):
+                return [tensor_to_list(x) for x in lst]
+
+            serializable_start_indices = tensor_list_to_list(res_start_indices)
+            serializable_end_indices = tensor_list_to_list(res_end_indices)
+            serializable_json_blocks = tensor_list_to_list(json_blocks)
+            with open(f"jit_binary/binary_{layer_index}_{counter}.json", 'a') as f:
+                json.dump({
+                    "res_start_indices": serializable_start_indices,
+                    "res_end_indices": serializable_end_indices,
+                    "res_blocks": serializable_json_blocks
+                }, f, indent=4)
         return res
             
         

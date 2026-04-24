@@ -37,22 +37,22 @@ class Flow:
             if layer.type == LayerType.ReLU:
                 prev = Llist(self.model, [1], None, None, layer.parents)
                 curr = Llist(self.model, [1], None, None, [tmp])
-                abs_shape = self.transformer.Relu(self.abs_elem, prev, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size)
+                abs_shape = self.transformer.Relu(self.abs_elem, prev, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size, layer_index = tmp)
 
             elif layer.type == LayerType.Sigmoid:
                 prev = Llist(self.model, [1], None, None, layer.parents)
                 curr = Llist(self.model, [1], None, None, [tmp])
-                abs_shape = self.transformer.Sigmoid(self.abs_elem, prev, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size)
+                abs_shape = self.transformer.Sigmoid(self.abs_elem, prev, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size, layer_index = tmp)
 
             elif layer.type == LayerType.Linear:
                 prev = Llist(self.model, [1, 1], None, None, layer.parents)
                 curr = Llist(self.model, [1], None, None, [tmp])
-                abs_shape = self.transformer.Affine(self.abs_elem, prev, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size)
+                abs_shape = self.transformer.Affine(self.abs_elem, prev, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size, layer_index = tmp)
                 
             elif layer.type == LayerType.Conv2D:
                 prev = Llist(self.model, [1, 1], None, None, layer.parents)
                 curr = Llist(self.model, [1], None, None, [tmp])
-                abs_shape = self.transformer.Affine(self.abs_elem, prev, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size)
+                abs_shape = self.transformer.Affine(self.abs_elem, prev, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size, layer_index = tmp)
 
             elif layer.type == LayerType.Input:
                 continue
