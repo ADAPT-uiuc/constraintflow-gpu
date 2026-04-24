@@ -119,21 +119,21 @@ def all(x):
 #         raise Exception('TYPE MISMATCH')
 #     return x.all()
 
-def binary(x, y, op):
+def binary(x, y, op, layer_index = None, counter = None):
     total_start_time = time.perf_counter()
     start_time = time.perf_counter()
     sanityCheck(x, y)
     binary_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
     if isinstance(x, SparseTensor):
         start_time = time.perf_counter()
-        res = x.binary(y, op)
+        res = x.binary(y, op, layer_index = layer_index, counter = counter)
         binary_tensor_ops_x_sparsity.update_total_time(time.perf_counter() - start_time)
         
     elif isinstance(y, SparseTensor):
         start_time = time.perf_counter()
         temp = convert_dense_to_sparse(x, y.total_size)
         binary_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
-        res = temp.binary(y, op)
+        res = temp.binary(y, op, layer_index = layer_index, counter = counter)
         binary_tensor_ops_y_sparsity.update_total_time(time.perf_counter() - start_time)
     else:
         start_time = time.perf_counter()
