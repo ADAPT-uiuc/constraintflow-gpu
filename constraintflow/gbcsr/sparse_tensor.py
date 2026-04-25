@@ -735,10 +735,12 @@ Blocks Types: "
             if op == operator.mul and (self.dense_const == 0.0 or sp_tensor.dense_const == 0.0):
                 dense_const = 0.0
         
+        # indices[i][0] indices from self, indices[i][1] indices from sp_tensor
         start_indices, end_indices, indices = self.union_tensors(sp_tensor, indices=True)
         res_start_indices = []
         res_end_indices = []
         res_blocks = []
+        block_operations = []
         
         binary_sparse_tensor_expenses.update_total_time(time.perf_counter()-total_start_time)
 
@@ -747,15 +749,19 @@ Blocks Types: "
             start_index = start_indices[i]
             end_index = end_indices[i]
             
+            # Only from sp_tensor
             if len(indices[i][0]) == 0:
                 start_time = time.perf_counter()
+                # essentially get block from sp_tensor that corresponds to the range start_index, end_index
                 block = sp_tensor.get_sub_block_custom_range(start_index, end_index, indices[i][1][0], False)
                 binary_sparse_tensor_dom2_expenses.update_total_time(time.perf_counter()-start_time)
                 start = time.perf_counter()
+
+                # checking if it can be turned into a unary operation 
                 if identity_element(op) == self.dense_const:
-                    # Index Dependant
+                    block_operations.append({"operation":"binary_to_identity_unary", "block_shape": block.total_shape})
                     block = binary_to_identity_unary(op)(block)
-                    print(f"block type: {type(block)}")
+                    # print(f"block type: {type(block)}")
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
                 elif annihilator_element(op) == self.dense_const and dense_const == self.dense_const:
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
@@ -764,6 +770,7 @@ Blocks Types: "
                     temp_block = ConstBlock(self.dense_const, block.total_shape)
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
                     # Index Dependant
+                    block_operations.append({"operation":"binary", "block1_shape": temp_block.total_shape, "block2_shape": block.total_shape})
                     block = temp_block.binary(block, op)
                     print(f"block type: {type(block)}")
                 binary_sparse_tensor_dom2.update_total_time(time.perf_counter()-start_time)
@@ -782,6 +789,7 @@ Blocks Types: "
                     temp_block = ConstBlock(sp_tensor.dense_const, block.total_shape)
                     binary_fixed_costs.update_total_time(time.perf_counter()-start_time)
                     # Index Dependant
+                    block_operations.append({"operation":"binary", "block1_shape": block.total_shape, "block2_shape": temp_block.total_shape})
                     block = block.binary(temp_block, op)
                     print(f"block type: {type(block)}")
                 binary_sparse_tensor_dom1.update_total_time(time.perf_counter()-start_time)
@@ -791,8 +799,9 @@ Blocks Types: "
                 block_2 = sp_tensor.get_sub_block_custom_range(start_index, end_index, indices[i][1][0], False)
                 binary_sparse_tensor_overlap_expenses.update_total_time(time.perf_counter()-start_time)
                 # Index Dependant
+                block_operations.append({"operation":"binary", "block1_shape": block_1.total_shape, "block2_shape": block_2.total_shape})
                 block = block_1.binary(block_2, op)
-                print(f"block type: {type(block)}")
+                # print(f"block type: {type(block)}")
                 binary_sparse_tensor_overlap.update_total_time(time.perf_counter()-start_time)
             
             start = time.perf_counter()
@@ -835,12 +844,15 @@ Blocks Types: "
 
             serializable_start_indices = tensor_list_to_list(res_start_indices)
             serializable_end_indices = tensor_list_to_list(res_end_indices)
-            serializable_json_blocks = tensor_list_to_list(json_blocks)
+            for i in range(len(block_operations)):
+                for key in block_operations[i].keys():
+                    block_operations[i][key] = tensor_to_list(block_operations[i][key])
             with open(f"jit_binary/binary_{layer_index}_{counter}.json", 'a') as f:
                 json.dump({
                     "res_start_indices": serializable_start_indices,
                     "res_end_indices": serializable_end_indices,
-                    "res_blocks": serializable_json_blocks
+                    "block_operations": block_operations,
+                    # "res_blocks": serializable_json_blocks
                 }, f, indent=4)
         return res
             
