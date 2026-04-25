@@ -706,7 +706,7 @@ Blocks Types: "
         return SparseTensor(self.start_indices, blocks, self.dims, self.total_size, end_indices=self.end_indices, type=self.type, dense_const=dense_const)
     
 
-    def binary(self, sp_tensor, op, layer_index = None, counter = None, dummy: bool=False):
+    def binary(self, sp_tensor, op, layer_index = None, counter = None, dummy: bool=False, replay: bool=True):
         # if dummy:
         #     ConstBlock = DummyBlock
         binary_sparse_tensor_count.update_num_used()
@@ -734,6 +734,149 @@ Blocks Types: "
             dense_const = op(self.dense_const, sp_tensor.dense_const)
             if op == operator.mul and (self.dense_const == 0.0 or sp_tensor.dense_const == 0.0):
                 dense_const = 0.0
+
+        def tensor_to_list(tensor):
+            if isinstance(tensor, torch.Tensor):
+                return tensor.tolist()
+            return tensor
+
+        def tensor_list_to_list(lst):
+            return [tensor_to_list(x) for x in lst]
+
+        def tensor_layout_fingerprint(sp):
+            # The whole point of this fingerprint is to verify at runtime if the runtime tensor matches the stored one
+            return {
+                "num_blocks": sp.num_blocks,
+                "dims": sp.dims,
+                "total_size": tensor_to_list(sp.total_size),
+                "start_indices": tensor_list_to_list(sp.start_indices),
+                "end_indices": tensor_list_to_list(sp.end_indices),
+                "block_types": [b.block_type for b in sp.blocks],
+                "block_shapes": [tensor_to_list(b.total_shape) for b in sp.blocks],
+            }
+
+        def normalize_layout_fingerprint(fp):
+            # I don't want to compare the block types since the collection will happen with dummy blocks. 
+            # It would be wise to remove the block types entirely from the storage but I want to keep some information for debugging.
+            # The final version will not have this field. 
+            block_shapes = fp["block_shapes"] if "block_shapes" in fp else None
+            if block_shapes is None:
+                block_shapes = []
+            return {
+                "num_blocks": fp["num_blocks"],
+                "dims": fp["dims"],
+                "total_size": fp["total_size"],
+                "start_indices": fp["start_indices"],
+                "end_indices": fp["end_indices"],
+                "block_shapes": block_shapes,
+            }
+
+        if replay and layer_index is not None and counter is not None:
+            for i in range(10):
+                if os.path.exists(f"jit_binary/binary_{layer_index}_{counter}_used.json"):
+                    counter += 0.1
+                    counter = round(counter, 1)
+            if not os.path.exists(f"jit_binary/binary_{layer_index}_{counter}.json"):
+                raise Exception(f"jit_binary trace not found for layer {layer_index} and counter {counter}")
+            with open(f"jit_binary/binary_{layer_index}_{counter}.json", "r") as f:
+                jit_data = json.load(f)
+            os.rename(f"jit_binary/binary_{layer_index}_{counter}.json", f"jit_binary/binary_{layer_index}_{counter}_used.json")
+            
+            for required_key in ["res_start_indices", "res_end_indices", "block_operations", "block_mappings"]:
+                if required_key not in jit_data:
+                    raise Exception(f"Invalid jit_binary trace: missing key {required_key}")
+
+            jit_op_name = jit_data["op_name"]
+
+            # Just a simple check, will remove later
+            if jit_op_name != op.__name__:
+                raise Exception(f"jit_binary replay rejected: op mismatch {jit_op_name} != {op.__name__}")
+            
+            # The whole point of the fingerprint is to verify
+            lhs_fp = jit_data["lhs_fingerprint"]
+            rhs_fp = jit_data["rhs_fingerprint"] 
+            current_lhs_fp = tensor_layout_fingerprint(self)
+            current_rhs_fp = tensor_layout_fingerprint(sp_tensor)
+            if normalize_layout_fingerprint(lhs_fp) != normalize_layout_fingerprint(current_lhs_fp):
+                raise Exception("jit_binary replay rejected: lhs layout fingerprint mismatch")
+            if normalize_layout_fingerprint(rhs_fp) != normalize_layout_fingerprint(current_rhs_fp):
+                print(f"lhs_fp: {lhs_fp}")
+                print(f"rhs_fp: {rhs_fp}")
+                print(f"self: {current_lhs_fp}")
+                print(f"sp_tensor: {current_rhs_fp}")
+                raise Exception("jit_binary replay rejected: rhs layout fingerprint mismatch")
+
+            jit_start_indices = jit_data["res_start_indices"]
+            jit_end_indices = jit_data["res_end_indices"]
+            jit_block_operations = jit_data["block_operations"]
+            jit_block_mappings = jit_data["block_mappings"]
+
+            # simple check again, will remove later
+            if not (
+                len(jit_start_indices)
+                == len(jit_end_indices)
+                == len(jit_block_operations)
+                == len(jit_block_mappings)
+            ):
+                raise Exception("Invalid jit_binary trace: segment lengths mismatch")
+
+            replay_start_indices = []
+            replay_end_indices = []
+            replay_blocks = []
+
+            for i in range(len(jit_start_indices)):
+                # the indices were serialized as lists so we need to convert them to tensors
+                start_index = torch.tensor(jit_start_indices[i], dtype=torch.int64)
+                end_index = torch.tensor(jit_end_indices[i], dtype=torch.int64)
+
+                op_info = jit_block_operations[i]
+                mapping = jit_block_mappings[i]
+
+
+                lhs_source = mapping["lhs_source"]
+                rhs_source = mapping["rhs_source"]
+
+                # simple reconstruction of the blocks
+                if lhs_source["kind"] == "dense_const":
+                    lhs_block = ConstBlock(self.dense_const, end_index - start_index)
+                else:
+                    lhs_block = self.get_sub_block_custom_range(start_index, end_index, lhs_source["block_id"], False)
+
+                if rhs_source["kind"] == "dense_const":
+                    rhs_block = ConstBlock(sp_tensor.dense_const, end_index - start_index)
+                else:
+                    rhs_block = sp_tensor.get_sub_block_custom_range(start_index, end_index, rhs_source["block_id"], False)
+
+                # simple reconstruction of the operation and performing the operation
+                operation_name = op_info["operation"]
+                if operation_name == "binary":
+                    block = lhs_block.binary(rhs_block, op)
+                elif operation_name == "binary_to_identity_unary":
+                    if rhs_source["kind"] == "block":
+                        unary_source = rhs_block
+                    elif lhs_source["kind"] == "block":
+                        unary_source = lhs_block
+                    else:
+                        print(f"lhs_source: {lhs_source}")
+                        print(f"rhs_source: {rhs_source}")
+                        raise Exception(f"Unsupported replay operation: {operation_name}")
+                    block = binary_to_identity_unary(op)(unary_source)
+                elif operation_name == "binary_with_identity_rhs":
+                    block = lhs_block
+                else:
+                    print(f"lhs_source: {lhs_source}")
+                    print(f"rhs_source: {rhs_source}")
+                    raise Exception(f"Unsupported replay operation: {operation_name}")
+
+                # Identical code as the non-replay
+                if (not dummy) and (not dummy_mode) and isinstance(block, ConstBlock) and block.block == dense_const:
+                    continue
+                replay_blocks.append(block)
+                replay_start_indices.append(start_index)
+                replay_end_indices.append(end_index)
+
+            res = SparseTensor(replay_start_indices, replay_blocks, self.dims, self.total_size, replay_end_indices, new_type, dense_const)
+            return res
         
         # indices[i][0] indices from self, indices[i][1] indices from sp_tensor
         start_indices, end_indices, indices = self.union_tensors(sp_tensor, indices=True)
@@ -741,25 +884,38 @@ Blocks Types: "
         res_end_indices = []
         res_blocks = []
         block_operations = []
-        
-        binary_sparse_tensor_expenses.update_total_time(time.perf_counter()-total_start_time)
+        block_mappings = []
 
+        binary_sparse_tensor_expenses.update_total_time(time.perf_counter()-total_start_time)
 
         for i in range(len(start_indices)):
             start_index = start_indices[i]
             end_index = end_indices[i]
+            block_operation = None
+            block_mapping = None
             
             # Only from sp_tensor
             if len(indices[i][0]) == 0:
                 start_time = time.perf_counter()
                 # essentially get block from sp_tensor that corresponds to the range start_index, end_index
-                block = sp_tensor.get_sub_block_custom_range(start_index, end_index, indices[i][1][0], False)
+                block_id_2 = indices[i][1][0]
+                block = sp_tensor.get_sub_block_custom_range(start_index, end_index, block_id_2, False)
+                block_mapping = {
+                    "lhs_source": {"kind": "dense_const", "tensor": "self"},
+                    "rhs_source": {
+                        "kind": "block",
+                        "tensor": "sp_tensor",
+                        "block_id": block_id_2,
+                        "rel_start": start_index - sp_tensor.start_indices[block_id_2],
+                        "rel_end": end_index - sp_tensor.start_indices[block_id_2],
+                    },
+                }
                 binary_sparse_tensor_dom2_expenses.update_total_time(time.perf_counter()-start_time)
                 start = time.perf_counter()
 
                 # checking if it can be turned into a unary operation 
                 if identity_element(op) == self.dense_const:
-                    block_operations.append({"operation":"binary_to_identity_unary", "block_shape": block.total_shape})
+                    block_operation = {"operation":"binary_to_identity_unary", "block_shape": block.total_shape}
                     block = binary_to_identity_unary(op)(block)
                     # print(f"block type: {type(block)}")
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
@@ -770,16 +926,28 @@ Blocks Types: "
                     temp_block = ConstBlock(self.dense_const, block.total_shape)
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
                     # Index Dependant
-                    block_operations.append({"operation":"binary", "block1_shape": temp_block.total_shape, "block2_shape": block.total_shape})
+                    block_operation = {"operation":"binary", "block1_shape": temp_block.total_shape, "block2_shape": block.total_shape}
                     block = temp_block.binary(block, op)
                     print(f"block type: {type(block)}")
                 binary_sparse_tensor_dom2.update_total_time(time.perf_counter()-start_time)
             elif len(indices[i][1]) == 0:
                 start_time = time.perf_counter()
-                block = self.get_sub_block_custom_range(start_index, end_index, indices[i][0][0], False)
+                block_id_1 = indices[i][0][0]
+                block = self.get_sub_block_custom_range(start_index, end_index, block_id_1, False)
+                block_mapping = {
+                    "lhs_source": {
+                        "kind": "block",
+                        "tensor": "self",
+                        "block_id": block_id_1,
+                        "rel_start": start_index - self.start_indices[block_id_1],
+                        "rel_end": end_index - self.start_indices[block_id_1],
+                    },
+                    "rhs_source": {"kind": "dense_const", "tensor": "sp_tensor"},
+                }
                 binary_sparse_tensor_dom1_expenses.update_total_time(time.perf_counter()-start_time)
                 start = time.perf_counter()
                 if identity_element(op) == sp_tensor.dense_const:
+                    block_operation = {"operation":"binary_with_identity_rhs", "block_shape": block.total_shape}
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
                     pass 
                 elif annihilator_element(op) == sp_tensor.dense_const and dense_const == sp_tensor.dense_const:
@@ -789,17 +957,35 @@ Blocks Types: "
                     temp_block = ConstBlock(sp_tensor.dense_const, block.total_shape)
                     binary_fixed_costs.update_total_time(time.perf_counter()-start_time)
                     # Index Dependant
-                    block_operations.append({"operation":"binary", "block1_shape": block.total_shape, "block2_shape": temp_block.total_shape})
+                    block_operation = {"operation":"binary", "block1_shape": block.total_shape, "block2_shape": temp_block.total_shape}
                     block = block.binary(temp_block, op)
                     print(f"block type: {type(block)}")
                 binary_sparse_tensor_dom1.update_total_time(time.perf_counter()-start_time)
             else:
                 start_time = time.perf_counter()
-                block_1 = self.get_sub_block_custom_range(start_index, end_index, indices[i][0][0], False)
-                block_2 = sp_tensor.get_sub_block_custom_range(start_index, end_index, indices[i][1][0], False)
+                block_id_1 = indices[i][0][0]
+                block_id_2 = indices[i][1][0]
+                block_1 = self.get_sub_block_custom_range(start_index, end_index, block_id_1, False)
+                block_2 = sp_tensor.get_sub_block_custom_range(start_index, end_index, block_id_2, False)
+                block_mapping = {
+                    "lhs_source": {
+                        "kind": "block",
+                        "tensor": "self",
+                        "block_id": block_id_1,
+                        "rel_start": start_index - self.start_indices[block_id_1],
+                        "rel_end": end_index - self.start_indices[block_id_1],
+                    },
+                    "rhs_source": {
+                        "kind": "block",
+                        "tensor": "sp_tensor",
+                        "block_id": block_id_2,
+                        "rel_start": start_index - sp_tensor.start_indices[block_id_2],
+                        "rel_end": end_index - sp_tensor.start_indices[block_id_2],
+                    },
+                }
                 binary_sparse_tensor_overlap_expenses.update_total_time(time.perf_counter()-start_time)
                 # Index Dependant
-                block_operations.append({"operation":"binary", "block1_shape": block_1.total_shape, "block2_shape": block_2.total_shape})
+                block_operation = {"operation":"binary", "block1_shape": block_1.total_shape, "block2_shape": block_2.total_shape}
                 block = block_1.binary(block_2, op)
                 # print(f"block type: {type(block)}")
                 binary_sparse_tensor_overlap.update_total_time(time.perf_counter()-start_time)
@@ -811,6 +997,8 @@ Blocks Types: "
             res_blocks.append(block)
             res_start_indices.append(start_indices[i])
             res_end_indices.append(end_indices[i])
+            block_operations.append(block_operation)
+            block_mappings.append(block_mapping)
             binary_fixed_costs.update_total_time(time.perf_counter()-start)
         
         
@@ -822,38 +1010,36 @@ Blocks Types: "
         res = SparseTensor(res_start_indices, res_blocks, self.dims, self.total_size, res_end_indices, new_type, dense_const)
         binary_fixed_costs.update_total_time(time.perf_counter()-start)
         total_binary_sparse_tensor.update_total_time(time.perf_counter()-total_start_time)
-        if layer_index is not None and counter is not None:
-            os.makedirs("jit_binary", exist_ok=True)
-            for i in range(10):
-                if os.path.exists(f"jit_binary/binary_{layer_index}_{counter}.json"):
-                    counter += 0.1
-                    counter = round(counter, 1)
-            #Currently I am assuming that dummy mode is always on
-            json_blocks = []
-            for block in res_blocks:
-                assert(block.block_type=="Dummy")
-                json_blocks.append(block.total_shape)
-            
-            def tensor_to_list(tensor):
-                if isinstance(tensor, torch.Tensor):
-                    return tensor.tolist()
-                return tensor
-
-            def tensor_list_to_list(lst):
-                return [tensor_to_list(x) for x in lst]
-
-            serializable_start_indices = tensor_list_to_list(res_start_indices)
-            serializable_end_indices = tensor_list_to_list(res_end_indices)
-            for i in range(len(block_operations)):
-                for key in block_operations[i].keys():
-                    block_operations[i][key] = tensor_to_list(block_operations[i][key])
-            with open(f"jit_binary/binary_{layer_index}_{counter}.json", 'a') as f:
-                json.dump({
-                    "res_start_indices": serializable_start_indices,
-                    "res_end_indices": serializable_end_indices,
-                    "block_operations": block_operations,
-                    # "res_blocks": serializable_json_blocks
-                }, f, indent=4)
+        return res
+        # I will make this more sophisticated later
+        if dummy_mode:
+            if layer_index is not None and counter is not None:
+                os.makedirs("jit_binary", exist_ok=True)
+                for i in range(10):
+                    if os.path.exists(f"jit_binary/binary_{layer_index}_{counter}.json"):
+                        counter += 0.1
+                        counter = round(counter, 1)
+                
+                serializable_start_indices = tensor_list_to_list(res_start_indices)
+                serializable_end_indices = tensor_list_to_list(res_end_indices)
+                for i in range(len(block_operations)):
+                    for key in block_operations[i].keys():
+                        block_operations[i][key] = tensor_to_list(block_operations[i][key])
+                for i in range(len(block_mappings)):
+                    for side in ["lhs_source", "rhs_source"]:
+                        for key in block_mappings[i][side].keys():
+                            block_mappings[i][side][key] = tensor_to_list(block_mappings[i][side][key])
+                with open(f"jit_binary/binary_{layer_index}_{counter}.json", 'w') as f:
+                    json.dump({
+                        "op_name": op.__name__,
+                        "res_start_indices": serializable_start_indices,
+                        "res_end_indices": serializable_end_indices,
+                        "block_operations": block_operations,
+                        "block_mappings": block_mappings,
+                        "lhs_fingerprint": tensor_layout_fingerprint(self),
+                        "rhs_fingerprint": tensor_layout_fingerprint(sp_tensor),
+                    }, f, indent=4)
+                    print(f"jit_binary saved for layer {layer_index} and counter {counter}")
         return res
             
         
