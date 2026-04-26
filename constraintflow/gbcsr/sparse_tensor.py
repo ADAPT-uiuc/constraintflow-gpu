@@ -20,6 +20,8 @@ import pdb
 # Per-process deterministic occurrence counters keyed by (layer_index, counter)
 _jit_replay_occurrence = {}
 _jit_save_occurrence = {}
+_jit_matmul_replay_occurrence = {}
+_jit_matmul_save_occurrence = {}
 
 def _next_jit_occurrence(counter_store, layer_index, counter):
     key = (layer_index, counter)
@@ -1103,7 +1105,7 @@ Blocks Types: "
         res = SparseTensor(self.start_indices, blocks, self.dims, self.total_size, self.end_indices, float, float(self.dense_const))
         return res 
     
-    def matmul(self, sp_tensor):
+    def matmul(self, sp_tensor, layer_index = None, counter = None, replay: bool=True):
         total_start_time = time.perf_counter()
         
         if isinstance(sp_tensor, torch.Tensor):
@@ -1140,10 +1142,113 @@ Blocks Types: "
         start_indices = []
         end_indices = []
         blocks = []
+        matmul_operations = []
+        matmul_mappings = []
         res_total_size = None
 
         multiplicands = []
 
+        def tensor_to_list(tensor):
+            if isinstance(tensor, torch.Tensor):
+                return tensor.tolist()
+            return tensor
+
+        def tensor_list_to_list(lst):
+            return [tensor_to_list(x) for x in lst]
+
+        if replay and layer_index is not None and counter is not None:
+            replay_occurrence = _next_jit_occurrence(_jit_matmul_replay_occurrence, layer_index, counter)
+            replay_path = f"jit_matmul/matmul_{layer_index}_{counter}_{replay_occurrence}.json"
+            if not os.path.exists(replay_path):
+                raise Exception(
+                    f"jit_matmul trace not found for layer {layer_index}, counter {counter}, occurrence {replay_occurrence}"
+                )
+            with open(replay_path, "r") as f:
+                jit_data = json.load(f)
+
+            for required_key in ["res_total_size", "res_start_indices", "res_end_indices", "matmul_operations", "matmul_mappings"]:
+                if required_key not in jit_data:
+                    raise Exception(f"Invalid jit_matmul trace: missing key {required_key}")
+
+            if jit_data["op_name"] != "matmul":
+                raise Exception(f"jit_matmul replay rejected: op mismatch {jit_data['op_name']} != matmul")
+
+            jit_start_indices = jit_data["res_start_indices"]
+            jit_end_indices = jit_data["res_end_indices"]
+            jit_ops = jit_data["matmul_operations"]
+            jit_mappings = jit_data["matmul_mappings"]
+            jit_res_total_size = torch.tensor(jit_data["res_total_size"], dtype=torch.int64)
+
+            if not (
+                len(jit_start_indices)
+                == len(jit_end_indices)
+                == len(jit_ops)
+                == len(jit_mappings)
+            ):
+                raise Exception("Invalid jit_matmul trace: contribution lengths mismatch")
+
+            replay_start_indices = []
+            replay_end_indices = []
+            replay_blocks = []
+            for i in range(len(jit_start_indices)):
+                start_index = torch.tensor(jit_start_indices[i], dtype=torch.int64)
+                end_index = torch.tensor(jit_end_indices[i], dtype=torch.int64)
+                op_info = jit_ops[i]
+                mapping = jit_mappings[i]
+                lhs_source = mapping["lhs_source"]
+                rhs_source = mapping["rhs_source"]
+
+                if lhs_source["extraction_mode"] == "index_lookup":
+                    lhs_block = self.blocks[lhs_source["index"]]
+                elif lhs_source["extraction_mode"] == "sub_block":
+                    lhs_block = self.get_sub_block_fast(
+                        torch.tensor(lhs_source["sub_block_start_index"], dtype=torch.int64),
+                        torch.tensor(lhs_source["sub_block_end_index"], dtype=torch.int64),
+                        lhs_source["sub_block_index"],
+                        False,
+                        extraction_mode=lhs_source["sub_block_extraction_mode"],
+                    )
+                else:
+                    raise Exception(f"Unsupported lhs extraction_mode: {lhs_source['extraction_mode']}")
+
+                if rhs_source["extraction_mode"] == "index_lookup":
+                    rhs_block = sp_tensor.blocks[rhs_source["index"]]
+                elif rhs_source["extraction_mode"] == "sub_block":
+                    rhs_block = sp_tensor.get_sub_block_fast(
+                        torch.tensor(rhs_source["sub_block_start_index"], dtype=torch.int64),
+                        torch.tensor(rhs_source["sub_block_end_index"], dtype=torch.int64),
+                        rhs_source["sub_block_index"],
+                        False,
+                        extraction_mode=rhs_source["sub_block_extraction_mode"],
+                    )
+                else:
+                    raise Exception(f"Unsupported rhs extraction_mode: {rhs_source['extraction_mode']}")
+
+                operation_name = op_info["operation"]
+                if operation_name == "matmul_equal_dims":
+                    block = lhs_block.matmul_equal_dims(rhs_block)
+                elif operation_name == "matmul_unequal_dims":
+                    block = lhs_block.matmul_unequal_dims(rhs_block)
+                else:
+                    raise Exception(f"Unsupported matmul replay operation: {operation_name}")
+
+                replay_start_indices.append(start_index)
+                replay_end_indices.append(end_index)
+                replay_blocks.append(block)
+
+            overlap_classes = find_connected_blocks(replay_start_indices, replay_end_indices)
+            res = sp_tensor_from_overlap_classes(
+                overlap_classes,
+                replay_start_indices,
+                replay_blocks,
+                jit_res_total_size,
+                len(jit_res_total_size),
+                self.dense_const,
+                self.type,
+            )
+            return res
+        if layer_index is not None and counter is not None:
+            raise Exception(f"matmul called with layer_index {layer_index} and counter {counter} but no replay was provided")
         if self.dims == sp_tensor.dims:
             res_total_size = torch.concat([self.total_size[:-1], sp_tensor.total_size[-1:]])
             matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-total_start_time)
@@ -1151,6 +1256,7 @@ Blocks Types: "
                 for j in range(sp_tensor.num_blocks):
                     start = time.perf_counter()
                     if sp_tensor.dims == 2:
+                        # Save this
                         start_index = torch.concat([self.start_indices[i][:-1], sp_tensor.start_indices[j][-1:]])
                         end_index = torch.concat([self.end_indices[i][:-1], sp_tensor.end_indices[j][-1:]])
                         matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
@@ -1166,24 +1272,63 @@ Blocks Types: "
                         start = time.perf_counter()
                         if full_overlap([self.start_indices[i][-1:], self.end_indices[i][-1:]], [sp_tensor.start_indices[j][-2:-1], sp_tensor.end_indices[j][-2:-1]]):
                             matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
+                            # Store i, j
                             block = self.blocks[i].matmul_equal_dims(sp_tensor.blocks[j])
+                            matmul_mappings.append({
+                                "lhs_source": {
+                                    "extraction_mode": "index_lookup",
+                                    "index": i,
+                                },
+                                "rhs_source": {
+                                    "extraction_mode": "index_lookup",
+                                    "index": j,
+                                },
+                            })
                         elif contained([self.start_indices[i][-1:], self.end_indices[i][-1:]], [sp_tensor.start_indices[j][-2:-1], sp_tensor.end_indices[j][-2:-1]]):    
                             start_index = torch.concat((sp_tensor.start_indices[j][:-2], self.start_indices[i][-1:], sp_tensor.start_indices[j][-1:]))
                             end_index = torch.concat((sp_tensor.end_indices[j][:-2], self.end_indices[i][-1:], sp_tensor.end_indices[j][-1:]))
-                            block_1 = sp_tensor.get_sub_block_custom_range(start_index, end_index, j, tensor=False)
+                            block_1, rhs_extraction_mode = sp_tensor.get_sub_block_custom_range(start_index, end_index, j, tensor=False, return_extraction_mode=True)
                             matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
+                            # Store i, and block_1 parameters
                             block = self.blocks[i].matmul_equal_dims(block_1)
+                            matmul_mappings.append({
+                                "rhs_source": {
+                                    "extraction_mode": "sub_block",
+                                    "sub_block_index": j,
+                                    "sub_block_start_index": start_index,
+                                    "sub_block_end_index": end_index,
+                                    "sub_block_extraction_mode": rhs_extraction_mode,
+                                },
+                                "lhs_source": {
+                                    "extraction_mode": "index_lookup",
+                                    "index": i,
+                                },
+                            })
                         elif contained([sp_tensor.start_indices[j][-2:-1], sp_tensor.end_indices[j][-2:-1]], [self.start_indices[i][-1:], self.end_indices[i][-1:]]):    
                             start_index = torch.concat((self.start_indices[i][:-1], sp_tensor.start_indices[j][-2:-1]))
                             end_index = torch.concat((self.end_indices[i][:-1], sp_tensor.end_indices[j][-2:-1]))
-                            block_1 = self.get_sub_block_custom_range(start_index, end_index, i, tensor=False)
+                            block_1, lhs_extraction_mode = self.get_sub_block_custom_range(start_index, end_index, i, tensor=False, return_extraction_mode=True)
                             matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
+                            # Store block_1 parameters and j
                             block = block_1.matmul_equal_dims(sp_tensor.blocks[j])
-                        
+                            matmul_mappings.append({
+                                "lhs_source": {
+                                    "extraction_mode": "sub_block",
+                                    "sub_block_index": i,
+                                    "sub_block_start_index": start_index,
+                                    "sub_block_end_index": end_index,
+                                    "sub_block_extraction_mode": lhs_extraction_mode,
+                                },
+                                "rhs_source": {
+                                    "extraction_mode": "index_lookup",
+                                    "index": j,
+                                },
+                            })
                         start = time.perf_counter()
                         blocks.append(block)
                         start_index = torch.concat([torch.min(sp_tensor.start_indices[j][:-2], self.start_indices[i][:-2]), self.start_indices[i][-2:-1], sp_tensor.start_indices[j][-1:]])
                         end_index = torch.concat([torch.max(sp_tensor.end_indices[j][:-2], self.end_indices[i][:-2]), self.end_indices[i][-2:-1], sp_tensor.end_indices[j][-1:]])
+                        matmul_operations.append({"operation":"matmul_equal_dims"})
                         matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
                     start = time.perf_counter()
                     start_indices.append(start_index)
@@ -1197,6 +1342,7 @@ Blocks Types: "
                 for j in range(sp_tensor.num_blocks):
                     start = time.perf_counter()
                     if sp_tensor.dims == 1:
+                        # In this case, I just need to start the start and end indices
                         start_index = self.start_indices[i][:-1]
                         end_index = self.end_indices[i][:-1]
                         matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
@@ -1213,25 +1359,65 @@ Blocks Types: "
                         
                         if full_overlap([self.start_indices[i][-1:], self.end_indices[i][-1:]], [sp_tensor.start_indices[j][-1:], sp_tensor.end_indices[j][-1:]]):       
                             block_1 = self.blocks[i]
-                            matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)               
+                            matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)    
+                            # Store i, j
                             block = block_1.matmul_unequal_dims(sp_tensor.blocks[j])
+                            matmul_mappings.append({
+                                "lhs_source": {
+                                    "extraction_mode": "index_lookup",
+                                    "index": i,
+                                },
+                                "rhs_source": {
+                                    "extraction_mode": "index_lookup",
+                                    "index": j,
+                                },
+                            })
                         elif contained([self.start_indices[i][-1:], self.end_indices[i][-1:]], [sp_tensor.start_indices[j][-1:], sp_tensor.end_indices[j][-1:]]):
                             start_index = torch.concat((sp_tensor.start_indices[j][:-1], self.start_indices[i][-1:]))
                             end_index = torch.concat((sp_tensor.end_indices[j][:-1], self.end_indices[i][-1:]))
-                            block_1 = sp_tensor.get_sub_block_custom_range(start_index, end_index, j, tensor=False)
+                            block_1, rhs_extraction_mode = sp_tensor.get_sub_block_custom_range(start_index, end_index, j, tensor=False, return_extraction_mode=True)
                             matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
+                            # Store i, and sp_tensor parameters
                             block = self.blocks[i].matmul_unequal_dims(block_1)
+                            matmul_mappings.append({
+                                "lhs_source": {
+                                    "extraction_mode": "index_lookup",
+                                    "index": i,
+                                },
+                                "rhs_source": {
+                                    "extraction_mode": "sub_block",
+                                    "sub_block_index": j,
+                                    "sub_block_start_index": start_index,
+                                    "sub_block_end_index": end_index,
+                                    "sub_block_extraction_mode": rhs_extraction_mode,
+                                },
+                            })
                         elif contained([sp_tensor.start_indices[j][-1:], sp_tensor.end_indices[j][-1:]], [self.start_indices[i][-1:], self.end_indices[i][-1:]]):
                             start_index = torch.concat((self.start_indices[i][:-1], sp_tensor.start_indices[j][-1:]))
                             end_index = torch.concat((self.end_indices[i][:-1], sp_tensor.end_indices[j][-1:]))
-                            block_1 = self.get_sub_block_custom_range(start_index, end_index, i, tensor=False)
+                            block_1, lhs_extraction_mode = self.get_sub_block_custom_range(start_index, end_index, i, tensor=False, return_extraction_mode=True)
                             matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
                             block = block_1.matmul_unequal_dims(sp_tensor.blocks[j])
+                            # Store i, and block_1 parameters
+                            matmul_mappings.append({
+                                "lhs_source": {
+                                    "extraction_mode": "sub_block",
+                                    "sub_block_index": i,
+                                    "sub_block_start_index": start_index,
+                                    "sub_block_end_index": end_index,
+                                    "sub_block_extraction_mode": lhs_extraction_mode,
+                                },
+                                "rhs_source": {
+                                    "extraction_mode": "index_lookup",
+                                    "index": j,
+                                },
+                            })
                         
                         start = time.perf_counter()
                         blocks.append(block)
                         start_index = torch.concat([torch.min(sp_tensor.start_indices[j][:-1], self.start_indices[i][:-2]), self.start_indices[i][-2:-1]])
                         end_index = torch.concat([torch.max(sp_tensor.end_indices[j][:-1], self.end_indices[i][:-2]), self.end_indices[i][-2:-1]])
+                        matmul_operations.append({"operation":"matmul_unequal_dims"})
                         matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
 
                     start = time.perf_counter()
@@ -1246,6 +1432,35 @@ Blocks Types: "
         overlap_classes = find_connected_blocks(start_indices, end_indices)
         res = sp_tensor_from_overlap_classes(overlap_classes, start_indices, blocks, res_total_size, len(res_total_size), self.dense_const, self.type)
         matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
+        if dummy_mode and layer_index is not None and counter is not None:
+            os.makedirs("jit_matmul", exist_ok=True)
+            capture_occurrence = _next_jit_occurrence(_jit_matmul_save_occurrence, layer_index, counter)
+            matmul_path = f"jit_matmul/matmul_{layer_index}_{counter}_{capture_occurrence}.json"
+            serializable_start_indices = tensor_list_to_list(start_indices)
+            serializable_end_indices = tensor_list_to_list(end_indices)
+            for i in range(len(matmul_operations)):
+                for key in list(matmul_operations[i].keys()):
+                    matmul_operations[i][key] = tensor_to_list(matmul_operations[i][key])
+            for i in range(len(matmul_mappings)):
+                for side in ["lhs_source", "rhs_source"]:
+                    for key in list(matmul_mappings[i][side].keys()):
+                        matmul_mappings[i][side][key] = tensor_to_list(matmul_mappings[i][side][key])
+            assert(len(matmul_operations) == len(matmul_mappings))
+            assert(len(serializable_start_indices) == len(serializable_end_indices))
+            assert(len(serializable_start_indices) == len(matmul_operations))
+            with open(matmul_path, "w") as f:
+                json.dump(
+                    {
+                        "op_name": "matmul",
+                        "res_total_size": tensor_to_list(res_total_size),
+                        "res_start_indices": serializable_start_indices,
+                        "res_end_indices": serializable_end_indices,
+                        "matmul_operations": matmul_operations,
+                        "matmul_mappings": matmul_mappings,
+                    },
+                    f,
+                    indent=4,
+                )
         return res
     
     def add_block_no_overlap(self, start_index, end_index, block):
