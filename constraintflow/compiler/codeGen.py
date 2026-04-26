@@ -394,7 +394,7 @@ class CodeGen(irVisitor.IRVisitor):
         op_name = 'inner_prod'
         
         [lhsIr, rhsIr] = node.children
-        return op_name + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ')'
+        return op_name + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', layer_index = layer_index, counter = ' + str(self.counter) + ')'
 
     def visitIrDot(self, node):
         [lhsIr, rhsIr] = node.children

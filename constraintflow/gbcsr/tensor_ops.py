@@ -242,7 +242,7 @@ def where(x, y, z):
     where_time.update_total_time(time.perf_counter() - start_time)
     return res
 
-def inner_prod(x, y):
+def inner_prod(x, y, layer_index = None, counter = None):
     total_start_time = time.perf_counter()
     # time.sleep(0.00625)
     checkTypes(x, y)
@@ -268,7 +268,7 @@ def inner_prod(x, y):
                 print(x.total_size, y.total_size)
                 raise Exception('SHAPE MISMATCH')
             matmul_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
-            res = x.matmul(y)
+            res = x.matmul(y, layer_index = layer_index, counter = counter)
         else:
             if x.total_size.shape[0] == y.shape.shape[0]:
                 if x.total_size[-1] != y.shape[-2]:
@@ -288,7 +288,7 @@ def inner_prod(x, y):
                 print(x.total_size, y.shape)
                 raise Exception('SHAPE MISMATCH')
             matmul_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
-            res = x.matmul(y)
+            res = x.matmul(y, layer_index = layer_index, counter = counter)
     elif isinstance(y, SparseTensor):
         if x.shape.shape[0] == y.total_size.shape[0]:
             if x.shape[-1] != y.total_size[-2]:
@@ -309,7 +309,7 @@ def inner_prod(x, y):
             raise Exception('SHAPE MISMATCH')
         x = convert_dense_to_sparse(x)
         matmul_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
-        res = x.matmul(y)
+        res = x.matmul(y, layer_index = layer_index, counter = counter)
     else:
         if x.shape.shape[0] == y.shape.shape[0]:
             if x.shape[-1] != y.shape[-2]:
