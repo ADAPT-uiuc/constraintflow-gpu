@@ -1,3 +1,5 @@
+import operator
+
 from . import irVisitor 
 import copy
 from .ir import * 
@@ -83,15 +85,34 @@ class CodeGen(irVisitor.IRVisitor):
             self.indent += 1
 
             transformerIr = node.tstore[transformer_name]
+
             for j, opStmtIr in enumerate(transformerIr):
-                self.write('def ' + opStmtIr.op + '(self, abs_elem, prev, curr, poly_size, curr_size, prev_size, input_size, batch_size, layer_index = None):')
-                self.indent += 1
-                
-                cfg = opStmtIr.cfg
-                self.visit(cfg.ir[cfg.entry_node])
-                self.indent -= 1
-                self.write('', True)
-            
+                if opStmtIr.layerwise_cfgs is None:
+                    self.write('def ' + opStmtIr.op + '(self, abs_elem, prev, curr, poly_size, curr_size, prev_size, input_size, batch_size, layer_index = None):')
+                    self.indent += 1
+                    cfg = opStmtIr.cfg
+                    self.visit(cfg.ir[cfg.entry_node])
+                    self.indent -= 1
+                    self.write('', True)
+                else:
+                    self.write('def ' + opStmtIr.op + '(self, abs_elem, prev, curr, poly_size, curr_size, prev_size, input_size, batch_size, layer_index = None):')
+                    self.indent += 1
+                    for layer_index in opStmtIr.layerwise_cfgs.keys():
+                        self.write('if layer_index == ' + str(layer_index) + ':')
+                        self.indent += 1
+                        self.write('return self.' + opStmtIr.op + '_' + str(layer_index) + '(abs_elem, prev, curr, poly_size, curr_size, prev_size, input_size, batch_size, layer_index = layer_index)')
+                        self.indent -= 1
+                    self.indent -= 1
+                    self.write('')
+                    
+                    for layer_index in opStmtIr.layerwise_cfgs.keys():
+                        self.write('def ' + opStmtIr.op + '_' + str(layer_index) + '(self, abs_elem, prev, curr, poly_size, curr_size, prev_size, input_size, batch_size, layer_index = None):')
+                        self.indent += 1
+                        cfg = opStmtIr.layerwise_cfgs[layer_index]
+                        # print(layer_index, cfg.entry_node, len(cfg.ir[0].children), type(cfg.ir[cfg.entry_node]))
+                        self.visit(cfg.ir[cfg.entry_node])
+                        self.indent -= 1
+                        self.write('', True)
             self.indent -=1
 
         self.open(self.main_file)
@@ -99,7 +120,9 @@ class CodeGen(irVisitor.IRVisitor):
             self.visit(node.irNodes[i])
 
     def visitIrBlock(self, node):
+        print(self.visited)
         if not node in self.visited:
+            print('here')
             self.visited.add(node)
             ir_list = node.children
             for counter, i in enumerate(ir_list):
@@ -133,9 +156,9 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrAssignment(self, node):
         var = str(self.visit(node.children[0]))
         expr = str(self.visit(node.children[1]))
-        self.write(var + ' = ' + expr + '#' + str(self.counter))
-        node.counter = self.counter
-        self.counter += 1
+        self.write(var + ' = ' + expr )
+        # node.counter = self.counter
+        # self.counter += 1
         
 
     def visitIrBreak(self, node):
@@ -207,6 +230,63 @@ class CodeGen(irVisitor.IRVisitor):
     
     def visitInt(self, node):
         return str(node)
+    
+    def visitIrSparseTensor(self, node):
+        return 'SparseTensor(' + self.visit(node.start_indices) + ', ' + self.visit(node.children[0]) + ', ' + self.visit(node.dims) + ', ' + self.visit(node.total_size) + ', ' + self.visit(node.end_indices) + ', type= ' + self.visit(node.type) + ', dense_const=' + self.visit(node.dense_const) + ')'
+
+    def visitIrConstBlock(self, node):
+        return 'ConstBlock(' + self.visit(node.children[0]) + ',' + self.visit(node.total_shape) + ')'
+    
+    def visitIrEmptyList(self, node):
+        return '[]'
+
+    def visitType(self, node):
+        return node.__name__
+    
+    def visitFloat(self, node):
+        return str(node)
+    
+    def visitInt(self, node):
+        return str(node)
+    
+    def visitIrAppendList(self, node):
+        return self.visit(node.children[0]) + '.append(' + self.visit(node.children[1]) + ')'
+
+    
+    def get_operator_func(self, name: str):
+        if not isinstance(name, str):
+            name = name.__name__
+        OP_MAP = {
+            "add": 'operator.add',
+            "sub": 'operator.sub',
+            "ge": 'operator.ge',
+            "gt": 'operator.gt',
+            "le": 'operator.le',
+            "lt": 'operator.lt',
+            "mul": 'operator.mul',
+            "truediv": 'operator.truediv',
+            "floordiv": 'operator.floordiv',
+            "mod": 'operator.mod',
+            "pow": 'operator.pow',
+        }
+
+        try:
+            return OP_MAP[name]
+        except KeyError:
+            raise ValueError(f"Unsupported operator: {name}, {name.__name__}, {type(name)}")
+
+
+    def visitIrBlockBinaryOp(self, node):
+        return self.visit(node.children[0]) + '.binary(' + self.visit(node.children[1]) + ', ' + self.get_operator_func(node.op) + ')'
+    
+    def visitIrBinaryToUnary(self, node):
+        return 'binary_to_identity_unary(' + self.get_operator_func(node.op) + ')(' + self.visit(node.children[0]) + ')'
+    
+    def visitIrGetSubBlockCustomRange(self, node):
+        return self.visit(node.children[0]) + '.get_sub_block_custom_range(' + self.visit(node.start_index) + ', ' + self.visit(node.end_index) + ', ' + self.visit(node.block_id) + ', ' + str(node.tensor) + ')'
+
+    def visitTorchTensor(self, node):
+        return 'torch.tensor(' + str(node.tolist()) + ')'
 
     def visitIrVar(self, node):
         if node.name == 'sym_size':
@@ -317,7 +397,8 @@ class CodeGen(irVisitor.IRVisitor):
             return op_name + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ')'
         else:
             # asdasds
-            return 'binary(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(self.counter) + ')'
+
+            return 'binary(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.binary_counter) + ') #' + str(node.binary_counter)
     
     def visitIrUnaryOp(self, node):
         op_name = None 
@@ -388,13 +469,16 @@ class CodeGen(irVisitor.IRVisitor):
             raise Exception('OP NOT IDENTIFIED', node.op)
         
         [lhsIr, rhsIr] = node.children
-        return 'binary' + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ')'
+        # node.binary_counter = self.counter
+        # self.counter += 1
+        # return 'binary' + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ')'
+        return 'binary(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.binary_counter) + ') #' + str(node.binary_counter)
     
     def visitIrInnerProduct(self, node):
         op_name = 'inner_prod'
         
         [lhsIr, rhsIr] = node.children
-        return op_name + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', layer_index = layer_index, counter = ' + str(self.counter) + ')'
+        return op_name + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', layer_index = 0, counter = ' + str(self.counter) + ')'
 
     def visitIrDot(self, node):
         [lhsIr, rhsIr] = node.children

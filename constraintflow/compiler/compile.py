@@ -7,6 +7,7 @@ from constraintflow.ast_cflow import astTC
 from constraintflow.compiler import convertToIr as c2r
 from constraintflow.compiler import representations
 from constraintflow.compiler import codeGen
+from constraintflow.compiler.optimizations import tensor_to_block
 from constraintflow.compiler.optimizations import polyOpt
 from constraintflow.compiler.optimizations import symexpCount
 from constraintflow.compiler.optimizations import loopInvariantCodeMotion
@@ -61,6 +62,13 @@ def compile(inputfile, output_path):
     for opt in optimizations:
         opt(ir)
     representations.remove_phi(ir)
+    # codeGen.CodeGen(output_path).visit(ir)
+
+    replay = True
+
+    if replay:
+        tensor_to_block.tensor_to_block(ir)
+
     codeGen.CodeGen(output_path).visit(ir)
 
     return True

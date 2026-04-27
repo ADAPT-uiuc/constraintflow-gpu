@@ -1,3 +1,4 @@
+import torch
 from constraintflow.compiler import ir as IR 
 
 class IRVisitor:
@@ -148,6 +149,39 @@ class IRVisitor:
         
         elif isinstance(node, str):
             return self.visitIrStr(node)
+
+        elif isinstance(node, IR.IrSparseTensor):
+            return self.visitIrSparseTensor(node)
+        
+        elif isinstance(node, IR.IrGetSubBlockCustomRange):
+            return self.visitIrGetSubBlockCustomRange(node)
+        
+        elif isinstance(node, IR.IrBinaryToUnary):
+            return self.visitIrBinaryToUnary(node)
+        
+        elif isinstance(node, IR.IrEmptyList):
+            return self.visitIrEmptyList(node)
+        
+        elif isinstance(node, IR.IrAppendList):
+            return self.visitIrAppendList(node)
+        
+        elif isinstance(node, IR.IrConstBlock):
+            return self.visitIrConstBlock(node)
+        
+        elif isinstance(node, IR.IrBlockBinaryOp):
+            return self.visitIrBlockBinaryOp(node)
+        
+        elif isinstance(node, torch.Tensor):
+            return self.visitTorchTensor(node)
+        
+        elif isinstance(node, type):
+            return self.visitType(node)
+        
+        elif isinstance(node, float):
+            return self.visitFloat(node)
+        
+        elif isinstance(node, int):
+            return self.visitInt(node)
 
         else:
             print("This is an error. This shouldn't happen")
