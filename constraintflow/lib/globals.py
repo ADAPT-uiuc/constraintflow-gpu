@@ -19,7 +19,7 @@ debug_flag2 = Flag()
 debug_flag3 = Flag()
 debug_flag4 = Flag()
 
-dummy_mode = True
+dummy_mode = False
 
 class DeviceMode:
     _DEVICE_MAP = {

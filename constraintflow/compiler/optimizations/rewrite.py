@@ -702,6 +702,54 @@ def rewrite_associativity(expr):
     return expr, []
 
 
+
+def count_split_targets(expr):
+    if isinstance(expr, int):
+        return 0
+    targets = (IrBinaryOp, IrInnerProduct, IrMult)
+    count = 1 if isinstance(expr, targets) else 0
+    for child in expr.children:
+        count += count_split_targets(child)
+    return count
+
+def hoist_split_targets(expr):
+    if isinstance(expr, int):
+        return expr, []
+
+    new_children = []
+    new_assignments = []
+    for child in expr.children:
+        new_child, child_assignments = hoist_split_targets(child)
+        new_children.append(new_child)
+        new_assignments += child_assignments
+    expr.update_parent_child(new_children)
+
+    targets = (IrBinaryOp, IrInnerProduct, IrMult)
+    if isinstance(expr, targets):
+        new_name = get_var(True)
+        new_var = IrVar(new_name, expr.irMetadata)
+        new_assignment = IrAssignment(new_var, expr)
+        new_assignments.append(new_assignment)
+        return new_var, new_assignments
+
+    return expr, new_assignments
+
+binary_counter = 0
+def assign_binary_counter(expr):
+    global binary_counter
+    if isinstance(expr, int):
+        return expr, []
+    new_children = []
+    for child in expr.children:
+        new_child, _ = assign_binary_counter(child)
+        new_children.append(new_child)
+    expr.update_parent_child(new_children)
+    if isinstance(expr, IrBinaryOp) or isinstance(expr, IrMult):
+        binary_counter += 1
+        expr.binary_counter = binary_counter
+    return expr, []
+
+
 def rewrite_block(block, rewrite_func):
     ir_list = block.children
     length = len(ir_list)
@@ -776,6 +824,16 @@ def rewrite_cfg(cfg):
     for node in cfg.nodes:
         block = cfg.ir[node]
         rewrite_block(block, rewrite_expr_2)
+
+    uses.populate_uses_defs_cfg(cfg)
+    for node in cfg.nodes:
+        block = cfg.ir[node]
+        rewrite_block(block, hoist_split_targets)
+
+    uses.populate_uses_defs_cfg(cfg)
+    for node in cfg.nodes:
+        block = cfg.ir[node]
+        rewrite_block(block, assign_binary_counter)
     
 def rewrite(ir):
     for transformer in ir.tstore.keys():

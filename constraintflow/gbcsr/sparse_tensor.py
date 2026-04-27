@@ -1,3 +1,5 @@
+import builtins
+
 import torch
 import math
 import copy
@@ -15,21 +17,46 @@ from constraintflow.gbcsr.op_helper import *
 import json
 import os
 import pdb
+import operator
 # dummy_mode = dummy_mode.get_flag()
 
+
+import operator
+
+OP_MAP = {
+    "add": operator.add,
+    "sub": operator.sub,
+    "ge": operator.ge,
+    "gt": operator.gt,
+    "le": operator.le,
+    "lt": operator.lt,
+    "mul": operator.mul,
+    "truediv": operator.truediv,
+    "floordiv": operator.floordiv,
+    "mod": operator.mod,
+    "pow": operator.pow,
+}
+
+def get_operator_func(name: str):
+    try:
+        return OP_MAP[name]
+    except KeyError:
+        raise ValueError(f"Unsupported operator: {name}")
+
+
 # Per-process deterministic occurrence counters keyed by (layer_index, counter)
-_jit_replay_occurrence = {}
-_jit_save_occurrence = {}
+# _jit_replay_occurrence = {}
+# _jit_save_occurrence = {}
 _jit_matmul_replay_occurrence = {}
 _jit_matmul_save_occurrence = {}
 
-def _next_jit_occurrence(counter_store, layer_index, counter):
-    key = (layer_index, counter)
-    if key not in counter_store:
-        counter_store[key] = 0
-    occurrence = counter_store[key]
-    counter_store[key] = occurrence + 1
-    return occurrence
+# def _next_jit_occurrence(counter_store, layer_index, counter):
+#     key = (layer_index, counter)
+#     if key not in counter_store:
+#         counter_store[key] = 0
+#     occurrence = counter_store[key]
+#     counter_store[key] = occurrence + 1
+#     return occurrence
 
 
 
@@ -295,7 +322,7 @@ class SparseTensor:
         t1 = time.perf_counter()
         self.start_indices = start_indices
         self.blocks = blocks
-        self.total_size = total_size
+        self.total_size = total_size.int()
         self.dims = dims
         # assert(dims == total_size.shape[0])
         self.num_blocks = len(start_indices)
@@ -758,6 +785,111 @@ Blocks Types: "
     
 
     def binary(self, sp_tensor, op, layer_index = None, counter = None, dummy: bool=False, replay: bool=False):
+        if replay and layer_index is not None and counter is not None:
+            # replay_occurrence = _next_jit_occurrence(_jit_replay_occurrence, layer_index, counter)
+            replay_path = f"jit_binary/binary_{layer_index}_{counter}.json"
+            json_list = json.load(open(replay_path, "r"))
+
+            output_list = []
+            for json_obj in json_list:
+                if json_obj["method"] == "noop":
+                    if json_obj["input"] == "rhs":
+                        output_list.append(sp_tensor)
+                    else:
+                        raise Exception("NOT IMPLEMENTED")
+                
+                elif json_obj["method"] == "SparseTensor":
+                    if "json_list_" in json_obj['blocks']:
+                        blocks = output_list[int(json_obj['blocks'].split("_")[-1])]
+                    else:                        
+                        raise Exception("NOT IMPLEMENTED")
+                    output = SparseTensor(torch.Tensor(json_obj["start_indices"]), blocks, json_obj["dims"], torch.Tensor(json_obj["total_size"]), torch.Tensor(json_obj["end_indices"]), type=getattr(builtins, json_obj["type"]), dense_const=json_obj["dense_const"])
+                    output_list.append(output)
+                
+                elif json_obj["method"] == "initialise":
+                    output = json_obj["value"]
+                    if output == "[]":
+                        output = []
+                    else:
+                        raise Exception("NOT IMPLEMENTED")
+                    output_list.append(output)
+
+                elif json_obj["method"] == "get_sub_block_custom_range":
+                    if "json_list_" in json_obj["lhs"]:
+                        lhs = output_list[int(json_obj["lhs"].split("_")[-1])]
+                    elif json_obj["lhs"] == "lhs":
+                        lhs = self
+                    elif json_obj["lhs"] == "rhs":
+                        lhs = sp_tensor
+                    else:
+                        raise Exception("NOT IMPLEMENTED")
+                    output = lhs.get_sub_block_custom_range(torch.Tensor(json_obj["start_index"]), torch.Tensor(json_obj["end_index"]), json_obj["block_id"], json_obj["tensor"])
+                    output_list.append(output)
+
+                elif json_obj["method"] == "binary_to_identity_unary":
+                    if "json_list_" in json_obj["unary_source"]:
+                        lhs = output_list[int(json_obj["unary_source"].split("_")[-1])]
+                    elif json_obj["unary_source"] == "lhs":
+                        lhs = self
+                    elif json_obj["unary_source"] == "rhs":
+                        lhs = sp_tensor
+                    else:
+                        raise Exception("NOT IMPLEMENTED")
+                    # output = lhs.binary_to_identity_unary(get_operator_func(json_obj["op"]))
+                    output = binary_to_identity_unary(get_operator_func(json_obj["op"]))(lhs)
+                    output_list.append(output)
+
+                elif json_obj["method"] == "append_list":
+                    if 'json_list_' in json_obj["list"]:
+                        list1 = output_list[int(json_obj["list"].split("_")[-1])]
+                    else:
+                        raise Exception("NOT IMPLEMENTED")
+                    if 'json_list_' in json_obj["value"]:
+                        val = output_list[int(json_obj["value"].split("_")[-1])]
+                    else:
+                        raise Exception("NOT IMPLEMENTED")
+                    list1.append(val)
+                    output_list.append(list1)
+                elif json_obj["method"] == "binary":
+                    if "json_list_" in json_obj["lhs"]:
+                        lhs = output_list[int(json_obj["lhs"].split("_")[-1])]
+                    elif json_obj["lhs"] == "lhs":
+                        lhs = self
+                    elif json_obj["lhs"] == "rhs":
+                        lhs = sp_tensor
+                    else:
+                        raise Exception("NOT IMPLEMENTED")
+                    
+                    if "json_list_" in json_obj["rhs"]:
+                        rhs = output_list[int(json_obj["rhs"].split("_")[-1])]
+                    elif json_obj["rhs"] == "lhs":
+                        rhs = self
+                    elif json_obj["rhs"] == "rhs":
+                        rhs = sp_tensor
+                    else:
+                        raise Exception("NOT IMPLEMENTED")
+                    
+                    output = lhs.binary(rhs, get_operator_func(json_obj["op"]))
+                    output_list.append(output)
+                
+                elif json_obj["method"] == "ConstBlock":
+                    shape = torch.tensor(json_obj["total_shape"], dtype=torch.int64)
+                    output = ConstBlock(json_obj["block"], shape)
+                    output_list.append(output)
+                
+                
+                else:
+                    raise Exception(f"Unknown method {json_obj['method']} in replay")
+                
+
+
+                if(len(output_list) != json_obj["output"] + 1):
+                    print(f"Output list length: {len(output_list)}, expected: {json_obj['output'] + 1}")
+                    print(replay_path)
+                assert(len(output_list) == json_obj["output"] + 1)
+
+
+        json_list = [] 
         # if dummy:
         #     ConstBlock = DummyBlock
         binary_sparse_tensor_count.update_num_used()
@@ -767,10 +899,41 @@ Blocks Types: "
         if (isinstance(sp_tensor, torch.Tensor) and sp_tensor.size()!=1):
             assert(False)
             sp_tensor = convert_dense_to_sparse(sp_tensor)
-        elif isinstance(sp_tensor, float) or isinstance(sp_tensor, bool) or isinstance(sp_tensor, int):
+        if isinstance(sp_tensor, float) or isinstance(sp_tensor, bool) or isinstance(sp_tensor, int):
             sp_tensor = SparseTensor([], [], self.dims, self.total_size, [], type(sp_tensor), sp_tensor)
+            json_obj = {
+                "method": "SparseTensor",
+                "start_indices": "[]",
+                "blocks": "[]",
+                "dims": self.dims,
+                "total_size": self.total_size.tolist(),
+                "end_indices": "[]",
+                "type": (type(sp_tensor).__name__),
+                "dense_const": sp_tensor.dense_const,
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
         elif (isinstance(sp_tensor, torch.Tensor) and sp_tensor.size()==1):
             sp_tensor = SparseTensor([], [], self.dims, self.total_size, [], type(sp_tensor.item()), sp_tensor.item())
+            json_obj = {
+                "method": "SparseTensor",
+                "start_indices": "[]",
+                "blocks": "[]",
+                "dims": self.dims,
+                "total_size": self.total_size.tolist(),
+                "end_indices": "[]",
+                "type": (type(sp_tensor.item()).__name__),
+                "dense_const": sp_tensor.item(),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+        else:
+            json_obj = {
+                "method": "noop",
+                "input": "rhs",
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
 
         assert((self.total_size == sp_tensor.total_size).all())
         assert(self.dims == sp_tensor.dims)
@@ -794,151 +957,30 @@ Blocks Types: "
         def tensor_list_to_list(lst):
             return [tensor_to_list(x) for x in lst]
 
-        def tensor_layout_fingerprint(sp):
-            # The whole point of this fingerprint is to verify at runtime if the runtime tensor matches the stored one
-            return {
-                "num_blocks": sp.num_blocks,
-                "dims": sp.dims,
-                "total_size": tensor_to_list(sp.total_size),
-                "start_indices": tensor_list_to_list(sp.start_indices),
-                "end_indices": tensor_list_to_list(sp.end_indices),
-                "block_types": [b.block_type for b in sp.blocks],
-                "block_shapes": [tensor_to_list(b.total_shape) for b in sp.blocks],
-            }
-
-        def normalize_layout_fingerprint(fp):
-            # I don't want to compare the block types since the collection will happen with dummy blocks. 
-            # It would be wise to remove the block types entirely from the storage but I want to keep some information for debugging.
-            # The final version will not have this field. 
-            block_shapes = fp["block_shapes"] if "block_shapes" in fp else None
-            if block_shapes is None:
-                block_shapes = []
-            return {
-                "num_blocks": fp["num_blocks"],
-                "dims": fp["dims"],
-                "total_size": fp["total_size"],
-                "start_indices": fp["start_indices"],
-                "end_indices": fp["end_indices"],
-                "block_shapes": block_shapes,
-            }
-
-        if replay and layer_index is not None and counter is not None:
-            replay_occurrence = _next_jit_occurrence(_jit_replay_occurrence, layer_index, counter)
-            replay_path = f"jit_binary/binary_{layer_index}_{counter}_{replay_occurrence}.json"
-            if not os.path.exists(replay_path):
-                raise Exception(
-                    f"jit_binary trace not found for layer {layer_index}, counter {counter}, occurrence {replay_occurrence}"
-                )
-            with open(replay_path, "r") as f:
-                jit_data = json.load(f)
-            
-            for required_key in ["res_start_indices", "res_end_indices", "block_operations", "block_mappings"]:
-                if required_key not in jit_data:
-                    raise Exception(f"Invalid jit_binary trace: missing key {required_key}")
-
-            jit_op_name = jit_data["op_name"]
-
-            # Just a simple check, will remove later
-            if jit_op_name != op.__name__:
-                raise Exception(f"jit_binary replay rejected: op mismatch {jit_op_name} != {op.__name__}")
-            
-            # The whole point of the fingerprint is to verify, will remove later
-            lhs_fp = jit_data["lhs_fingerprint"]
-            rhs_fp = jit_data["rhs_fingerprint"] 
-            current_lhs_fp = tensor_layout_fingerprint(self)
-            current_rhs_fp = tensor_layout_fingerprint(sp_tensor)
-            if normalize_layout_fingerprint(lhs_fp) != normalize_layout_fingerprint(current_lhs_fp):
-                raise Exception("jit_binary replay rejected: lhs layout fingerprint mismatch")
-            if normalize_layout_fingerprint(rhs_fp) != normalize_layout_fingerprint(current_rhs_fp):
-                print(f"lhs_fp: {lhs_fp}")
-                print(f"rhs_fp: {rhs_fp}")
-                print(f"self: {current_lhs_fp}")
-                print(f"sp_tensor: {current_rhs_fp}")
-                raise Exception("jit_binary replay rejected: rhs layout fingerprint mismatch")
-
-            jit_start_indices = jit_data["res_start_indices"]
-            jit_end_indices = jit_data["res_end_indices"]
-            jit_block_operations = jit_data["block_operations"]
-            jit_block_mappings = jit_data["block_mappings"]
-
-            # simple check again, will remove later
-            if not (
-                len(jit_start_indices)
-                == len(jit_end_indices)
-                == len(jit_block_operations)
-                == len(jit_block_mappings)
-            ):
-                raise Exception("Invalid jit_binary trace: segment lengths mismatch")
-
-            replay_start_indices = []
-            replay_end_indices = []
-            replay_blocks = []
-
-            for i in range(len(jit_start_indices)):
-                # the indices were serialized as lists so we need to convert them to tensors
-                start_index = torch.tensor(jit_start_indices[i], dtype=torch.int64)
-                end_index = torch.tensor(jit_end_indices[i], dtype=torch.int64)
-
-                op_info = jit_block_operations[i]
-                mapping = jit_block_mappings[i]
-
-
-                lhs_source = mapping["lhs_source"]
-                rhs_source = mapping["rhs_source"]
-
-                # Replay using precomputed local slice offsets from the plan.
-                if lhs_source["kind"] == "dense_const":
-                    lhs_block = ConstBlock(self.dense_const, end_index - start_index)
-                else:
-                    lhs_mode = lhs_source["extraction_mode"] 
-                    lhs_block = self.get_sub_block_fast(start_index, end_index, lhs_source["block_id"], False, extraction_mode=lhs_mode)
-
-                if rhs_source["kind"] == "dense_const":
-                    rhs_block = ConstBlock(sp_tensor.dense_const, end_index - start_index)
-                else:
-                    rhs_mode = rhs_source["extraction_mode"] 
-                    rhs_block = sp_tensor.get_sub_block_fast(start_index, end_index, rhs_source["block_id"], False, extraction_mode=rhs_mode)
-
-                # simple reconstruction of the operation and performing the operation
-                operation_name = op_info["operation"]
-                if operation_name == "binary":
-                    block = lhs_block.binary(rhs_block, op)
-                elif operation_name == "binary_to_identity_unary":
-                    if rhs_source["kind"] == "block":
-                        unary_source = rhs_block
-                    elif lhs_source["kind"] == "block":
-                        unary_source = lhs_block
-                    else:
-                        print(f"lhs_source: {lhs_source}")
-                        print(f"rhs_source: {rhs_source}")
-                        raise Exception(f"Unsupported replay operation: {operation_name}")
-                    block = binary_to_identity_unary(op)(unary_source)
-                elif operation_name == "binary_with_identity_rhs":
-                    block = lhs_block
-                else:
-                    print(f"lhs_source: {lhs_source}")
-                    print(f"rhs_source: {rhs_source}")
-                    raise Exception(f"Unsupported replay operation: {operation_name}")
-
-                # Identical code as the non-replay
-                if (not dummy) and (not dummy_mode) and isinstance(block, ConstBlock) and block.block == dense_const:
-                    continue
-                replay_blocks.append(block)
-                replay_start_indices.append(start_index)
-                replay_end_indices.append(end_index)
-
-            res = SparseTensor(replay_start_indices, replay_blocks, self.dims, self.total_size, replay_end_indices, new_type, dense_const)
-            return res
+        
         
         # indices[i][0] indices from self, indices[i][1] indices from sp_tensor
         start_indices, end_indices, indices = self.union_tensors(sp_tensor, indices=True)
         res_start_indices = []
         res_end_indices = []
         res_blocks = []
+
+        
+        json_obj = {
+            "method": "initialise",
+            "name": "res_blocks",
+            "value": "[]",
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        res_blocks_json_list_index = len(json_list) - 1
+
         block_operations = []
         block_mappings = []
 
         binary_sparse_tensor_expenses.update_total_time(time.perf_counter()-total_start_time)
+
+        
 
         for i in range(len(start_indices)):
             start_index = start_indices[i]
@@ -952,61 +994,116 @@ Blocks Types: "
                 # essentially get block from sp_tensor that corresponds to the range start_index, end_index
                 block_id_2 = indices[i][1][0]
                 block, rhs_extraction_mode = sp_tensor.get_sub_block_custom_range(start_index, end_index, block_id_2, False, return_extraction_mode=True)
-                block_mapping = {
-                    "lhs_source": {"kind": "dense_const", "tensor": "self"},
-                    "rhs_source": {
-                        "kind": "block",
-                        "tensor": "sp_tensor",
-                        "block_id": block_id_2,
-                        "extraction_mode": rhs_extraction_mode,
-                    },
+
+
+                json_obj = {
+                    "method": "get_sub_block_custom_range",
+                    "lhs": "json_list_0",
+                    "start_index": start_index.tolist(),
+                    "end_index": end_index.tolist(),
+                    "block_id": block_id_2,
+                    "tensor": False,
+                    "output": len(json_list)
                 }
+
+                json_list.append(json_obj)
+
+
                 binary_sparse_tensor_dom2_expenses.update_total_time(time.perf_counter()-start_time)
                 start = time.perf_counter()
 
                 # checking if it can be turned into a unary operation 
                 if identity_element(op) == self.dense_const:
-                    block_operation = {"operation":"binary_to_identity_unary", "block_shape": block.total_shape}
                     block = binary_to_identity_unary(op)(block)
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
+
+                    json_obj = {
+                        "method": "binary_to_identity_unary",
+                        "op": op.__name__,
+                        "unary_source": "json_list_" + str(len(json_list) - 1),
+                        "output": len(json_list)
+                    }
+                    json_list.append(json_obj)
                 elif annihilator_element(op) == self.dense_const and dense_const == self.dense_const:
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
                     continue
                 else:
                     temp_block = ConstBlock(self.dense_const, block.total_shape)
+                    json_obj = {
+                        "method": "ConstBlock",
+                        "block": self.dense_const,
+                        "total_shape": block.total_shape.tolist(), 
+                        "output": len(json_list)
+                    }
+                    json_list.append(json_obj)
+
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
                     # Index Dependant
-                    block_operation = {"operation":"binary", "block1_shape": temp_block.total_shape, "block2_shape": block.total_shape}
                     block = temp_block.binary(block, op)
+
+                    json_obj = {
+                        "method": "binary",
+                        "op": op.__name__,
+                        "lhs": "json_list_" + str(len(json_list) - 1),
+                        "rhs": "json_list_" + str(len(json_list) - 2),
+                        "output": len(json_list)
+                    }
+                    json_list.append(json_obj)
+
                 binary_sparse_tensor_dom2.update_total_time(time.perf_counter()-start_time)
             elif len(indices[i][1]) == 0:
                 start_time = time.perf_counter()
                 block_id_1 = indices[i][0][0]
                 block, lhs_extraction_mode = self.get_sub_block_custom_range(start_index, end_index, block_id_1, False, return_extraction_mode=True)
-                block_mapping = {
-                    "lhs_source": {
-                        "kind": "block",
-                        "tensor": "self",
-                        "block_id": block_id_1,
-                        "extraction_mode": lhs_extraction_mode,
-                    },
-                    "rhs_source": {"kind": "dense_const", "tensor": "sp_tensor"},
-                }
                 binary_sparse_tensor_dom1_expenses.update_total_time(time.perf_counter()-start_time)
                 start = time.perf_counter()
+
+
+                json_obj = {
+                    "method": "get_sub_block_custom_range",
+                    "lhs": "lhs",
+                    "start_index": start_index.tolist(),
+                    "end_index": end_index.tolist(),
+                    "block_id": block_id_1,
+                    "tensor": False,
+                    "output": len(json_list)
+                }
+
+                json_list.append(json_obj)
+
+
                 if identity_element(op) == sp_tensor.dense_const:
                     block_operation = {"operation":"binary_with_identity_rhs", "block_shape": block.total_shape}
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
+
+                    # raise Exception("NOT IMPLEMENTED")
                     pass 
                 elif annihilator_element(op) == sp_tensor.dense_const and dense_const == sp_tensor.dense_const:
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
                     continue
                 else:
                     temp_block = ConstBlock(sp_tensor.dense_const, block.total_shape)
+                    json_obj = {
+                        "method": "ConstBlock",
+                        "block": sp_tensor.dense_const,
+                        "total_shape": block.total_shape.tolist(),
+                        "output": len(json_list)
+                    }
+                    json_list.append(json_obj)
+
                     binary_fixed_costs.update_total_time(time.perf_counter()-start_time)
                     # Index Dependant
-                    block_operation = {"operation":"binary", "block1_shape": block.total_shape, "block2_shape": temp_block.total_shape}
                     block = block.binary(temp_block, op)
+
+                    json_obj = {
+                        "method": "binary",
+                        "op": op.__name__,
+                        "lhs": "json_list_" + str(len(json_list) - 2),
+                        "rhs": "json_list_" + str(len(json_list) - 1),
+                        "output": len(json_list)
+                    }
+                    json_list.append(json_obj)
+
                 binary_sparse_tensor_dom1.update_total_time(time.perf_counter()-start_time)
             else:
                 start_time = time.perf_counter()
@@ -1014,32 +1111,60 @@ Blocks Types: "
                 block_id_2 = indices[i][1][0]
                 block_1, lhs_extraction_mode = self.get_sub_block_custom_range(start_index, end_index, block_id_1, False, return_extraction_mode=True)
                 block_2, rhs_extraction_mode = sp_tensor.get_sub_block_custom_range(start_index, end_index, block_id_2, False, return_extraction_mode=True)
-                block_mapping = {
-                    "lhs_source": {
-                        "kind": "block",
-                        "tensor": "self",
-                        "block_id": block_id_1,
-                        "extraction_mode": lhs_extraction_mode,
-                    },
-                    "rhs_source": {
-                        "kind": "block",
-                        "tensor": "sp_tensor",
-                        "block_id": block_id_2,
-                        "extraction_mode": rhs_extraction_mode,
-                    },
-                }
+                
                 binary_sparse_tensor_overlap_expenses.update_total_time(time.perf_counter()-start_time)
                 # Index Dependant
-                block_operation = {"operation":"binary", "block1_shape": block_1.total_shape, "block2_shape": block_2.total_shape}
                 block = block_1.binary(block_2, op)
-                # print(f"block type: {type(block)}")
                 binary_sparse_tensor_overlap.update_total_time(time.perf_counter()-start_time)
+
+
+                json_obj_1 = {
+                    "method": "get_sub_block_custom_range",
+                    "lhs": "lhs",
+                    "start_index": start_index.tolist(),
+                    "end_index": end_index.tolist(),
+                    "block_id": block_id_1,
+                    "tensor": False,
+                    "output": len(json_list)
+                }
+
+                json_list.append(json_obj_1)
+
+                json_obj_2 = {
+                    "method": "get_sub_block_custom_range",
+                    "lhs": "json_list_0",
+                    "start_index": start_index.tolist(),
+                    "end_index": end_index.tolist(),
+                    "block_id": block_id_2,
+                    "tensor": False,
+                    "output": len(json_list)
+                }
+
+                json_list.append(json_obj_2)
+
+                json_obj = {
+                    "method": "binary",
+                    "op": op.__name__,
+                    "lhs": "json_list_" + str(len(json_list) - 2),
+                    "rhs": "json_list_" + str(len(json_list) - 1),
+                    "output": len(json_list)
+                }
+                json_list.append(json_obj)
             
             start = time.perf_counter()
             if (not dummy) and (not dummy_mode) and isinstance(block, ConstBlock) and block.block == dense_const:
                 binary_fixed_costs.update_total_time(time.perf_counter()-start)
                 continue
             res_blocks.append(block)
+
+            json_obj = {
+                "method": "append_list",
+                "list": "json_list_" + str(res_blocks_json_list_index),
+                "value": "json_list_" + str(len(json_list)-1),
+                "output": len(json_list)
+            }
+            json_list.append(json_obj)
+
             res_start_indices.append(start_indices[i])
             res_end_indices.append(end_indices[i])
             block_operations.append(block_operation)
@@ -1055,35 +1180,33 @@ Blocks Types: "
         res = SparseTensor(res_start_indices, res_blocks, self.dims, self.total_size, res_end_indices, new_type, dense_const)
         binary_fixed_costs.update_total_time(time.perf_counter()-start)
         total_binary_sparse_tensor.update_total_time(time.perf_counter()-total_start_time)
-        # I will make this more sophisticated later
+
+        res_start_indices_str = [tensor_to_list(x) for x in res_start_indices]
+        res_end_indices_str = [tensor_to_list(x) for x in res_end_indices]
+
+        json_obj = {
+                "method": "SparseTensor",
+                "start_indices": res_start_indices_str,
+                "blocks": "json_list_" + str(res_blocks_json_list_index),
+                "dims": self.dims,
+                "total_size": self.total_size.tolist(),
+                "end_indices": res_end_indices_str,
+                "type": (new_type.__name__),
+                "dense_const": dense_const,
+                "output": len(json_list),
+            }
+        json_list.append(json_obj)
+
+        
+
         if dummy_mode:
             if layer_index is not None and counter is not None:
                 os.makedirs("jit_binary", exist_ok=True)
-                capture_occurrence = _next_jit_occurrence(_jit_save_occurrence, layer_index, counter)
-                capture_path = f"jit_binary/binary_{layer_index}_{counter}_{capture_occurrence}.json"
+                # capture_occurrence = _next_jit_occurrence(_jit_save_occurrence, layer_index, counter)
+                capture_path = f"jit_binary/binary_{layer_index}_{counter}.json"
                 
-                serializable_start_indices = tensor_list_to_list(res_start_indices)
-                serializable_end_indices = tensor_list_to_list(res_end_indices)
-                for i in range(len(block_operations)):
-                    for key in block_operations[i].keys():
-                        block_operations[i][key] = tensor_to_list(block_operations[i][key])
-                for i in range(len(block_mappings)):
-                    for side in ["lhs_source", "rhs_source"]:
-                        for key in block_mappings[i][side].keys():
-                            block_mappings[i][side][key] = tensor_to_list(block_mappings[i][side][key])
                 with open(capture_path, 'w') as f:
-                    json.dump({
-                        "op_name": op.__name__,
-                        "res_start_indices": serializable_start_indices,
-                        "res_end_indices": serializable_end_indices,
-                        "block_operations": block_operations,
-                        "block_mappings": block_mappings,
-                        "lhs_fingerprint": tensor_layout_fingerprint(self),
-                        "rhs_fingerprint": tensor_layout_fingerprint(sp_tensor),
-                    }, f, indent=4)
-                    print(
-                        f"jit_binary saved for layer {layer_index}, counter {counter}, occurrence {capture_occurrence}"
-                    )
+                    json.dump(json_list, f, indent=4)
         return res
             
         
@@ -1105,7 +1228,7 @@ Blocks Types: "
         res = SparseTensor(self.start_indices, blocks, self.dims, self.total_size, self.end_indices, float, float(self.dense_const))
         return res 
     
-    def matmul(self, sp_tensor, layer_index = None, counter = None, replay: bool=True):
+    def matmul(self, sp_tensor, layer_index = None, counter = None, replay: bool=False):
         total_start_time = time.perf_counter()
         
         if isinstance(sp_tensor, torch.Tensor):
@@ -1157,11 +1280,11 @@ Blocks Types: "
             return [tensor_to_list(x) for x in lst]
 
         if replay and layer_index is not None and counter is not None:
-            replay_occurrence = _next_jit_occurrence(_jit_matmul_replay_occurrence, layer_index, counter)
-            replay_path = f"jit_matmul/matmul_{layer_index}_{counter}_{replay_occurrence}.json"
+            # replay_occurrence = _next_jit_occurrence(_jit_matmul_replay_occurrence, layer_index, counter)
+            replay_path = f"jit_matmul/matmul_{layer_index}_{counter}.json"
             if not os.path.exists(replay_path):
                 raise Exception(
-                    f"jit_matmul trace not found for layer {layer_index}, counter {counter}, occurrence {replay_occurrence}"
+                    f"jit_matmul trace not found for layer {layer_index}, counter {counter}"
                 )
             with open(replay_path, "r") as f:
                 jit_data = json.load(f)
@@ -1247,8 +1370,8 @@ Blocks Types: "
                 self.type,
             )
             return res
-        if layer_index is not None and counter is not None:
-            raise Exception(f"matmul called with layer_index {layer_index} and counter {counter} but no replay was provided")
+        # if layer_index is not None and counter is not None:
+        #     raise Exception(f"matmul called with layer_index {layer_index} and counter {counter} but no replay was provided")
         if self.dims == sp_tensor.dims:
             res_total_size = torch.concat([self.total_size[:-1], sp_tensor.total_size[-1:]])
             matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-total_start_time)
@@ -1434,8 +1557,8 @@ Blocks Types: "
         matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
         if dummy_mode and layer_index is not None and counter is not None:
             os.makedirs("jit_matmul", exist_ok=True)
-            capture_occurrence = _next_jit_occurrence(_jit_matmul_save_occurrence, layer_index, counter)
-            matmul_path = f"jit_matmul/matmul_{layer_index}_{counter}_{capture_occurrence}.json"
+            # capture_occurrence = _next_jit_occurrence(_jit_matmul_save_occurrence, layer_index, counter)
+            matmul_path = f"jit_matmul/matmul_{layer_index}_{counter}.json"
             serializable_start_indices = tensor_list_to_list(start_indices)
             serializable_end_indices = tensor_list_to_list(end_indices)
             for i in range(len(matmul_operations)):
@@ -1451,7 +1574,7 @@ Blocks Types: "
             with open(matmul_path, "w") as f:
                 json.dump(
                     {
-                        "op_name": "matmul",
+                        "method": "matmul",
                         "res_total_size": tensor_to_list(res_total_size),
                         "res_start_indices": serializable_start_indices,
                         "res_end_indices": serializable_end_indices,
