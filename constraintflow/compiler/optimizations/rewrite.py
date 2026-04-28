@@ -734,19 +734,21 @@ def hoist_split_targets(expr):
 
     return expr, new_assignments
 
-binary_counter = 0
-def assign_binary_counter(expr):
-    global binary_counter
+ttb_counter = 0
+def assign_ttb_counter(expr):
+    global ttb_counter
     if isinstance(expr, int):
         return expr, []
     new_children = []
     for child in expr.children:
-        new_child, _ = assign_binary_counter(child)
+        new_child, _ = assign_ttb_counter(child)
         new_children.append(new_child)
     expr.update_parent_child(new_children)
-    if isinstance(expr, IrBinaryOp) or isinstance(expr, IrMult):
-        binary_counter += 1
-        expr.binary_counter = binary_counter
+    targets = (IrBinaryOp, IrInnerProduct, IrMult)
+    if isinstance(expr, targets):
+    # if isinstance(expr, IrBinaryOp) or isinstance(expr, IrMult) or isinstance(expr, IrInnerProduct):
+        ttb_counter += 1
+        expr.ttb_counter = ttb_counter
     return expr, []
 
 
@@ -833,7 +835,7 @@ def rewrite_cfg(cfg):
     uses.populate_uses_defs_cfg(cfg)
     for node in cfg.nodes:
         block = cfg.ir[node]
-        rewrite_block(block, assign_binary_counter)
+        rewrite_block(block, assign_ttb_counter)
     
 def rewrite(ir):
     for transformer in ir.tstore.keys():

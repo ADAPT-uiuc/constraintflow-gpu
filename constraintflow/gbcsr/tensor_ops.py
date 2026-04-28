@@ -126,15 +126,59 @@ def binary(x, y, op, layer_index = None, counter = None):
     binary_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
     if isinstance(x, SparseTensor):
         start_time = time.perf_counter()
-        res = x.binary(y, op, layer_index = layer_index, counter = counter)
+        json_list = []
+        json_obj = {
+            "method": "noop",
+            "input": "lhs",
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        json_obj = {
+            "method": "noop",
+            "input": "rhs",
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        
+        res = x.binary(y, op, layer_index = layer_index, counter = counter, json_list = json_list, lhs_index=0, rhs_index=1)
         binary_tensor_ops_x_sparsity.update_total_time(time.perf_counter() - start_time)
+
+        if dummy_mode:
+            if layer_index is not None and counter is not None:
+                os.makedirs("jit_binary", exist_ok=True)
+                # capture_occurrence = _next_jit_occurrence(_jit_save_occurrence, layer_index, counter)
+                capture_path = f"jit_binary/binary_{layer_index}_{counter}.json"
+                
+                with open(capture_path, 'w') as f:
+                    json.dump(json_list, f, indent=4)
         
     elif isinstance(y, SparseTensor):
+        json_list = []
+        json_obj = {
+            "method": "noop",
+            "input": "lhs",
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        json_obj = {
+            "method": "noop",
+            "input": "rhs",
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
         start_time = time.perf_counter()
-        temp = convert_dense_to_sparse(x, y.total_size)
+        temp = convert_dense_to_sparse(x, y.total_size, json_list=json_list, x_index=0)
         binary_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
-        res = temp.binary(y, op, layer_index = layer_index, counter = counter)
+        res = temp.binary(y, op, layer_index = layer_index, counter = counter, json_list = json_list, lhs_index=2, rhs_index=1)
         binary_tensor_ops_y_sparsity.update_total_time(time.perf_counter() - start_time)
+        if dummy_mode:
+            if layer_index is not None and counter is not None:
+                os.makedirs("jit_binary", exist_ok=True)
+                # capture_occurrence = _next_jit_occurrence(_jit_save_occurrence, layer_index, counter)
+                capture_path = f"jit_binary/binary_{layer_index}_{counter}.json"
+                
+                with open(capture_path, 'w') as f:
+                    json.dump(json_list, f, indent=4)
     else:
         start_time = time.perf_counter()
         res = op(x, y)
@@ -268,7 +312,29 @@ def inner_prod(x, y, layer_index = None, counter = None):
                 print(x.total_size, y.total_size)
                 raise Exception('SHAPE MISMATCH')
             matmul_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
-            res = x.matmul(y, layer_index = layer_index, counter = counter)
+            json_list = []
+            json_obj = {
+                "method": "noop",
+                "input": "lhs",
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            json_obj = {
+                "method": "noop",
+                "input": "rhs",
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            res = x.matmul(y, layer_index = layer_index, counter = counter, json_list = json_list, lhs_index=0, rhs_index=1)
+
+            if dummy_mode:
+                if layer_index is not None and counter is not None:
+                    os.makedirs("jit_matmul", exist_ok=True)
+                    # capture_occurrence = _next_jit_occurrence(_jit_save_occurrence, layer_index, counter)
+                    capture_path = f"jit_matmul/matmul_{layer_index}_{counter}.json"
+                    
+                    with open(capture_path, 'w') as f:
+                        json.dump(json_list, f, indent=4)
         else:
             if x.total_size.shape[0] == y.shape.shape[0]:
                 if x.total_size[-1] != y.shape[-2]:

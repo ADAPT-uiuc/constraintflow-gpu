@@ -231,8 +231,35 @@ class CodeGen(irVisitor.IRVisitor):
     def visitInt(self, node):
         return str(node)
     
+    def visitList(self, node):
+        res = '['
+        for i, child in enumerate(node):
+            if i > 0:
+                res += ', '
+            res += self.visit(child)
+        res += ']'
+        return res
+
+    # def visitIrSparseTensor(self, node):
+    #     return 'SparseTensor(' + self.visit(node.start_indices) + ', ' + self.visit(node.children[0]) + ', ' + self.visit(node.dims) + ', ' + self.visit(node.total_size) + ', ' + self.visit(node.end_indices) + ', type= ' + self.visit(node.type) + ', dense_const=' + self.visit(node.dense_const) + ')'
+
     def visitIrSparseTensor(self, node):
-        return 'SparseTensor(' + self.visit(node.start_indices) + ', ' + self.visit(node.children[0]) + ', ' + self.visit(node.dims) + ', ' + self.visit(node.total_size) + ', ' + self.visit(node.end_indices) + ', type= ' + self.visit(node.type) + ', dense_const=' + self.visit(node.dense_const) + ')'
+        args = [
+            self.visit(node.start_indices),
+            self.visit(node.children[0]),
+            self.visit(node.dims),
+            self.visit(node.total_size),
+        ]
+
+        kwargs = []
+        if hasattr(node, "end_indices"):
+            kwargs.append(f"end_indices={self.visit(node.end_indices)}")
+        if hasattr(node, "type"):
+            kwargs.append(f"type={self.visit(node.type)}")
+        if hasattr(node, "dense_const"):
+            kwargs.append(f"dense_const={self.visit(node.dense_const)}")
+
+        return "SparseTensor(" + ", ".join(args + kwargs) + ")"
 
     def visitIrConstBlock(self, node):
         return 'ConstBlock(' + self.visit(node.children[0]) + ',' + self.visit(node.total_shape) + ')'
@@ -250,7 +277,14 @@ class CodeGen(irVisitor.IRVisitor):
         return str(node)
     
     def visitIrAppendList(self, node):
-        return self.visit(node.children[0]) + '.append(' + self.visit(node.children[1]) + ')'
+        return self.visit(node.children[0]) + '+ [' + self.visit(node.children[1]) + ']'
+    
+
+    def visitIrListExtract(self, node):
+        return self.visit(node.children[0]) + '[' + self.visit(node.children[1]) + ']'
+    
+    def visitIrBlockExtract(self, node):
+        return self.visit(node.children[0]) + '.blocks[' + self.visit(node.children[1]) + ']'
 
     
     def get_operator_func(self, name: str):
@@ -398,7 +432,7 @@ class CodeGen(irVisitor.IRVisitor):
         else:
             # asdasds
 
-            return 'binary(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.binary_counter) + ') #' + str(node.binary_counter)
+            return 'binary(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ') #' + str(node.ttb_counter)
     
     def visitIrUnaryOp(self, node):
         op_name = None 
@@ -469,16 +503,24 @@ class CodeGen(irVisitor.IRVisitor):
             raise Exception('OP NOT IDENTIFIED', node.op)
         
         [lhsIr, rhsIr] = node.children
-        # node.binary_counter = self.counter
+        # node.ttb_counter = self.counter
         # self.counter += 1
         # return 'binary' + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ')'
-        return 'binary(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.binary_counter) + ') #' + str(node.binary_counter)
+        return 'binary(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ') #' + str(node.ttb_counter)
     
     def visitIrInnerProduct(self, node):
         op_name = 'inner_prod'
         
         [lhsIr, rhsIr] = node.children
-        return op_name + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', layer_index = 0, counter = ' + str(self.counter) + ')'
+        return op_name + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ') #' + str(node.ttb_counter)
+    
+    def visitIrBlockInnerProduct(self, node):
+        if node.type == 'equal_dims':
+            return self.visit(node.children[0]) + '.matmul_equal_dims(' + self.visit(node.children[1])+ ')'
+        elif node.type == 'unequal_dims':
+            return self.visit(node.children[0]) + '.matmul_unequal_dims(' + self.visit(node.children[1])+ ')'
+        else:
+            raise Exception('OP NOT IDENTIFIED', node.type)
 
     def visitIrDot(self, node):
         [lhsIr, rhsIr] = node.children
