@@ -171,6 +171,9 @@ class IRVisitor:
         elif isinstance(node, IR.IrBlockBinaryOp):
             return self.visitIrBlockBinaryOp(node)
         
+        elif isinstance(node, IR.IrBlockInnerProduct):
+            return self.visitIrBlockInnerProduct(node)
+        
         elif isinstance(node, torch.Tensor):
             return self.visitTorchTensor(node)
         
@@ -182,6 +185,15 @@ class IRVisitor:
         
         elif isinstance(node, int):
             return self.visitInt(node)
+        
+        elif isinstance(node, list):
+            return self.visitList(node)
+        
+        elif isinstance(node, IR.IrListExtract):
+            return self.visitIrListExtract(node)
+        
+        elif isinstance(node, IR.IrBlockExtract):
+            return self.visitIrBlockExtract(node)
 
         else:
             print("This is an error. This shouldn't happen")

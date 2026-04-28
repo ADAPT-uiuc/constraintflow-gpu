@@ -58,11 +58,18 @@ def deepcopy_cfg_with_fresh_identifiers(cfg):
 
 
 def convert_to_ir(expr, layer_index):
-    if not isinstance(expr, IrBinaryOp) and not isinstance(expr, IrMult):
+    targets = (IrBinaryOp, IrMult, IrInnerProduct)
+    if not isinstance(expr, targets):
+    # if not isinstance(expr, IrBinaryOp) and not isinstance(expr, IrMult):
         return expr, []
     
-    binary_instance = expr.binary_counter
-    with open(f"jit_binary/binary_{layer_index}_{binary_instance}.json", 'r') as f:
+    binary_instance = expr.ttb_counter
+
+    if isinstance(expr, IrMult) or isinstance(expr, IrBinaryOp):
+        filename = f"jit_binary/binary_{layer_index}_{binary_instance}.json"
+    elif isinstance(expr, IrInnerProduct):
+        filename = f"jit_matmul/matmul_{layer_index}_{binary_instance}.json"
+    with open(filename, 'r') as f:
         json_list = json.load(f)
     print(binary_instance)
     lhs = expr.children[0]
@@ -76,15 +83,51 @@ def convert_to_ir(expr, layer_index):
         if json_obj["method"] == "noop":
             if json_obj["input"] == "rhs":
                 output = rhs
+            elif json_obj["input"] == "lhs":
+                output = lhs
+            elif 'json_list_' in json_obj["input"]:
+                output = output_vars[int(json_obj["input"].split("_")[-1])]
             else:
+                # print(json_obj["input"])
                 raise Exception("NOT IMPLEMENTED")
         
+        # elif json_obj["method"] == "SparseTensor":
+        #     if "json_list_" in json_obj['blocks']:
+        #         blocksIr = output_vars[int(json_obj['blocks'].split("_")[-1])]
+        #     elif json_obj['blocks'] == []:
+        #         blocksIr = []
+        #     else:                        
+        #         raise Exception("NOT IMPLEMENTED")
+        #     print(json_obj['start_indices'])
+        #     output = IrSparseTensor(torch.Tensor(json_obj["start_indices"]), blocksIr, json_obj["dims"], torch.Tensor(json_obj["total_size"]), torch.Tensor(json_obj["end_indices"]), type=getattr(builtins, json_obj["type"]), dense_const=json_obj["dense_const"])
+
         elif json_obj["method"] == "SparseTensor":
             if "json_list_" in json_obj['blocks']:
                 blocksIr = output_vars[int(json_obj['blocks'].split("_")[-1])]
-            else:                        
+            elif json_obj['blocks'] == []:
+                blocksIr = []
+            else:
                 raise Exception("NOT IMPLEMENTED")
-            output = IrSparseTensor(torch.Tensor(json_obj["start_indices"]), blocksIr, json_obj["dims"], torch.Tensor(json_obj["total_size"]), torch.Tensor(json_obj["end_indices"]), type=getattr(builtins, json_obj["type"]), dense_const=json_obj["dense_const"])
+
+            args = [
+                torch.Tensor(json_obj["start_indices"]),
+                blocksIr,
+                json_obj["dims"],
+                torch.Tensor(json_obj["total_size"]),
+            ]
+
+            kwargs = {}
+
+            if "end_indices" in json_obj and json_obj["end_indices"] is not None:
+                kwargs["end_indices"] = torch.Tensor(json_obj["end_indices"])
+
+            if "type" in json_obj and json_obj["type"] is not None:
+                kwargs["type"] = getattr(builtins, json_obj["type"])
+
+            if "dense_const" in json_obj and json_obj["dense_const"] is not None:
+                kwargs["dense_const"] = json_obj["dense_const"]
+
+            output = IrSparseTensor(*args, **kwargs)
         
         elif json_obj["method"] == "initialise":
             output = json_obj["value"]
@@ -127,6 +170,32 @@ def convert_to_ir(expr, layer_index):
             else:
                 raise Exception("NOT IMPLEMENTED")
             output = IrAppendList(list1, val)
+
+        elif json_obj["method"] == "index_lookup":
+            if "json_list_" in json_obj["input"]:
+                listIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:                
+                raise Exception("NOT IMPLEMENTED")
+            if isinstance(json_obj["index"], int):
+                indexIr = json_obj["index"]
+            elif "json_list_" in json_obj["index"]:
+                indexIr = output_vars[int(json_obj["index"].split("_")[-1])]
+            else:                
+                raise Exception("NOT IMPLEMENTED")
+            output = IrListExtract(listIr, indexIr)
+
+        elif json_obj["method"] == "extract_block":
+            if "json_list_" in json_obj["input"]:
+                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:                
+                raise Exception("NOT IMPLEMENTED")
+            if isinstance(json_obj["index"], int):
+                indexIr = json_obj["index"]
+            elif "json_list_" in json_obj["index"]:
+                indexIr = output_vars[int(json_obj["index"].split("_")[-1])]
+            else:                
+                raise Exception("NOT IMPLEMENTED")
+            output = IrBlockExtract(inputIr, indexIr)
             
         elif json_obj["method"] == "binary":
             if "json_list_" in json_obj["lhs"]:
@@ -148,6 +217,48 @@ def convert_to_ir(expr, layer_index):
                 raise Exception("NOT IMPLEMENTED")
             
             output = IrBlockBinaryOp(lhsIr, rhsIr, get_operator_func(json_obj["op"]))
+
+        elif json_obj["method"] == "matmul_unequal_dims":
+            if "json_list_" in json_obj["lhs"]:
+                lhsIr = output_vars[int(json_obj["lhs"].split("_")[-1])]
+            elif json_obj["lhs"] == "lhs":
+                lhsIr = lhs
+            elif json_obj["lhs"] == "rhs":
+                lhsIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            
+            if "json_list_" in json_obj["rhs"]:
+                rhsIr = output_vars[int(json_obj["rhs"].split("_")[-1])]
+            elif json_obj["rhs"] == "lhs":
+                rhsIr = lhs
+            elif json_obj["rhs"] == "rhs":
+                rhsIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            
+            output = IrBlockInnerProduct(lhsIr, rhsIr, type='unequal_dims')
+
+        elif json_obj["method"] == "matmul_equal_dims":
+            if "json_list_" in json_obj["lhs"]:
+                lhsIr = output_vars[int(json_obj["lhs"].split("_")[-1])]
+            elif json_obj["lhs"] == "lhs":
+                lhsIr = lhs
+            elif json_obj["lhs"] == "rhs":
+                lhsIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            
+            if "json_list_" in json_obj["rhs"]:
+                rhsIr = output_vars[int(json_obj["rhs"].split("_")[-1])]
+            elif json_obj["rhs"] == "lhs":
+                rhsIr = lhs
+            elif json_obj["rhs"] == "rhs":
+                rhsIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            
+            output = IrBlockInnerProduct(lhsIr, rhsIr, type='equal_dims')
         
         elif json_obj["method"] == "ConstBlock":
             shape = torch.tensor(json_obj["total_shape"], dtype=torch.int64)
@@ -174,7 +285,7 @@ def convert_to_ir(expr, layer_index):
 #     for i in range(length):
 #         l = ir_list[index]
 #         if isinstance(l, IrAssignment) and isinstance(ir_list[i].children[1], IrBinaryOp):
-#             binary_instance = ir_list[i].children[1].binary_counter
+#             binary_instance = ir_list[i].children[1].ttb_counter
 #             print(layer_index, binary_instance, '@@@@@@@@@@@@@@@@@@@@@@@@')
 #             filename = f"jit_binary/binary_{layer_index}_{binary_instance}.json"
 #             with open(filename, 'r') as f:

@@ -431,14 +431,17 @@ class IrVar(IrExpression):
         return self.hash_str
     
 class IrSparseTensor(IrExpression):
-    def __init__(self, start_indices, blocksIr, dims, total_size, end_indices, type, dense_const):
+    def __init__(self, start_indices, blocksIr, dims, total_size, end_indices=None, type=None, dense_const=None):
         super().__init__()
         self.start_indices = start_indices
         self.dims = dims
         self.total_size = total_size
-        self.end_indices = end_indices
-        self.type = type
-        self.dense_const = dense_const
+        if end_indices is not None:
+            self.end_indices = end_indices
+        if type is not None:
+            self.type = type
+        if dense_const is not None:
+            self.dense_const = dense_const
         self.update_parent_child([blocksIr])
 
 
@@ -478,10 +481,23 @@ class IrEmptyList(IrExpression):
         super().__init__()
         self.update_parent_child([]) 
 
+    def __eq__(self, obj):
+        return False
+
 class IrAppendList(IrExpression):
     def __init__(self, listIr, elementIr):
         super().__init__()
         self.update_parent_child([listIr, elementIr])
+
+class IrListExtract(IrExpression):
+    def __init__(self, listIr, indexIr):
+        super().__init__()
+        self.update_parent_child([listIr, indexIr])
+
+class IrBlockExtract(IrExpression):
+    def __init__(self, inputIr, indexIr):
+        super().__init__()
+        self.update_parent_child([inputIr, indexIr])
 
 class IrEpsilon(IrExpression):
     def __init__(self, num=None):
@@ -792,7 +808,7 @@ class IrBinaryOp(IrExpression):
         lhsIr, rhsIr = matchDims(lhsIr, rhsIr)
         lhsIrMetadata = lhsIr.irMetadata
         rhsIrMetadata = rhsIr.irMetadata
-        self.binary_counter = -1
+        self.ttb_counter = -1
 
 
         self.irMetadata = copy_metadata(lhsIr.irMetadata)
@@ -903,7 +919,7 @@ class IrMult(IrExpression):
         lhsIr, rhsIr = matchDims(lhsIr, rhsIr)
         lhsIrMetadata = lhsIr.irMetadata
         rhsIrMetadata = rhsIr.irMetadata
-        self.binary_counter = -1
+        self.ttb_counter = -1
 
         self.irMetadata = copy_metadata(lhsIr.irMetadata)
         new_type = 'Float' if lhsIrMetadata[-1].type!=rhsIrMetadata[-1].type else lhsIrMetadata[-1].type
@@ -933,6 +949,27 @@ class IrInnerProduct(IrExpression):
         self.irMetadata[-1].shape[-1] = rhsIr.irMetadata[-1].shape[-1]
         self.irMetadata[-1].broadcast[-1] = rhsIr.irMetadata[-1].broadcast[-1]
         self.update_parent_child([lhsIr, rhsIr])
+
+class IrBlockInnerProduct(IrExpression):
+    def __init__(self, lhsIr, rhsIr, type='equal_dims'):
+        super().__init__()
+        self.type = type
+        self.update_parent_child([lhsIr, rhsIr])
+
+    def __hash__(self):
+        return 0   
+    
+    def __eq__(self, obj):
+        if type(self)==type(obj) and self.type == obj.type:
+            if len(self.children) == len(obj.children):
+                for i in range(len(self.children)):
+                    if self.children[i] != obj.children[i]:
+                        return False 
+                if checkEqualMetadata(self.irMetadata, obj.irMetadata):
+                    return True 
+                else:
+                    return False
+        return False
 
 
 class IrTernary(IrExpression):
