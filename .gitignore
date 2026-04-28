@@ -19,3 +19,9 @@ build/
 tinyimagenet/
 stats/
 test_model/
+cifar-10-python.tar.gz
+jit_binary
+jit_matmul
+cifar-10-batches-py
+**/*.csv
+cifar_relu_9_200.onnx_cifar_cpu.csv
