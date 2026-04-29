@@ -194,6 +194,18 @@ class IRVisitor:
         
         elif isinstance(node, IR.IrBlockExtract):
             return self.visitIrBlockExtract(node)
+        
+        elif isinstance(node, IR.IrSimpleMultiplication):
+            return self.visitIrSimpleMultiplication(node)
+        
+        elif isinstance(node, IR.IrBlockRepeat):
+            return self.visitIrBlockRepeat(node)
+        
+        elif isinstance(node, IR.IrTensorOnes):
+            return self.visitIrTensorOnes(node)
+        
+        elif isinstance(node, IR.IrTensorRepeat):
+            return self.visitIrTensorRepeat(node)
 
         else:
             print("This is an error. This shouldn't happen")

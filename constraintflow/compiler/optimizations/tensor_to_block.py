@@ -58,7 +58,7 @@ def deepcopy_cfg_with_fresh_identifiers(cfg):
 
 
 def convert_to_ir(expr, layer_index):
-    targets = (IrBinaryOp, IrMult, IrInnerProduct)
+    targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat)
     if not isinstance(expr, targets):
     # if not isinstance(expr, IrBinaryOp) and not isinstance(expr, IrMult):
         return expr, []
@@ -69,6 +69,8 @@ def convert_to_ir(expr, layer_index):
         filename = f"jit_binary/binary_{layer_index}_{binary_instance}.json"
     elif isinstance(expr, IrInnerProduct):
         filename = f"jit_matmul/matmul_{layer_index}_{binary_instance}.json"
+    elif isinstance(expr, IrRepeat):
+        filename = f"jit_repeat/repeat_{layer_index}_{binary_instance}.json"
     with open(filename, 'r') as f:
         json_list = json.load(f)
     print(binary_instance)
@@ -264,6 +266,32 @@ def convert_to_ir(expr, layer_index):
             shape = torch.tensor(json_obj["total_shape"], dtype=torch.int64)
             output = IrConstBlock(json_obj["block"], shape)
         
+        elif json_obj["method"] == "repeat":
+            if "json_list_" in json_obj["input"]:
+                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            elif json_obj["input"] == "lhs":
+                inputIr = lhs
+            elif json_obj["input"] == "rhs":
+                inputIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            repeat_dims = torch.tensor(json_obj["repeat_dims"], dtype=torch.int64)
+            output = IrBlockRepeat(inputIr, repeat_dims)
+
+        elif json_obj["method"] == "tensor_ones":
+            output = IrTensorOnes(torch.tensor(json_obj["repeat_dims"], dtype=torch.int64))
+
+        elif json_obj["method"] == "tensor_repeat":
+            if "json_list_" in json_obj["lhs"]:
+                inputIr = output_vars[int(json_obj["lhs"].split("_")[-1])]
+            elif json_obj["lhs"] == "lhs":
+                inputIr = lhs
+            elif json_obj["lhs"] == "rhs":
+                inputIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            repeat_dims = torch.tensor(json_obj["repeat_dims"], dtype=torch.int64)
+            output = IrTensorRepeat(inputIr, repeat_dims)
         
         else:
             raise Exception(f"Unknown method {json_obj['method']} in replay")
@@ -277,26 +305,6 @@ def convert_to_ir(expr, layer_index):
         assert(len(output_vars) == json_obj["output"] + 1)
 
     return output_vars[-1], new_assignments
-
-# def tensor_to_block_block(block, layer_index):
-#     ir_list = block.children
-#     length = len(ir_list)
-#     index = 0
-#     for i in range(length):
-#         l = ir_list[index]
-#         if isinstance(l, IrAssignment) and isinstance(ir_list[i].children[1], IrBinaryOp):
-#             binary_instance = ir_list[i].children[1].ttb_counter
-#             print(layer_index, binary_instance, '@@@@@@@@@@@@@@@@@@@@@@@@')
-#             filename = f"jit_binary/binary_{layer_index}_{binary_instance}.json"
-#             with open(filename, 'r') as f:
-#                 json_list = json.load(f)
-#             new_expr, new_assignments = convert_to_ir(json_list, l.children[1])
-#             new_children = [l.children[0], new_expr]
-#             l.update_parent_child(new_children)
-#             for j in range(len(new_assignments)):
-#                 ir_list.insert(index, new_assignments[j])
-#                 index += 1
-#         index += 1
 
 
 def tensor_to_block_block(block, layer_index):

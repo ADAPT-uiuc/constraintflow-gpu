@@ -952,7 +952,7 @@ Blocks Types: "
         return SparseTensor(self.start_indices, blocks, self.dims, self.total_size, end_indices=self.end_indices, type=self.type, dense_const=dense_const)
     
 
-    def binary(self, sp_tensor, op, layer_index = None, counter = None, json_list = [], lhs_index=-1, rhs_index=-1, dummy: bool=False):
+    def binary(self, sp_tensor, op, json_list = [], lhs_index=-1, rhs_index=-1, dummy: bool=False):
         
         binary_sparse_tensor_count.update_num_used()
         total_start_time = time.perf_counter()
@@ -1280,7 +1280,7 @@ Blocks Types: "
         res = SparseTensor(self.start_indices, blocks, self.dims, self.total_size, self.end_indices, float, float(self.dense_const))
         return res 
     
-    def matmul(self, sp_tensor, layer_index = None, counter = None, json_list=[], lhs_index=-1, rhs_index=-1):
+    def matmul(self, sp_tensor, json_list=[], lhs_index=-1, rhs_index=-1):
         total_start_time = time.perf_counter()
         # json_list = []
         
@@ -1732,15 +1732,50 @@ Blocks Types: "
         unsqueeze_time.update_total_time(end_time-start_time)
         return SparseTensor(start_indices, blocks, dims, total_size, end_indices, self.type, self.dense_const)
     
-    def repeat(self, repeat_dims):
+    def repeat(self, repeat_dims, json_list=[], lhs_index=-1):
         total_size = self.total_size * repeat_dims
         start_indices = []
         end_indices = []
         blocks = []
+        json_obj = {
+            "method": "initialise",
+            "name": "blocks",
+            "value": "[]",
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        blocks_json_list_index = len(json_list) - 1
         for i in range(self.num_blocks):
             start_indices.append(self.start_indices[i]*repeat_dims)
             end_indices.append(self.end_indices[i]*repeat_dims)
+            json_obj = {
+                "method": "repeat",
+                "input": "json_list_" + str(lhs_index),
+                "repeat_dims": repeat_dims.tolist(),
+                "output": len(json_list)
+            }
+            json_list.append(json_obj)
             blocks.append(self.blocks[i].repeat(repeat_dims))
+            json_obj = {
+                "method": "append_list",
+                "list": "json_list_" + str(blocks_json_list_index),
+                "value": "json_list_" + str(len(json_list)-1),
+                "output": len(json_list)
+            }
+            json_list.append(json_obj)
+            blocks_json_list_index = len(json_list) - 1
+        json_obj = {
+            "method": "SparseTensor",
+            "start_indices": [tensor_to_list(x) for x in start_indices],
+            "blocks": "json_list_" + str(blocks_json_list_index),
+            "dims": self.dims,
+            "total_size": total_size.tolist(),
+            "end_indices": [tensor_to_list(x) for x in end_indices],
+            "type": self.type.__name__,
+            "dense_const": self.dense_const,
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
         return SparseTensor(start_indices, blocks, self.dims, total_size, end_indices, self.type, self.dense_const)
     
     def clamp(self, const, min_true):

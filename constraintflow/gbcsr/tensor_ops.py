@@ -140,13 +140,12 @@ def binary(x, y, op, layer_index = None, counter = None):
         }
         json_list.append(json_obj)
         
-        res = x.binary(y, op, layer_index = layer_index, counter = counter, json_list = json_list, lhs_index=0, rhs_index=1)
+        res = x.binary(y, op, json_list = json_list, lhs_index=0, rhs_index=1)
         binary_tensor_ops_x_sparsity.update_total_time(time.perf_counter() - start_time)
 
         if dummy_mode:
             if layer_index is not None and counter is not None:
                 os.makedirs("jit_binary", exist_ok=True)
-                # capture_occurrence = _next_jit_occurrence(_jit_save_occurrence, layer_index, counter)
                 capture_path = f"jit_binary/binary_{layer_index}_{counter}.json"
                 
                 with open(capture_path, 'w') as f:
@@ -169,12 +168,11 @@ def binary(x, y, op, layer_index = None, counter = None):
         start_time = time.perf_counter()
         temp = convert_dense_to_sparse(x, y.total_size, json_list=json_list, x_index=0)
         binary_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
-        res = temp.binary(y, op, layer_index = layer_index, counter = counter, json_list = json_list, lhs_index=2, rhs_index=1)
+        res = temp.binary(y, op, json_list = json_list, lhs_index=2, rhs_index=1)
         binary_tensor_ops_y_sparsity.update_total_time(time.perf_counter() - start_time)
         if dummy_mode:
             if layer_index is not None and counter is not None:
                 os.makedirs("jit_binary", exist_ok=True)
-                # capture_occurrence = _next_jit_occurrence(_jit_save_occurrence, layer_index, counter)
                 capture_path = f"jit_binary/binary_{layer_index}_{counter}.json"
                 
                 with open(capture_path, 'w') as f:
@@ -325,7 +323,7 @@ def inner_prod(x, y, layer_index = None, counter = None):
                 "output": len(json_list),
             }
             json_list.append(json_obj)
-            res = x.matmul(y, layer_index = layer_index, counter = counter, json_list = json_list, lhs_index=0, rhs_index=1)
+            res = x.matmul(y, json_list = json_list, lhs_index=0, rhs_index=1)
 
             if dummy_mode:
                 if layer_index is not None and counter is not None:
@@ -354,7 +352,7 @@ def inner_prod(x, y, layer_index = None, counter = None):
                 print(x.total_size, y.shape)
                 raise Exception('SHAPE MISMATCH')
             matmul_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
-            res = x.matmul(y, layer_index = layer_index, counter = counter)
+            res = x.matmul(y)
     elif isinstance(y, SparseTensor):
         if x.shape.shape[0] == y.total_size.shape[0]:
             if x.shape[-1] != y.total_size[-2]:
@@ -375,7 +373,7 @@ def inner_prod(x, y, layer_index = None, counter = None):
             raise Exception('SHAPE MISMATCH')
         x = convert_dense_to_sparse(x)
         matmul_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
-        res = x.matmul(y, layer_index = layer_index, counter = counter)
+        res = x.matmul(y)
     else:
         if x.shape.shape[0] == y.shape.shape[0]:
             if x.shape[-1] != y.shape[-2]:
@@ -497,15 +495,51 @@ def get_shape_0(x):
         return x.total_size[0]
     return x.shape[0]
 
-def repeat(mat, repeat_dims):
+def repeat(mat, repeat_dims, layer_index = None, counter = None):
+    json_list = []
+
     start_time = time.perf_counter()
     if isinstance(mat, float):
+        json_obj = {
+            "method": "tensor_ones",
+            "repeat_dims": repeat_dims.tolist(),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        json_obj = {
+            "method": "multiplication",
+            "lhs": "lhs",
+            "rhs": "json_list_" + str(len(json_list)-1),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
         res = mat*torch.ones(*(repeat_dims.tolist()))
     elif isinstance(mat, torch.Tensor):
+        json_obj = {
+            "method": "tensor_repeat",
+            "lhs": "lhs",
+            "repeat_dims": repeat_dims.tolist(),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
         res = mat.repeat(*(repeat_dims.tolist()))
     else:
-        res = mat.repeat(repeat_dims)
+        json_obj = {
+            "method": "noop",
+            "input": "lhs",
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        res = mat.repeat(repeat_dims, json_list=json_list, lhs_index=0)
     repeat_time.update_total_time(time.perf_counter() - start_time)
+
+    if dummy_mode:
+        if layer_index is not None and counter is not None:
+            os.makedirs("jit_repeat", exist_ok=True)
+            capture_path = f"jit_repeat/repeat_{layer_index}_{counter}.json"
+            
+            with open(capture_path, 'w') as f:
+                json.dump(json_list, f, indent=4)
     return res
 
 def clamp(mat, min_true, const):
