@@ -942,6 +942,75 @@ class IrMult(IrExpression):
         return False
 
 
+class IrSimpleMultiplication(IrExpression):
+    def __init__(self, lhsIr, rhsIr, op):
+        super().__init__()
+        self.op = op 
+        self.update_parent_child([lhsIr, rhsIr])
+
+    def __hash__(self):
+        return 0   
+    
+    def __eq__(self, obj):
+        if type(self)==type(obj) and self.op == obj.op:
+            if len(self.children) == len(obj.children):
+                for i in range(len(self.children)):
+                    if self.children[i] != obj.children[i]:
+                        return False 
+                if checkEqualMetadata(self.irMetadata, obj.irMetadata):
+                    return True 
+                else:
+                    return False
+        return False
+    
+class IrTensorOnes(IrExpression):
+    def __init__(self, total_size):
+        super().__init__()
+        self.total_size = total_size
+
+class IrTensorRepeat(IrExpression):
+    def __init__(self, inputIr, repeat_dims):
+        super().__init__()
+        self.repeat_dims = repeat_dims
+        self.update_parent_child([inputIr])
+
+    def __hash__(self):
+        return 0   
+    
+    def __eq__(self, obj):
+        if type(self)==type(obj) and self.repeat_dims == obj.repeat_dims:
+            if len(self.children) == len(obj.children):
+                for i in range(len(self.children)):
+                    if self.children[i] != obj.children[i]:
+                        return False 
+                if checkEqualMetadata(self.irMetadata, obj.irMetadata):
+                    return True 
+                else:
+                    return False
+        return False
+    
+class IrBlockRepeat(IrExpression):
+    def __init__(self, inputIr, repeat_dims):
+        super().__init__()
+        self.repeat_dims = repeat_dims
+        self.update_parent_child([inputIr])
+
+    def __hash__(self):
+        return 0   
+    
+    def __eq__(self, obj):
+        if type(self)==type(obj) and self.repeat_dims == obj.repeat_dims:
+            if len(self.children) == len(obj.children):
+                for i in range(len(self.children)):
+                    if self.children[i] != obj.children[i]:
+                        return False 
+                if checkEqualMetadata(self.irMetadata, obj.irMetadata):
+                    return True 
+                else:
+                    return False
+        return False
+
+
 class IrInnerProduct(IrExpression):
     def __init__(self, lhsIr, rhsIr):
         super().__init__()

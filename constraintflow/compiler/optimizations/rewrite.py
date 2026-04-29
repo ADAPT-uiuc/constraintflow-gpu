@@ -744,7 +744,7 @@ def assign_ttb_counter(expr):
         new_child, _ = assign_ttb_counter(child)
         new_children.append(new_child)
     expr.update_parent_child(new_children)
-    targets = (IrBinaryOp, IrInnerProduct, IrMult)
+    targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat)
     if isinstance(expr, targets):
     # if isinstance(expr, IrBinaryOp) or isinstance(expr, IrMult) or isinstance(expr, IrInnerProduct):
         ttb_counter += 1

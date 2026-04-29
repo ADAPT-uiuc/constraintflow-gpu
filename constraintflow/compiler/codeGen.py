@@ -355,7 +355,7 @@ class CodeGen(irVisitor.IRVisitor):
             if i<len(node.children)-1:
                 repeat_dims += ', '
         repeat_dims = 'torch.tensor([' + repeat_dims + '])'
-        ret = 'repeat(' + self.visit(node.children[0]) + ', ' + repeat_dims + ')'
+        ret = 'repeat(' + self.visit(node.children[0]) + ', ' + repeat_dims + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ') #' + str(node.ttb_counter)
         return ret
 
     def visitIrAddDimension(self, node):
@@ -466,6 +466,26 @@ class CodeGen(irVisitor.IRVisitor):
             return op_name + '(' + self.visit(inputIr) + ')'
         else:
             return 'unary(' + self.visit(inputIr) + ', ' + op_name + ')'
+        
+    def visitIrSimpleMultiplication(self, node):
+        [lhsIr, rhsIr] = node.children
+        return self.visit(lhsIr) + ' * ' + self.visit(rhsIr)
+    
+    def visitIrTensorOnes(self, node):
+        return 'torch.ones(*' + node.repeat_dims + ')'
+
+    def visitTensorRepeat(self, node):
+        return 'torch.repeat(' + self.visit(node.children[0]) + ', *' + node.repeat_dims + ')'
+    
+    def visitIrBlockRepeat(self, node):
+        # repeat_dims = ''
+        # for i in range(1, len(node.children)):
+        #     repeat_dims += self.visit(node.children[i])
+        #     if i<len(node.children)-1:
+        #         repeat_dims += ', '
+        # repeat_dims = 'torch.tensor([' + repeat_dims + '])'
+        temp = (node.repeat_dims)
+        return self.visit(node.children[0]) + '.repeat(torch.tensor(' + str(node.repeat_dims.tolist()) + ', dtype=torch.int64))'
 
     def visitIrGetDefaultStop(self, node):
         repeat_dims = ''
