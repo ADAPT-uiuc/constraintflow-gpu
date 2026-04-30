@@ -477,6 +477,17 @@ class CodeGen(irVisitor.IRVisitor):
     def visitTensorRepeat(self, node):
         return 'torch.repeat(' + self.visit(node.children[0]) + ', *' + node.repeat_dims + ')'
     
+    def visitTensorClamp(self, node):
+        if node.min_true:
+            return 'torch.clamp(' + self.visit(node.children[0]) + ', min=' + str(node.const) + ')'
+        else:
+            return 'torch.clamp(' + self.visit(node.children[0]) + ', max=' + str(node.const) + ')'
+
+    def visitIrBlockClamp(self, node):
+        return self.visit(node.children[0]) + '.clamp(' + str(node.const) + ', min_true=' + str(node.min_true) + ')'
+
+    
+
     def visitIrBlockRepeat(self, node):
         # repeat_dims = ''
         # for i in range(1, len(node.children)):
@@ -560,7 +571,7 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrClamp(self, node):
         [inputIr, const] = node.children
         min_true = node.min_true 
-        return 'clamp(' + self.visit(inputIr) + ', ' + str(min_true) + ', ' + str(const) + ')'
+        return 'clamp(' + self.visit(inputIr) + ', ' + str(const) + ', ' + str(min_true) + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ') #' + str(node.ttb_counter)
 
     def visitIrCombineToPoly(self, node):
         [coeffIr, constIr, rows] = node.children

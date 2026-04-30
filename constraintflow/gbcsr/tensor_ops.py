@@ -542,29 +542,77 @@ def repeat(mat, repeat_dims, layer_index = None, counter = None):
                 json.dump(json_list, f, indent=4)
     return res
 
-def clamp(mat, min_true, const):
+def clamp(mat, const, min_true, layer_index = None, counter = None):
     start_time = time.perf_counter()
+    json_list = []
     if isinstance(mat, float):
         if min_true:
             if mat>const:
-                res = mat 
+                res = mat
+                json_obj = {
+                    "method": "noop",
+                    "input": "lhs",
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                
             else:
                 res = const
+                json_obj = {
+                    "method": "noop",
+                    "input": "rhs",
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
         else:
             if mat<const:
                 res = mat 
+                json_obj = {
+                    "method": "noop",
+                    "input": "lhs",
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
             else:
                 res = const
+                json_obj = {
+                    "method": "noop",
+                    "input": "rhs",
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
         clamp_op_expense.update_total_time(time.perf_counter() - start_time)
     elif isinstance(mat, torch.Tensor):
         if min_true:
             clamp_op_expense.update_total_time(time.perf_counter() - start_time)
             res = mat.clamp(min=const)
+            
         else:
             clamp_op_expense.update_total_time(time.perf_counter() - start_time)
             res = mat.clamp(max=const)
+        json_obj = {
+            "method": "tensor_clamp",
+            "lhs": "lhs",
+            "const": const,
+            "min_true": min_true,
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
     else:
-        res = mat.clamp(const, min_true)
+        json_obj = {
+            "method": "noop",
+            "input": "lhs",
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        res = mat.clamp(const, min_true, json_list=json_list, lhs_index=0)
     clamp_total_time.update_total_time(time.perf_counter() - start_time)
+    if dummy_mode:
+        if layer_index is not None and counter is not None:
+            os.makedirs("jit_clamp", exist_ok=True)
+            capture_path = f"jit_clamp/clamp_{layer_index}_{counter}.json"
+            
+            with open(capture_path, 'w') as f:
+                json.dump(json_list, f, indent=4)
     # clamp_time.update_total_time(time.perf_counter() - start_time)
     return res

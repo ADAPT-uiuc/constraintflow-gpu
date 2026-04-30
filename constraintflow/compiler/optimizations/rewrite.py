@@ -724,7 +724,7 @@ def hoist_split_targets(expr):
         new_assignments += child_assignments
     expr.update_parent_child(new_children)
 
-    targets = (IrBinaryOp, IrInnerProduct, IrMult)
+    targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat, IrClamp)
     if isinstance(expr, targets):
         new_name = get_var(True)
         new_var = IrVar(new_name, expr.irMetadata)
@@ -744,7 +744,7 @@ def assign_ttb_counter(expr):
         new_child, _ = assign_ttb_counter(child)
         new_children.append(new_child)
     expr.update_parent_child(new_children)
-    targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat)
+    targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat, IrClamp)
     if isinstance(expr, targets):
     # if isinstance(expr, IrBinaryOp) or isinstance(expr, IrMult) or isinstance(expr, IrInnerProduct):
         ttb_counter += 1
