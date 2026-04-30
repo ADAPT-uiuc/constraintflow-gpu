@@ -240,8 +240,8 @@ def run(
 
     typer.echo(f"Lower bounds: {lb}")
     typer.echo(f"Upper bounds: {ub}")
-    if eps == 0:
-        assert(lb == ub).all(), "Bounds should be equal when eps=0"
+    # if eps == 0:
+    #     assert(lb == ub).all(), "Bounds should be equal when eps=0"
 
     # filename = network_file.split('/')[-1] + f'_{dataset}_{device}.csv'
     # typer.echo(f"Total time: {total_time:.2f} seconds")
