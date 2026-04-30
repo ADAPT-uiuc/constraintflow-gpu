@@ -15,7 +15,7 @@ from constraintflow.compiler.optimizations import copyPropagation
 from constraintflow.compiler.optimizations import dce
 from constraintflow.compiler.optimizations import cse
 from constraintflow.compiler.optimizations import rewrite
-
+from constraintflow.lib.globals import *
 
 
 optimizations_rewrite = [
@@ -66,7 +66,7 @@ def compile(inputfile, output_path):
 
     replay = reuse_mode.get_flag()
 
-    if replay:
+    if reuse_mode.get_flag():
         tensor_to_block.tensor_to_block(ir)
 
     codeGen.CodeGen(output_path).visit(ir)

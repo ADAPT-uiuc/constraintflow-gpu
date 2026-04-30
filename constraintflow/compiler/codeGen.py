@@ -240,9 +240,6 @@ class CodeGen(irVisitor.IRVisitor):
         res += ']'
         return res
 
-    # def visitIrSparseTensor(self, node):
-    #     return 'SparseTensor(' + self.visit(node.start_indices) + ', ' + self.visit(node.children[0]) + ', ' + self.visit(node.dims) + ', ' + self.visit(node.total_size) + ', ' + self.visit(node.end_indices) + ', type= ' + self.visit(node.type) + ', dense_const=' + self.visit(node.dense_const) + ')'
-
     def visitIrSparseTensor(self, node):
         args = [
             self.visit(node.start_indices),
@@ -467,9 +464,9 @@ class CodeGen(irVisitor.IRVisitor):
         else:
             return 'unary(' + self.visit(inputIr) + ', ' + op_name + ')'
         
-    def visitIrSimpleMultiplication(self, node):
+    def visitIrSimpleBinary(self, node):
         [lhsIr, rhsIr] = node.children
-        return self.visit(lhsIr) + ' * ' + self.visit(rhsIr)
+        return self.get_operator_func(node.op) + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ')'
     
     def visitIrTensorOnes(self, node):
         return 'torch.ones(*' + node.repeat_dims + ')'
@@ -560,7 +557,7 @@ class CodeGen(irVisitor.IRVisitor):
         elif rhsIr.irMetadata[-1].type == 'Neuron':
             return self.visit(rhsIr) + '.dot(' + self.visit(lhsIr) + ', abs_elem.get_poly_size())'
         elif lhsIr.irMetadata[-1].type == 'Float':
-            return 'inner_prod(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ')'
+            return 'inner_prod(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ') #' + str(node.ttb_counter)
         else:
             raise Exception('NOT IMPLEMENTED')
 

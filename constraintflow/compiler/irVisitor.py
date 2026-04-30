@@ -195,8 +195,8 @@ class IRVisitor:
         elif isinstance(node, IR.IrBlockExtract):
             return self.visitIrBlockExtract(node)
         
-        elif isinstance(node, IR.IrSimpleMultiplication):
-            return self.visitIrSimpleMultiplication(node)
+        elif isinstance(node, IR.IrSimpleBinary):
+            return self.visitIrSimpleBinary(node)
         
         elif isinstance(node, IR.IrBlockRepeat):
             return self.visitIrBlockRepeat(node)
