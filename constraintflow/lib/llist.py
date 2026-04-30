@@ -6,7 +6,6 @@ from constraintflow.lib.network import LayerType
 from constraintflow.gbcsr.sparse_block import DenseBlock, KernelBlock, ConstBlock, DiagonalBlock
 from constraintflow.gbcsr.sparse_tensor import SparseTensor
 from constraintflow.lib.globals import dummy_mode
-
 class Llist:
     """List of layers."""
     def __init__(self, network, initial_shape, start=None, end=None, llist=None):
@@ -32,6 +31,7 @@ class Llist:
         Not certifier-specific information.
         """
         if dummy_mode:
+            print(f'dummy_mode in get_metadata: {dummy_mode}')
             return self.get_metadata_dummy(elem, batch_size)
         # ---- Is this true, and why? ----
         # Currently, get_metadata only supports consecutive intervals of

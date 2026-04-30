@@ -11,6 +11,10 @@ class Flag:
     def get_flag(self):
         return self.flag
     
+    def __bool__(self):
+        return self.flag
+    
+
     def __str__(self):
         return f'flag: {self.flag}'
 
@@ -19,7 +23,18 @@ debug_flag2 = Flag()
 debug_flag3 = Flag()
 debug_flag4 = Flag()
 
-dummy_mode = False
+dummy_mode = Flag()
+reuse_mode = Flag()
+# dummy_mode = False
+# reuse_mode = False
+
+# def set_dummy_mode():
+#     global dummy_mode
+#     dummy_mode = True
+# def set_reuse_mode():
+#     global reuse_mode
+#     reuse_mode = True
+
 
 class DeviceMode:
     _DEVICE_MAP = {
