@@ -124,9 +124,9 @@ def binary(x, y, op, layer_index = None, counter = None):
     start_time = time.perf_counter()
     sanityCheck(x, y)
     binary_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
+    json_list = []
     if isinstance(x, SparseTensor):
         start_time = time.perf_counter()
-        json_list = []
         json_obj = {
             "method": "noop",
             "input": "lhs",
@@ -143,16 +143,9 @@ def binary(x, y, op, layer_index = None, counter = None):
         res = x.binary(y, op, json_list = json_list, lhs_index=0, rhs_index=1)
         binary_tensor_ops_x_sparsity.update_total_time(time.perf_counter() - start_time)
 
-        if dummy_mode:
-            if layer_index is not None and counter is not None:
-                os.makedirs("jit_binary", exist_ok=True)
-                capture_path = f"jit_binary/binary_{layer_index}_{counter}.json"
-                
-                with open(capture_path, 'w') as f:
-                    json.dump(json_list, f, indent=4)
+        
         
     elif isinstance(y, SparseTensor):
-        json_list = []
         json_obj = {
             "method": "noop",
             "input": "lhs",
@@ -170,18 +163,27 @@ def binary(x, y, op, layer_index = None, counter = None):
         binary_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
         res = temp.binary(y, op, json_list = json_list, lhs_index=2, rhs_index=1)
         binary_tensor_ops_y_sparsity.update_total_time(time.perf_counter() - start_time)
-        if dummy_mode:
-            if layer_index is not None and counter is not None:
-                os.makedirs("jit_binary", exist_ok=True)
-                capture_path = f"jit_binary/binary_{layer_index}_{counter}.json"
-                
-                with open(capture_path, 'w') as f:
-                    json.dump(json_list, f, indent=4)
+        
     else:
         start_time = time.perf_counter()
+        json_obj = {
+            "method": "simple_binary",
+            "lhs": "lhs",
+            "rhs": "rhs",
+            "op": op.__name__,
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
         res = op(x, y)
         binary_tensor_ops_no_sparse.update_total_time(time.perf_counter() - start_time)
     total_binary_tensor_ops.update_total_time(time.perf_counter() - total_start_time)
+    if dummy_mode:
+        if layer_index is not None and counter is not None:
+            os.makedirs("jit_binary", exist_ok=True)
+            capture_path = f"jit_binary/binary_{layer_index}_{counter}.json"
+            
+            with open(capture_path, 'w') as f:
+                json.dump(json_list, f, indent=4)
     return res
 
 def cf_max(x, y):

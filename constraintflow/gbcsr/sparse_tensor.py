@@ -285,7 +285,7 @@ def find_connected_blocks(start_indices, end_indices):
         overlap_classes[block[0]] = block[1:]
     return overlap_classes
 
-def sp_tensor_from_overlap_classes(overlap_classes, start_indices, blocks, total_size, dims, dense_const, type, json_list = [], res_blocks_json_list_index=0):
+def sp_tensor_from_overlap_classes(overlap_classes, start_indices, blocks, total_size, dims, dense_const, type, json_list=[], res_blocks_json_list_index=0):
     res_blocks = []
     json_obj = {
         "method": "initialise",
@@ -1748,9 +1748,18 @@ Blocks Types: "
         for i in range(self.num_blocks):
             start_indices.append(self.start_indices[i]*repeat_dims)
             end_indices.append(self.end_indices[i]*repeat_dims)
+
+            json_obj = {
+                "method": "extract_block",
+                "input": "json_list_" + str(lhs_index),
+                "index": i,
+                "output": len(json_list)
+            }
+            json_list.append(json_obj)
+
             json_obj = {
                 "method": "repeat",
-                "input": "json_list_" + str(lhs_index),
+                "input": "json_list_" + str(len(json_list)-1),
                 "repeat_dims": repeat_dims.tolist(),
                 "output": len(json_list)
             }

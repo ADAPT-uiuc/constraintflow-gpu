@@ -942,7 +942,7 @@ class IrMult(IrExpression):
         return False
 
 
-class IrSimpleMultiplication(IrExpression):
+class IrSimpleBinary(IrExpression):
     def __init__(self, lhsIr, rhsIr, op):
         super().__init__()
         self.op = op 
