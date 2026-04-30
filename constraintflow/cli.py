@@ -1,3 +1,15 @@
+import sys
+import constraintflow.lib.globals as globals
+
+argv = sys.argv[1:]
+globals.dummy_mode.set_flag() if "--simulacrum" in argv else globals.dummy_mode.reset_flag()
+globals.reuse_mode.set_flag() if "--reuse" in argv else globals.reuse_mode.reset_flag()
+
+print(f'dummy_mode in cli: {globals.dummy_mode}')
+print(f'reuse_mode in cli: {globals.reuse_mode}')
+
+
+
 import os
 import sys
 import torch
@@ -11,6 +23,8 @@ from constraintflow.lib.abs_elem import Abs_elem_sparse
 from constraintflow.lib.llist import Llist
 from constraintflow.lib.flow_sparse import Flow
 from constraintflow.lib.globals import *
+from constraintflow.lib.globals import dummy_mode, reuse_mode
+import constraintflow.lib.globals 
 from constraintflow.compiler.compile import compile as _compile
 from constraintflow.verifier.provesound import provesound as _provesound
 from constraintflow.lib.spec import get_network_and_input_spec
@@ -157,6 +171,8 @@ def run(
     output_path: str = typer.Option("output/", help="Path where compiled program is stored"),
     compile: bool = typer.Option(False, help="Run compilation before execution"),
     opt: bool = typer.Option(False, help="Static shape analysis and direct computation over blocks."),
+    simulacrum: bool = typer.Option(False, help="Run Simulacrum (dummy blocks)"),
+    reuse: bool = typer.Option(False, help="Reuse the stored indices that were stored by running dummy blocks"),
 ):
     """
     Run a compiled ConstraintFlow program.
@@ -167,24 +183,23 @@ def run(
         typer.echo(f"Error creating folder '{output_path}': {e}")
         raise typer.Exit(code=1)
     
-    if opt:
-        sys.path.insert(0, os.path.abspath(output_path))
-        from transformers import deeppoly
-        global dummy_mode
-        dummy_mode = True
-        network_file = get_network(network, network_format, dataset)
-        dataset_X, dataset_y = get_dataset(batch_size, dataset, train=train)
-        ntwk, l, u, L, U, Z, llist = get_network_and_input_spec(network_file, batch_size, dataset_X, dataset_y, dataset, eps=eps, train=train, no_sparsity=no_sparsity)
-        print(f'network: {[l.type for l in ntwk]}')
-        print(f'layer shapes: {[l.shape for l in ntwk]}')
-        abs_elem = Abs_elem_sparse({'llist' : llist, 'l' : l, 'u' : u, 'L' : L, 'U' : U}, {'l': 'Float', 'u': 'Float', 'L': 'PolyExp', 'U': 'PolyExp', 'llist': 'bool'}, ntwk, batch_size=batch_size, no_sparsity=no_sparsity)
-        flow = Flow(abs_elem, deeppoly(), ntwk, print_intermediate_results, no_sparsity)
-        flow.flow()
-        all_ll = Llist(ntwk, [1], start=0, end=7, llist=None)
-        print(abs_elem.get_elem('L', all_ll).get_mat(abs_elem))
-        return
-
-
+    # if opt:
+    #     sys.path.insert(0, os.path.abspath(output_path))
+    #     from transformers import deeppoly
+    #     global dummy_mode
+    #     dummy_mode = True
+    #     network_file = get_network(network, network_format, dataset)
+    #     dataset_X, dataset_y = get_dataset(batch_size, dataset, train=train)
+    #     ntwk, l, u, L, U, Z, llist = get_network_and_input_spec(network_file, batch_size, dataset_X, dataset_y, dataset, eps=eps, train=train, no_sparsity=no_sparsity)
+    #     print(f'network: {[l.type for l in ntwk]}')
+    #     print(f'layer shapes: {[l.shape for l in ntwk]}')
+    #     abs_elem = Abs_elem_sparse({'llist' : llist, 'l' : l, 'u' : u, 'L' : L, 'U' : U}, {'l': 'Float', 'u': 'Float', 'L': 'PolyExp', 'U': 'PolyExp', 'llist': 'bool'}, ntwk, batch_size=batch_size, no_sparsity=no_sparsity)
+    #     flow = Flow(abs_elem, deeppoly(), ntwk, print_intermediate_results, no_sparsity)
+    #     flow.flow()
+    #     all_ll = Llist(ntwk, [1], start=0, end=7, llist=None)
+    #     print(abs_elem.get_elem('L', all_ll).get_mat(abs_elem))
+    #     return
+    # print(f'dummy_mode: {dummy_mode}')
     if compile:
         compile_code(program_file, output_path)
 
@@ -269,63 +284,63 @@ def run(
     # typer.echo(f'Percentage Clamp Expenses Time: {percentage_clamp_expenses_time}%')
     # assert(percentage_clamp_operator_time + percentage_clamp_expenses_time <= 100.0), "Percentages should sum to at most 100%"
 
-    base = network_file.split('/')[-1] + f'_{dataset}_{device}'
+    # base = network_file.split('/')[-1] + f'_{dataset}_{device}'
 
-    # ── derived quantities ────────────────────────────────────────────────
-    matmul_total    = matmul_tensor_ops.get_total_time()
-    matmul_actual   = unequal_matmul_profilier.get_actual_op_time() + equal_matmul_profilier.get_actual_op_time()
-    matmul_expenses = (matmul_tensor_ops_expenses.get_total_time()
-                       + matmul_sparse_tensor_expenses.get_total_time()
-                       + unequal_matmul_profilier.get_total_time()
-                       + equal_matmul_profilier.get_total_time()
-                       - matmul_actual)
+    # # ── derived quantities ────────────────────────────────────────────────
+    # matmul_total    = matmul_tensor_ops.get_total_time()
+    # matmul_actual   = unequal_matmul_profilier.get_actual_op_time() + equal_matmul_profilier.get_actual_op_time()
+    # matmul_expenses = (matmul_tensor_ops_expenses.get_total_time()
+    #                    + matmul_sparse_tensor_expenses.get_total_time()
+    #                    + unequal_matmul_profilier.get_total_time()
+    #                    + equal_matmul_profilier.get_total_time()
+    #                    - matmul_actual)
 
-    binary_total    = (total_binary_tensor_ops.get_total_time()
-                       - binary_tensor_ops_no_sparse.get_total_time()
-                       - binary_fixed_costs.get_total_time())
-    binary_actual   = binary_profilier.get_total_time()
-    binary_expenses = (binary_sparse_tensor_expenses.get_total_time()
-                       + binary_sparse_tensor_overlap_expenses.get_total_time()
-                       + binary_sparse_tensor_dom1_expenses.get_total_time()
-                       + binary_sparse_tensor_dom2_expenses.get_total_time()
-                       + binary_block_expenses.get_total_time()
-                       - binary_actual
-                       + binary_tensor_ops_expenses.get_total_time())
+    # binary_total    = (total_binary_tensor_ops.get_total_time()
+    #                    - binary_tensor_ops_no_sparse.get_total_time()
+    #                    - binary_fixed_costs.get_total_time())
+    # binary_actual   = binary_profilier.get_total_time()
+    # binary_expenses = (binary_sparse_tensor_expenses.get_total_time()
+    #                    + binary_sparse_tensor_overlap_expenses.get_total_time()
+    #                    + binary_sparse_tensor_dom1_expenses.get_total_time()
+    #                    + binary_sparse_tensor_dom2_expenses.get_total_time()
+    #                    + binary_block_expenses.get_total_time()
+    #                    - binary_actual
+    #                    + binary_tensor_ops_expenses.get_total_time())
 
-    clamp_total    = clamp_total_time.get_total_time()
-    clamp_actual   = (clamp_sparse_block_op_time.get_total_time()
-                      + clamp_repeat_block_op_time.get_total_time()
-                      + clamp_const_block_op_time.get_total_time())
-    clamp_expenses = (clamp_const_block_expense.get_total_time()
-                      + clamp_sparse_block_expense.get_total_time()
-                      + clamp_repeat_block_expense.get_total_time())
+    # clamp_total    = clamp_total_time.get_total_time()
+    # clamp_actual   = (clamp_sparse_block_op_time.get_total_time()
+    #                   + clamp_repeat_block_op_time.get_total_time()
+    #                   + clamp_const_block_op_time.get_total_time())
+    # clamp_expenses = (clamp_const_block_expense.get_total_time()
+    #                   + clamp_sparse_block_expense.get_total_time()
+    #                   + clamp_repeat_block_expense.get_total_time())
 
-    # ── raw times ─────────────────────────────────────────────────────────
-    raw_file = 'stats/' + base + '_stats_raw.csv'
-    with open(raw_file, mode='w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(['Operation', 'Total_Time', 'Expenses_Time', 'Actual_Op_Time'])
-        writer.writerow(['Total',  round(total_time,    5), '-', '-'])
-        writer.writerow(['Matmul', round(matmul_total,  5), round(matmul_expenses,  5), round(matmul_actual,  5)])
-        writer.writerow(['Binary', round(binary_total,  5), round(binary_expenses,  5), round(binary_actual,  5)])
-        writer.writerow(['Clamp',  round(clamp_total,   5), round(clamp_expenses,   5), round(clamp_actual,   5)])
+    # # ── raw times ─────────────────────────────────────────────────────────
+    # raw_file = 'stats/' + base + '_stats_raw.csv'
+    # with open(raw_file, mode='w', newline='') as f:
+    #     writer = csv.writer(f)
+    #     writer.writerow(['Operation', 'Total_Time', 'Expenses_Time', 'Actual_Op_Time'])
+    #     writer.writerow(['Total',  round(total_time,    5), '-', '-'])
+    #     writer.writerow(['Matmul', round(matmul_total,  5), round(matmul_expenses,  5), round(matmul_actual,  5)])
+    #     writer.writerow(['Binary', round(binary_total,  5), round(binary_expenses,  5), round(binary_actual,  5)])
+    #     writer.writerow(['Clamp',  round(clamp_total,   5), round(clamp_expenses,   5), round(clamp_actual,   5)])
 
-    # ── percentages ───────────────────────────────────────────────────────
-    def safe_pct(numerator, denominator):
-        return round((numerator / denominator) * 100, 5) if denominator else 0.0
+    # # ── percentages ───────────────────────────────────────────────────────
+    # def safe_pct(numerator, denominator):
+    #     return round((numerator / denominator) * 100, 5) if denominator else 0.0
 
-    pct_file = 'stats/' + base + '_stats_pct.csv'
-    with open(pct_file, mode='w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(['Operation', 'Pct_Operator_Time', 'Pct_Expenses_Time'])
-        writer.writerow(['Matmul', safe_pct(matmul_actual,  matmul_total), safe_pct(matmul_expenses,  matmul_total)])
-        writer.writerow(['Binary', safe_pct(binary_actual,  binary_total), safe_pct(binary_expenses,  binary_total)])
-        writer.writerow(['Clamp',  safe_pct(clamp_actual,   clamp_total),  safe_pct(clamp_expenses,   clamp_total)])
+    # pct_file = 'stats/' + base + '_stats_pct.csv'
+    # with open(pct_file, mode='w', newline='') as f:
+    #     writer = csv.writer(f)
+    #     writer.writerow(['Operation', 'Pct_Operator_Time', 'Pct_Expenses_Time'])
+    #     writer.writerow(['Matmul', safe_pct(matmul_actual,  matmul_total), safe_pct(matmul_expenses,  matmul_total)])
+    #     writer.writerow(['Binary', safe_pct(binary_actual,  binary_total), safe_pct(binary_expenses,  binary_total)])
+    #     writer.writerow(['Clamp',  safe_pct(clamp_actual,   clamp_total),  safe_pct(clamp_expenses,   clamp_total)])
 
-    typer.echo(f"Total time: {total_time:.2f} seconds")
-    typer.echo(f"Raw stats written to:        {raw_file}")
-    typer.echo(f"Percentage stats written to: {pct_file}")
-    typer.echo(f'Stop condition time: {round(stop_condition_time.get_total_time(), 5)} seconds')
+    # typer.echo(f"Total time: {total_time:.2f} seconds")
+    # typer.echo(f"Raw stats written to:        {raw_file}")
+    # typer.echo(f"Percentage stats written to: {pct_file}")
+    # typer.echo(f'Stop condition time: {round(stop_condition_time.get_total_time(), 5)} seconds')
 
 
 def main():
