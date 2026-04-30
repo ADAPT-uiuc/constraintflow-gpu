@@ -64,7 +64,7 @@ def compile(inputfile, output_path):
     representations.remove_phi(ir)
     # codeGen.CodeGen(output_path).visit(ir)
 
-    replay = True
+    replay = reuse_mode.get_flag()
 
     if replay:
         tensor_to_block.tensor_to_block(ir)
