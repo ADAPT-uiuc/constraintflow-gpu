@@ -58,7 +58,7 @@ def deepcopy_cfg_with_fresh_identifiers(cfg):
 
 
 def convert_to_ir(expr, layer_index):
-    targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat)
+    targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp)
     if not isinstance(expr, targets):
     # if not isinstance(expr, IrBinaryOp) and not isinstance(expr, IrMult):
         return expr, []
@@ -71,17 +71,23 @@ def convert_to_ir(expr, layer_index):
         filename = f"jit_matmul/matmul_{layer_index}_{binary_instance}.json"
     elif isinstance(expr, IrRepeat):
         filename = f"jit_repeat/repeat_{layer_index}_{binary_instance}.json"
+    elif isinstance(expr, IrClamp):
+        filename = f"jit_clamp/clamp_{layer_index}_{binary_instance}.json"
     with open(filename, 'r') as f:
         json_list = json.load(f)
     print(binary_instance)
     lhs = expr.children[0]
     rhs = expr.children[1]
+    if isinstance(rhs, IrAst):
+        irMetadata = rhs.irMetadata
+    else:
+        irMetadata = None
     new_assignments = []
     output_vars = []
 
     for json_obj in json_list:
         new_name = get_var()
-        new_var = IrVar(new_name, rhs.irMetadata)
+        new_var = IrVar(new_name, irMetadata)
         if json_obj["method"] == "noop":
             if json_obj["input"] == "rhs":
                 output = rhs
@@ -93,16 +99,6 @@ def convert_to_ir(expr, layer_index):
                 # print(json_obj["input"])
                 raise Exception("NOT IMPLEMENTED")
         
-        # elif json_obj["method"] == "SparseTensor":
-        #     if "json_list_" in json_obj['blocks']:
-        #         blocksIr = output_vars[int(json_obj['blocks'].split("_")[-1])]
-        #     elif json_obj['blocks'] == []:
-        #         blocksIr = []
-        #     else:                        
-        #         raise Exception("NOT IMPLEMENTED")
-        #     print(json_obj['start_indices'])
-        #     output = IrSparseTensor(torch.Tensor(json_obj["start_indices"]), blocksIr, json_obj["dims"], torch.Tensor(json_obj["total_size"]), torch.Tensor(json_obj["end_indices"]), type=getattr(builtins, json_obj["type"]), dense_const=json_obj["dense_const"])
-
         elif json_obj["method"] == "SparseTensor":
             if "json_list_" in json_obj['blocks']:
                 blocksIr = output_vars[int(json_obj['blocks'].split("_")[-1])]
@@ -278,6 +274,17 @@ def convert_to_ir(expr, layer_index):
             repeat_dims = torch.tensor(json_obj["repeat_dims"], dtype=torch.int64)
             output = IrBlockRepeat(inputIr, repeat_dims)
 
+        elif json_obj["method"] == "block_clamp":
+            if "json_list_" in json_obj["input"]:
+                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            elif json_obj["input"] == "lhs":
+                inputIr = lhs
+            elif json_obj["input"] == "rhs":
+                inputIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrBlockClamp(inputIr, json_obj["const"], json_obj["min_true"])
+
         elif json_obj["method"] == "tensor_ones":
             output = IrTensorOnes(torch.tensor(json_obj["repeat_dims"], dtype=torch.int64))
 
@@ -292,6 +299,17 @@ def convert_to_ir(expr, layer_index):
                 raise Exception("NOT IMPLEMENTED")
             repeat_dims = torch.tensor(json_obj["repeat_dims"], dtype=torch.int64)
             output = IrTensorRepeat(inputIr, repeat_dims)
+
+        elif json_obj["method"] == "tensor_clamp":
+            if "json_list_" in json_obj["lhs"]:
+                inputIr = output_vars[int(json_obj["lhs"].split("_")[-1])]
+            elif json_obj["lhs"] == "lhs":
+                inputIr = lhs
+            elif json_obj["lhs"] == "rhs":
+                inputIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrTensorClamp(inputIr, json_list['const'], json_list['min_true'])
         
         else:
             raise Exception(f"Unknown method {json_obj['method']} in replay")

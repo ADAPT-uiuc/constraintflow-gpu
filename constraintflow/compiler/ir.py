@@ -988,6 +988,28 @@ class IrTensorRepeat(IrExpression):
                 else:
                     return False
         return False
+
+class IrTensorClamp(IrExpression):
+    def __init__(self, inputIr, const, min_true):
+        super().__init__()
+        self.const = const
+        self.min_true = min_true
+        self.update_parent_child([inputIr])
+
+    def __hash__(self):
+        return 0   
+    
+    def __eq__(self, obj):
+        if type(self)==type(obj) and self.min_true == obj.min_true and self.const == obj.const:
+            if len(self.children) == len(obj.children):
+                for i in range(len(self.children)):
+                    if self.children[i] != obj.children[i]:
+                        return False 
+                if checkEqualMetadata(self.irMetadata, obj.irMetadata):
+                    return True 
+                else:
+                    return False
+        return False
     
 class IrBlockRepeat(IrExpression):
     def __init__(self, inputIr, repeat_dims):
@@ -1010,6 +1032,27 @@ class IrBlockRepeat(IrExpression):
                     return False
         return False
 
+class IrBlockClamp(IrExpression):
+    def __init__(self, inputIr, const, min_true):
+        super().__init__()
+        self.const = const
+        self.min_true = min_true
+        self.update_parent_child([inputIr])
+
+    def __hash__(self):
+        return 0   
+    
+    def __eq__(self, obj):
+        if type(self)==type(obj) and self.min_true == obj.min_true and self.const == obj.const:
+            if len(self.children) == len(obj.children):
+                for i in range(len(self.children)):
+                    if self.children[i] != obj.children[i]:
+                        return False 
+                if checkEqualMetadata(self.irMetadata, obj.irMetadata):
+                    return True 
+                else:
+                    return False
+        return False
 
 class IrInnerProduct(IrExpression):
     def __init__(self, lhsIr, rhsIr):

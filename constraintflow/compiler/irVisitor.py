@@ -201,11 +201,17 @@ class IRVisitor:
         elif isinstance(node, IR.IrBlockRepeat):
             return self.visitIrBlockRepeat(node)
         
+        elif isinstance(node, IR.IrBlockClamp):
+            return self.visitIrBlockClamp(node)
+        
         elif isinstance(node, IR.IrTensorOnes):
             return self.visitIrTensorOnes(node)
         
         elif isinstance(node, IR.IrTensorRepeat):
             return self.visitIrTensorRepeat(node)
+        
+        elif isinstance(node, IR.IrTensorClamp):
+            return self.visitIrTensorClamp(node)
 
         else:
             print("This is an error. This shouldn't happen")

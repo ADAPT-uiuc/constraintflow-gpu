@@ -1778,15 +1778,61 @@ Blocks Types: "
         json_list.append(json_obj)
         return SparseTensor(start_indices, blocks, self.dims, total_size, end_indices, self.type, self.dense_const)
     
-    def clamp(self, const, min_true):
+    def clamp(self, const, min_true, json_list=[], lhs_index=-1):
         start_time = time.perf_counter()
         blocks = []
+        json_obj = {
+            "method": "initialise",
+            "name": "blocks",
+            "value": "[]",
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        blocks_json_list_index = len(json_list) - 1
         clamp_sparse_tensor_expense.update_total_time(time.perf_counter()-start_time)
         for i in range(self.num_blocks):
             cr = self.blocks[i].clamp(const, min_true)
+            json_obj = {
+                "method": "extract_block",
+                "input": "json_list_" + str(lhs_index),
+                "index": i,
+                "output": len(json_list)
+            }
+            json_list.append(json_obj)
+
+            json_obj = {
+                "method": "block_clamp",
+                "input": "json_list_" + str(len(json_list)-1),
+                "const": const,
+                "min_true": min_true,
+                "output": len(json_list)
+            }
+            json_list.append(json_obj)
+
+            json_obj = {
+                "method": "append_list",
+                "list": "json_list_" + str(blocks_json_list_index),
+                "value": "json_list_" + str(len(json_list)-1),
+                "output": len(json_list)
+            }
+            json_list.append(json_obj)
+            blocks_json_list_index = len(json_list) - 1
             append_start_time = time.perf_counter()
             blocks.append(cr)
             clamp_sparse_tensor_expense.update_total_time(time.perf_counter()-append_start_time)
+        
+        json_obj = {
+            "method": "SparseTensor",
+            "start_indices": [tensor_to_list(x) for x in self.start_indices],
+            "blocks": "json_list_" + str(blocks_json_list_index),
+            "dims": self.dims,
+            "total_size": self.total_size.tolist(),
+            "end_indices": [tensor_to_list(x) for x in self.end_indices],
+            "type": self.type.__name__,
+            "dense_const": self.dense_const,
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
         return SparseTensor(self.start_indices, blocks, self.dims, self.total_size, self.end_indices, self.type, self.dense_const)
 
             
