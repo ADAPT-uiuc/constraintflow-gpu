@@ -319,6 +319,8 @@ class IrAst:
         self.parents = []
         self.children = []
         self.irMetadata = []
+        self.inside_while = False
+        self.while_number = -1
         
     
     def update_parent_child(self, children):
@@ -363,6 +365,9 @@ class IrAst:
 class IrExpression(IrAst):
     def __init__(self):
         super().__init__()
+        self.ttb_counter = -1
+        self.while_number = -1
+        self.while_iteration = -1
         
 
 class IrStatement(IrAst):
@@ -1435,6 +1440,8 @@ class IrBlock(IrAst):
         if len(ir_list) == 0:
             ir_list = list()
         self.update_parent_child(ir_list)
+        self.inside_while = False 
+        self.while_number = -1
 
     def __eq__(self, obj):
         if isinstance(obj, IrBlock):

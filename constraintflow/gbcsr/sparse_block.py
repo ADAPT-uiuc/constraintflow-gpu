@@ -1414,6 +1414,7 @@ class DummyBlock:
     
     def any(self):
         # Meta tensors cannot be converted to bool (`Tensor.item()` is unsupported).
+        return True
         return False
     
     def clamp(self, const, min_true):

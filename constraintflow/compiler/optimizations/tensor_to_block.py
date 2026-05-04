@@ -57,7 +57,7 @@ def deepcopy_cfg_with_fresh_identifiers(cfg):
     return cfg_copy
 
 
-def convert_to_ir(expr, layer_index):
+def convert_to_ir_ttb(expr, layer_index):
     # targets = (IrRepeat)
     targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot)
     if not isinstance(expr, targets):
@@ -354,7 +354,7 @@ def tensor_to_block_block(block, layer_index):
     for i in range(length):
         l = ir_list[index]
         if isinstance(l, IrAssignment):
-            new_expr, new_assignments = convert_to_ir(l.children[1], layer_index)
+            new_expr, new_assignments = convert_to_ir_ttb(l.children[1], layer_index)
             new_children = [l.children[0], new_expr]
             l.update_parent_child(new_children)
             for j in range(len(new_assignments)):
@@ -364,7 +364,7 @@ def tensor_to_block_block(block, layer_index):
             new_children = []
             new_assignments = []
             for child in l.children:
-                new_expr, new_assignments_inner = convert_to_ir(child, layer_index)
+                new_expr, new_assignments_inner = convert_to_ir_ttb(child, layer_index)
                 new_children.append(new_expr)
                 new_assignments += new_assignments_inner
             l.update_parent_child(new_children)
