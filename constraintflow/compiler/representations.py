@@ -132,7 +132,14 @@ class Graph:
     def print(self):
         dot = graphviz.Digraph()
         for i in self.nodes:
-            dot.node(str(i))
+            block = self.ir[i]
+            label = str(i)
+            attrs = {}
+            if hasattr(block, 'inside_while') and block.inside_while:
+                label += '\nwhile ' + str(block.while_number)
+                attrs['color'] = 'blue'
+                attrs['fontcolor'] = 'blue'
+            dot.node(str(i), label=label, **attrs)
             for j in self.successors[i]:
                 dot.edge(str(i), str(j))
         dot.render('graph', view=True)
@@ -144,15 +151,23 @@ class Graph:
         return -1
 
 
+while_counter = -1
+def get_while_counter():
+    global while_counter
+    while_counter += 1
+    return while_counter
+
 def create_cfg(ir_list):
     cfg = Graph()
-    def create_cfg_rec(ir_list, cfg, currBlock, currNode, whileBlock, exitWhileBlock):
+    def create_cfg_rec(ir_list, cfg, currBlock, currNode, whileBlock, exitWhileBlock, while_number=-1):
         end = 0
         while(end < len(ir_list)):
             if isinstance(ir_list[end], IrWhile):
                 new_children = ir_list[:end]
                 currBlock.update_parent_child(new_children)
                 if whileBlock != None:
+                    currBlock.inside_while=True
+                    currBlock.while_number = while_number
                     if currBlock not in whileBlock.loopBody:
                         whileBlock.loopBody.append(currBlock)
                 cond = ir_list[end].children[0]
@@ -170,10 +185,10 @@ def create_cfg(ir_list):
                 cond = IrUnaryOp(cond, 'not')
                 currBlock.jump = [cond, block_3]
 
-                break_node = create_cfg_rec(ir_list[end].children[1:], cfg, block_2, node_2, block_2, block_3)
+                break_node = create_cfg_rec(ir_list[end].children[1:], cfg, block_2, node_2, block_2, block_3, get_while_counter())
                 block_2.loopBody[-1].loopBack = [block_2.condIr, block_2]
                 
-                ret_node = create_cfg_rec(ir_list[end+1:], cfg, block_3, node_3, whileBlock, exitWhileBlock)
+                ret_node = create_cfg_rec(ir_list[end+1:], cfg, block_3, node_3, whileBlock, exitWhileBlock, while_number)
 
                 cfg.successors[currNode].append(node_2)
 
@@ -190,6 +205,8 @@ def create_cfg(ir_list):
                 new_children = ir_list[:end]
                 currBlock.update_parent_child(new_children)
                 if whileBlock != None:
+                    currBlock.inside_while=True
+                    currBlock.while_number = while_number
                     if currBlock not in whileBlock.loopBody:
                         whileBlock.loopBody.append(currBlock)
                 cond_if = ir_list[end].condIr 
@@ -200,13 +217,13 @@ def create_cfg(ir_list):
 
                 
                 
-                end_if_node = create_cfg_rec(ir_list[end].lhsIrs, cfg, block_if, node_if, whileBlock, exitWhileBlock)
+                end_if_node = create_cfg_rec(ir_list[end].lhsIrs, cfg, block_if, node_if, whileBlock, exitWhileBlock, while_number)
 
                 if len(ir_list[end].rhsIrs) > 0:
                     block_else = IrBlock()
                     node_else = cfg.add()
                     cfg.ir[node_else] = block_else
-                    end_else_node = create_cfg_rec(ir_list[end].rhsIrs, cfg, block_else, node_else, whileBlock, exitWhileBlock)
+                    end_else_node = create_cfg_rec(ir_list[end].rhsIrs, cfg, block_else, node_else, whileBlock, exitWhileBlock, while_number)
                     currBlock.inner_jump = [cond_if, block_if, block_else]
                 else:
                     currBlock.inner_jump = [cond_if, block_if]
@@ -214,7 +231,7 @@ def create_cfg(ir_list):
                 node_3 = cfg.add()
                 block_3 = IrBlock()
                 cfg.ir[node_3] = block_3
-                create_cfg_rec(ir_list[end+1:], cfg, block_3, node_3, whileBlock, exitWhileBlock)
+                create_cfg_rec(ir_list[end+1:], cfg, block_3, node_3, whileBlock, exitWhileBlock, while_number)
                 currBlock.jump = [cond_else, block_3]
 
 
@@ -246,6 +263,8 @@ def create_cfg(ir_list):
                 new_children = ir_list[:end+1]
                 currBlock.update_parent_child(new_children)
                 if whileBlock != None:
+                    currBlock.inside_while=True
+                    currBlock.while_number = while_number
                     if currBlock not in whileBlock.loopBody:
                         whileBlock.loopBody.append(currBlock)
 
@@ -257,6 +276,8 @@ def create_cfg(ir_list):
                     new_children = ir_list[:end]
                     currBlock.update_parent_child(new_children)
                     if whileBlock != None:
+                        currBlock.inside_while=True
+                        currBlock.while_number = while_number
                         if currBlock not in whileBlock.loopBody:
                             whileBlock.loopBody.append(currBlock)
                     return currNode

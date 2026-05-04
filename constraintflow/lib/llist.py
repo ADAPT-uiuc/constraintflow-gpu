@@ -31,7 +31,6 @@ class Llist:
         Not certifier-specific information.
         """
         if dummy_mode:
-            print(f'dummy_mode in get_metadata: {dummy_mode}')
             return self.get_metadata_dummy(elem, batch_size)
         # ---- Is this true, and why? ----
         # Currently, get_metadata only supports consecutive intervals of

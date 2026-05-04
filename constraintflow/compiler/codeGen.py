@@ -33,6 +33,7 @@ class CodeGen(irVisitor.IRVisitor):
 
         self.counter = 0
 
+
     def write(self, str, flag=True):
         self.file.write('\t'*self.indent + str)
         if flag:
@@ -120,9 +121,7 @@ class CodeGen(irVisitor.IRVisitor):
             self.visit(node.irNodes[i])
 
     def visitIrBlock(self, node):
-        print(self.visited)
         if not node in self.visited:
-            print('here')
             self.visited.add(node)
             ir_list = node.children
             for counter, i in enumerate(ir_list):
@@ -146,8 +145,10 @@ class CodeGen(irVisitor.IRVisitor):
                     self.indent -= 1
                 else:
                     cond = self.visit(node.inner_jump[0])
+                    self.write('while_iteration = 0')
                     self.write('while(' + str(cond) + '):')
                     self.indent += 1
+                    self.write('while_iteration += 1')
                     self.visit(node.inner_jump[1])
                     self.indent -= 1
             if node.jump != None:
@@ -213,13 +214,13 @@ class CodeGen(irVisitor.IRVisitor):
                 self.visit(i)
             self.indent -= 1
 
-    def visitIrWhile(self, node):
-        cond = self.visit(node.children[0])
-        self.write('while(' + str(cond) + '):')
-        self.indent += 1
-        for ir in node.children[1:]:
-            self.visit(ir)
-        self.indent -= 1
+    # def visitIrWhile(self, node):
+    #     cond = self.visit(node.children[0])
+    #     self.write('while(' + str(cond) + '):')
+    #     self.indent += 1
+    #     for ir in node.children[1:]:
+    #         self.visit(ir)
+    #     self.indent -= 1
     
 
     def visitIrStr(self, node):
@@ -427,9 +428,11 @@ class CodeGen(irVisitor.IRVisitor):
         if flag:
             return op_name + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ')'
         else:
-            # asdasds
+            if node.inside_while:
+                return 'binary(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = True' + ', while_number = ' + str(node.while_number) + ', while_iteration=while_iteration) #' + str(node.ttb_counter)
+            
 
-            return 'binary(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ') #' + str(node.ttb_counter)
+            return 'binary(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = False' + ', while_number = ' + str(node.while_number) + ') #' + str(node.ttb_counter)
     
     def visitIrUnaryOp(self, node):
         op_name = None 

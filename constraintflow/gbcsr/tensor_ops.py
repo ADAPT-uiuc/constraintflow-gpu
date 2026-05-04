@@ -119,7 +119,7 @@ def all(x):
 #         raise Exception('TYPE MISMATCH')
 #     return x.all()
 
-def binary(x, y, op, layer_index = None, counter = None):
+def binary(x, y, op, layer_index = None, counter = None, inside_while = False, while_number = None, while_iteration = None):
     total_start_time = time.perf_counter()
     start_time = time.perf_counter()
     sanityCheck(x, y)
@@ -177,10 +177,15 @@ def binary(x, y, op, layer_index = None, counter = None):
         res = op(x, y)
         binary_tensor_ops_no_sparse.update_total_time(time.perf_counter() - start_time)
     total_binary_tensor_ops.update_total_time(time.perf_counter() - total_start_time)
+    # if inside_while:
+    #     print(while_iteration)
     if dummy_mode:
         if layer_index is not None and counter is not None:
             os.makedirs("jit_binary", exist_ok=True)
-            capture_path = f"jit_binary/binary_{layer_index}_{counter}.json"
+            capture_path = f"jit_binary/binary_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+            # if inside_while:
+            #     print(while_iteration)
+            #     print(capture_path)
             
             with open(capture_path, 'w') as f:
                 json.dump(json_list, f, indent=4)
@@ -286,7 +291,7 @@ def where(x, y, z):
     where_time.update_total_time(time.perf_counter() - start_time)
     return res
 
-def inner_prod(x, y, layer_index = None, counter = None):
+def inner_prod(x, y, layer_index = None, counter = None, while_number = None, while_iteration = None):
     total_start_time = time.perf_counter()
     # time.sleep(0.00625)
     checkTypes(x, y)
@@ -331,7 +336,7 @@ def inner_prod(x, y, layer_index = None, counter = None):
                 if layer_index is not None and counter is not None:
                     os.makedirs("jit_matmul", exist_ok=True)
                     # capture_occurrence = _next_jit_occurrence(_jit_save_occurrence, layer_index, counter)
-                    capture_path = f"jit_matmul/matmul_{layer_index}_{counter}.json"
+                    capture_path = f"jit_matmul/matmul_{layer_index}_{counter}_{while_number}_{while_iteration}.json"
                     
                     with open(capture_path, 'w') as f:
                         json.dump(json_list, f, indent=4)
@@ -497,7 +502,7 @@ def get_shape_0(x):
         return x.total_size[0]
     return x.shape[0]
 
-def repeat(mat, repeat_dims, layer_index = None, counter = None):
+def repeat(mat, repeat_dims, layer_index = None, counter = None, while_number = None, while_iteration = None):
     json_list = []
 
     start_time = time.perf_counter()
@@ -538,13 +543,13 @@ def repeat(mat, repeat_dims, layer_index = None, counter = None):
     if dummy_mode:
         if layer_index is not None and counter is not None:
             os.makedirs("jit_repeat", exist_ok=True)
-            capture_path = f"jit_repeat/repeat_{layer_index}_{counter}.json"
+            capture_path = f"jit_repeat/repeat_{layer_index}_{counter}_{while_number}_{while_iteration}.json"
             
             with open(capture_path, 'w') as f:
                 json.dump(json_list, f, indent=4)
     return res
 
-def clamp(mat, const, min_true, layer_index = None, counter = None):
+def clamp(mat, const, min_true, layer_index = None, counter = None, while_number = None, while_iteration = None):
     start_time = time.perf_counter()
     json_list = []
     if isinstance(mat, float):
@@ -612,7 +617,7 @@ def clamp(mat, const, min_true, layer_index = None, counter = None):
     if dummy_mode:
         if layer_index is not None and counter is not None:
             os.makedirs("jit_clamp", exist_ok=True)
-            capture_path = f"jit_clamp/clamp_{layer_index}_{counter}.json"
+            capture_path = f"jit_clamp/clamp_{layer_index}_{counter}_{while_number}_{while_iteration}.json"
             
             with open(capture_path, 'w') as f:
                 json.dump(json_list, f, indent=4)

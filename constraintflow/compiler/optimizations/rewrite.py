@@ -712,20 +712,22 @@ def count_split_targets(expr):
         count += count_split_targets(child)
     return count
 
-def hoist_split_targets(expr):
+def hoist_split_targets(expr, inside_while, while_number):
     if isinstance(expr, int):
         return expr, []
 
     new_children = []
     new_assignments = []
     for child in expr.children:
-        new_child, child_assignments = hoist_split_targets(child)
+        new_child, child_assignments = hoist_split_targets(child, inside_while, while_number)
         new_children.append(new_child)
         new_assignments += child_assignments
     expr.update_parent_child(new_children)
 
-    targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat, IrClamp, IrDot)
+    targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat, IrClamp, IrDot, IrUnaryOp)
     if isinstance(expr, targets):
+        expr.inside_while = inside_while
+        expr.while_number = while_number
         new_name = get_var(True)
         new_var = IrVar(new_name, expr.irMetadata)
         new_assignment = IrAssignment(new_var, expr)
@@ -751,14 +753,14 @@ def assign_ttb_counter(expr):
     return expr, []
 
 
-def rewrite_block(block, rewrite_func):
+def rewrite_block(block, rewrite_func, args=[]):
     ir_list = block.children
     length = len(ir_list)
     index = 0
     for i in range(length):
         l = ir_list[index]
         if isinstance(l, IrAssignment):
-            new_expr, new_assignments = rewrite_func(l.children[1])
+            new_expr, new_assignments = rewrite_func(l.children[1], *args)
             new_children = [l.children[0], new_expr]
             l.update_parent_child(new_children)
             for j in range(len(new_assignments)):
@@ -768,7 +770,7 @@ def rewrite_block(block, rewrite_func):
             new_children = []
             new_assignments = []
             for child in l.children:
-                new_expr, new_assignments_inner = rewrite_func(child)
+                new_expr, new_assignments_inner = rewrite_func(child, *args)
                 new_children.append(new_expr)
                 new_assignments += new_assignments_inner
             l.update_parent_child(new_children)
@@ -808,8 +810,6 @@ def rewrite_cfg(cfg):
         block = cfg.ir[node]
         rewrite_block(block, rewrite_associativity)
     # uses.populate_uses_defs_cfg(cfg)
-    uses.populate_uses_defs_cfg(cfg)
-    for node in cfg.nodes:
         block = cfg.ir[node]
         rewrite_block(block, rewrite_percolate_reduce_inside_phi)
     for node in cfg.nodes:
@@ -829,16 +829,19 @@ def rewrite_cfg(cfg):
     uses.populate_uses_defs_cfg(cfg)
     for node in cfg.nodes:
         block = cfg.ir[node]
-        rewrite_block(block, hoist_split_targets)
+        rewrite_block(block, hoist_split_targets, [block.inside_while, block.while_number])
 
     uses.populate_uses_defs_cfg(cfg)
     for node in cfg.nodes:
         block = cfg.ir[node]
         rewrite_block(block, assign_ttb_counter)
+    # assign_while_cfg(cfg)
     
 def rewrite(ir):
     for transformer in ir.tstore.keys():
         for i in range(len(ir.tstore[transformer])):
             cfg = ir.tstore[transformer][i].cfg
             rewrite_cfg(cfg)
+            # cfg.print()
+            # kkdug
     return ir

@@ -291,7 +291,6 @@ class Abs_elem_sparse:
             
     def update(self, llist, abs_shape):
         if dummy_mode:
-            print(f'dummy_mode in update: {dummy_mode}')
             return self.update_dummy(llist, abs_shape)
         llist.decoalesce()
         assert(len(llist.llist) == 1)
