@@ -6,6 +6,8 @@ all_ops = [operator.lt, operator.le, operator.eq, operator.ne, operator.gt, oper
 disjunction_ops = [operator.lt, operator.le, operator.eq, operator.ne, operator.gt, operator.ge, operator.or_, operator.add, operator.sub]
 conjunction_ops = [operator.and_, operator.mul, operator.truediv]
 
+commutative_ops = [operator.add, operator.mul, operator.and_, operator.or_]
+
 def identity_element(op):
     if op == operator.add:
         return 0

@@ -426,7 +426,9 @@ def get_default_stop(shape, abs_elem, batch_size, curr_size, poly_size):
             res_start_indices.append(torch.tensor([0, 0, abs_elem.network[i].start]))
             res_end_indices.append(torch.tensor([batch_size, curr_size, abs_elem.network[i].end]))
             res.append(ConstBlock(False, torch.tensor([batch_size, curr_size, abs_elem.network[i].size])))
-    return SparseTensor(res_start_indices, res, len(shape), torch.tensor(shape), res_end_indices, type=bool, dense_const=False)
+    temp = SparseTensor(res_start_indices, res, len(shape), torch.tensor(shape), res_end_indices, type=bool, dense_const=True)
+    return temp
+
 
 def get_default_stop2(shape):
     global input_size
