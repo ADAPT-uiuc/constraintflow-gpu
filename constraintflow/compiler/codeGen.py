@@ -149,6 +149,7 @@ class CodeGen(irVisitor.IRVisitor):
                     self.write('while(' + str(cond) + '):')
                     self.indent += 1
                     self.write('while_iteration += 1')
+                    self.write('print(\'while_iteration\', while_iteration)')
                     self.visit(node.inner_jump[1])
                     self.indent -= 1
             if node.jump != None:

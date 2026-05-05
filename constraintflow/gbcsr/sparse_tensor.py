@@ -521,7 +521,8 @@ class SparseTensor:
         sparse_tensor_init_time.update_op_time(time.perf_counter()-t1)
         
         if self.num_blocks > 0:
-            if (self.end_indices[0]-self.start_indices[0] == self.total_size).all():
+            if self.check_dense():
+            # if (self.end_indices[0]-self.start_indices[0] == self.total_size).all():
                 if self.type==float:
                     self.dense_const = 0.0
                 elif self.type==bool:
@@ -1210,7 +1211,7 @@ Blocks Types: "
                 json_list.append(json_obj)
             
             start = time.perf_counter()
-            if (not dummy) and (not dummy_mode) and isinstance(block, ConstBlock) and block.block == dense_const:
+            if isinstance(block, ConstBlock) and block.block == dense_const:
                 binary_fixed_costs.update_total_time(time.perf_counter()-start)
                 continue
             res_blocks.append(block)

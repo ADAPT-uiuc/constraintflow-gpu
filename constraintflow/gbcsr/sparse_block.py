@@ -1104,11 +1104,11 @@ class PatchesBlock(SparseBlock):
 class ConstBlock(SparseBlock):
     if dummy_mode:
         def __new__(cls, block, total_shape, dummy_flag: bool=True):
-            if not dummy_flag:
+            if not dummy_flag or True:
                 return super().__new__(cls, dummy_flag=False)
             return super().__new__(cls, total_shape=total_shape)
-    def __init__(self, block, total_shape, dummy_flag: bool=True):
-        if dummy_mode and dummy_flag:
+    def __init__(self, block, total_shape, dummy_flag: bool=False):
+        if dummy_mode and dummy_flag and False:
             return
         super().__init__(block, total_shape, dummy_flag, 'C')
         # assert total_shape.dtype in {torch.int8, torch.int16, torch.int32, torch.int64}
@@ -1368,13 +1368,23 @@ class RepeatBlock(SparseBlock):
         return RepeatBlock(new_block, self.total_shape)
 
 
-class DummyBlock:
+class DummyBlock():
     def __init__(self, block, total_shape):
         self.total_shape = total_shape
         self.block_type = 'Dummy'
         self.block = torch.empty(tuple(self.total_shape.tolist()), device="meta")
     
     def binary(self, sp_block, op):
+        if op in commutative_ops and isinstance(sp_block, ConstBlock):
+            if sp_block.block == annihilator_element(op):
+                return sp_block
+            # print(op)
+            # print(sp_block.block)
+            # kdug
+        ret = DummyBlock(sp_block.block, self.total_shape)
+        return ret
+
+    def disjunctive_binary(self, sp_block, op):
         ret = DummyBlock(sp_block.block, self.total_shape)
         return ret
     
