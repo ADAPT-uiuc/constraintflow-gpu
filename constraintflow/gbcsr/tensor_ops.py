@@ -435,9 +435,10 @@ def get_default_stop2(shape):
     vertices_stop_default = vertices_stop_default.bool()
     return vertices_stop_default
 
-def get_max_priority(sp_tensor, active_vertices):
+def get_max_priority(sp_tensor, active_vertices: SparseTensor):
     priorities = []
     for i in range(sp_tensor.num_blocks):
+        # print(f'sp_tensor.blocks[i] type: {type(sp_tensor.blocks[i])}')
         assert(isinstance(sp_tensor.blocks[i], ConstBlock))
         if active_vertices.exists_sub_block(sp_tensor.start_indices[i], sp_tensor.end_indices[i]):
             priorities.append(sp_tensor.blocks[i].block)

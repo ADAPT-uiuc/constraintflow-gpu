@@ -62,10 +62,12 @@ def where_block(x, y, z):
 class SparseBlock:
     repeat_dims = []
     if dummy_mode:
-        def __new__(cls, *args, **kwargs):
+        def __new__(cls, dummy_flag: bool=True, *args, **kwargs):
+            if not dummy_flag:
+                return super().__new__(cls)
             return DummyBlock(block=None, total_shape=kwargs['total_shape'])
-    def __init__(self, block, total_shape, block_type='D'):
-        if dummy_mode:
+    def __init__(self, block, total_shape, dummy_flag: bool=True, block_type='D'):
+        if dummy_mode and dummy_flag:
             return
         if isinstance(block, torch.Tensor):
             start_transfer = time.perf_counter()
@@ -1101,12 +1103,14 @@ class PatchesBlock(SparseBlock):
 
 class ConstBlock(SparseBlock):
     if dummy_mode:
-        def __new__(cls, block, total_shape):
+        def __new__(cls, block, total_shape, dummy_flag: bool=True):
+            if not dummy_flag:
+                return super().__new__(cls, dummy_flag=False)
             return super().__new__(cls, total_shape=total_shape)
-    def __init__(self, block, total_shape):
-        if dummy_mode:
+    def __init__(self, block, total_shape, dummy_flag: bool=True):
+        if dummy_mode and dummy_flag:
             return
-        super().__init__(block, total_shape, 'C')
+        super().__init__(block, total_shape, dummy_flag, 'C')
         # assert total_shape.dtype in {torch.int8, torch.int16, torch.int32, torch.int64}
 
     def get_dense(self):
@@ -1118,12 +1122,12 @@ class ConstBlock(SparseBlock):
         return res
 
 
-    def unsqueeze(self, index):
-        return ConstBlock(self.block, torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]]))
+    def unsqueeze(self, index, dummy_flag: bool=True):
+        return ConstBlock(self.block, torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]]), dummy_flag=dummy_flag)
     
-    def squeeze(self, index):
-        return ConstBlock(self.block, torch.concat([self.total_shape[:index], self.total_shape[index+1:]]))
-    
+    def squeeze(self, index, dummy_flag: bool=True):
+        return ConstBlock(self.block, torch.concat([self.total_shape[:index], self.total_shape[index+1:]]), dummy_flag=dummy_flag)
+
     def overwrite_dense_block(self, sp_block, start_index, s):
         block_shape = sp_block.total_shape
         if (block_shape == self.total_shape).all():
