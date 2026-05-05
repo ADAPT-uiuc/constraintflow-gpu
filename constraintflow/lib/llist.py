@@ -179,9 +179,12 @@ class Llist:
                     # When elem == 'layer', give the layer number of the layer
                     #   which the neuron belongs to.
                     # block = DenseBlock(torch.ones(self.network[k].size, dtype=int)*k)
-                    block = DummyBlock(None, torch.tensor([self.network[k].size]))
+                    # block = DummyBlock(None, torch.tensor([self.network[k].size]))
+                    block = ConstBlock(k, torch.tensor([self.network[k].size]), dummy_flag=False)
+                    # print(f'get_metadata_dummy `layer` block type: {type(block)}')
                     for i in range(len(self.initial_shape)):
-                        block = block.unsqueeze(0)
+                        block = block.unsqueeze(0, False)
+                    # print(f'get_metadata_dummy `layer` block type after unsequeeze: {type(block)}')
                     ret.append(block)
                     start_index = torch.tensor([0]*len(self.initial_shape) + [temp])
                     start_indices.append(start_index)
@@ -191,9 +194,12 @@ class Llist:
                     #   belongs to the last layer or not.
                     # block = DenseBlock(torch.ones(self.network[k].size, dtype=int)*k)
                     mat = (k == len(self.network)-1)
-                    block = DummyBlock(None, torch.tensor([self.network[k].size]))
+                    # block = DummyBlock(None, torch.tensor([self.network[k].size]))
+                    block = ConstBlock(int(mat), torch.tensor([self.network[k].size]), dummy_flag=False)
+                    # print(f'get_metadata_dummy `last_layer` block type: {type(block)}')
                     for i in range(len(self.initial_shape)):
-                        block = block.unsqueeze(0)
+                        block = block.unsqueeze(0, False)
+                    # print(f'get_metadata_dummy `last_layer` block type after unsequeeze: {type(block)}')
                     ret.append(block)
                     start_index = torch.tensor([0]*len(self.initial_shape) + [temp])
                     start_indices.append(start_index)
@@ -202,7 +208,9 @@ class Llist:
                     raise NotImplementedError
             total_shape = start_indices[-1] + ret[-1].total_shape
             dim = len(total_shape)
-            return SparseTensor(start_indices, ret, dim, total_shape)
+            ret_st = SparseTensor(start_indices, ret, dim, total_shape)
+            # print(f'ret_st: {ret_st}')
+            return ret_st
         else:
             raise NotImplementedError
         
