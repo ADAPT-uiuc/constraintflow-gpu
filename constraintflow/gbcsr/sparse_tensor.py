@@ -26,6 +26,7 @@ import operator
 OP_MAP = {
     "add": operator.add,
     "sub": operator.sub,
+    "ne": operator.ne,
     "ge": operator.ge,
     "gt": operator.gt,
     "le": operator.le,

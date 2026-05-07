@@ -166,7 +166,7 @@ def create_cfg(ir_list):
                 new_children = ir_list[:end]
                 currBlock.update_parent_child(new_children)
                 if whileBlock != None:
-                    currBlock.inside_while=True
+                    currBlock.inside_while = True
                     currBlock.while_number = while_number
                     if currBlock not in whileBlock.loopBody:
                         whileBlock.loopBody.append(currBlock)

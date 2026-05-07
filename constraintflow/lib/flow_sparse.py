@@ -180,6 +180,8 @@ class Flow:
                 print(tmp+1, layer.type, layer.shape)
                 print(time.time()-t_time)
                 print('---------------------------')
+                lb = (abs_shape[0].get_dense())
+                ub = (abs_shape[1].get_dense())
                 print(f'l: {lb}')
                 print(f'u: {ub}')
         lb = (abs_shape[0].get_dense())
