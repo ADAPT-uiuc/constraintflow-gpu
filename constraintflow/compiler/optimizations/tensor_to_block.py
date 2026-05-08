@@ -1,4 +1,5 @@
 import json
+import os
 import torch 
 
 from constraintflow.compiler.ir import *
@@ -60,14 +61,64 @@ def deepcopy_cfg_with_fresh_identifiers(cfg):
     return cfg_copy
 
 
+def get_profiled_branch(layer_index, block_id):
+    if block_id is None:
+        return None
+
+    filename = f"jit_branch/branch_{layer_index}_{block_id}.json"
+    if not os.path.exists(filename):
+        return None
+
+    with open(filename, 'r') as f:
+        json_obj = json.load(f)
+
+    taken = json_obj["taken"]
+    if taken in ("then", "else"):
+        return taken
+    return None
+
+
+# Worklist Algorithm to find live nodes (essentially branches that are taken based on the profiling data that we collect during simulacrum mode)
+def get_live_nodes(cfg, layer_index):
+    live_nodes = set()
+    worklist = [cfg.entry_node]
+
+    while worklist:
+        node = worklist.pop()
+        if node in live_nodes or node not in cfg.ir:
+            continue
+
+        live_nodes.add(node)
+        block = cfg.ir[node]
+        taken = None
+        if block.inner_jump is not None and len(block.inner_jump) == 3:
+            taken = get_profiled_branch(layer_index, block.block_id)
+
+        if taken == "then":
+            successors = [cfg.get_block_id(block.inner_jump[1])]
+        elif taken == "else":
+            successors = [cfg.get_block_id(block.inner_jump[2])]
+        else:
+            successors = cfg.successors[node]
+
+        for successor in successors:
+            if successor not in live_nodes:
+                worklist.append(successor)
+
+    return live_nodes
+
+
 def convert_to_ir_ttb(expr, layer_index, while_iteration):
     targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot)
     if not isinstance(expr, targets):
         return expr, []
-    
+
+    if isinstance(expr, IrBinaryOp) and expr.op in ('max', 'min'):
+        return expr, []
     binary_instance = expr.ttb_counter
 
     if isinstance(expr, IrMult) or isinstance(expr, IrBinaryOp):
+        # print(expr)
         filename = f"jit_binary/binary_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrInnerProduct):
         filename = f"jit_matmul/matmul_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
@@ -493,8 +544,13 @@ def remove_while(layer_index, num_iterations, cfg, root_node, first_while_node, 
 
 def unroll_while(cfg, layer_index):
     i = 0
-    while(i < len(cfg.nodes)):
-        node = cfg.nodes[i]
+    while True:
+        live_nodes = get_live_nodes(cfg, layer_index)
+        ordered_live_nodes = [node for node in cfg.nodes if node in live_nodes]
+        if i >= len(ordered_live_nodes):
+            break
+
+        node = ordered_live_nodes[i]
         
         block = cfg.ir[node]
         if block.inner_jump is None:
@@ -519,6 +575,7 @@ def unroll_while(cfg, layer_index):
             exit_node = cfg.get_block_id(block.jump[1])
             while_number = first_while_block.while_number
             filename = f"jit_while/while_iterations_layer_{layer_index}_while_{while_number}.json"
+            print(f"Reading while iteration count from {filename}")
             with open(filename, 'r') as f:
                 json_obj = json.load(f)
                 num_iterations = json_obj["num_iterations"]+1
@@ -528,7 +585,10 @@ def unroll_while(cfg, layer_index):
 
 
 def tensor_to_block_cfg(cfg, layer_index):
+    live_nodes = get_live_nodes(cfg, layer_index)
     for node in cfg.nodes:
+        if node not in live_nodes:
+            continue
         block = cfg.ir[node]
         tensor_to_block_block(block, layer_index)
 
