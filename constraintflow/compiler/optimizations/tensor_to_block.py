@@ -109,8 +109,8 @@ def get_live_nodes(cfg, layer_index):
 
 
 def convert_to_ir_ttb(expr, layer_index, while_iteration):
-    targets = ()
-    # targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot)
+    # targets = ()
+    targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot)
     if not isinstance(expr, targets):
         return expr, []
 
@@ -620,15 +620,16 @@ def tensor_to_block_cfg(cfg, layer_index):
 def tensor_to_block(ir):
     # TODO: DEBUG THE FOLLOWING LINE
     # uses.populate_uses_defs(ir)
+    filename = f"jit_layers/layers.json"
+    with open(filename, 'r') as f:
+        json_obj = json.load(f)
     for transformer in ir.tstore.keys():
-        affine = [1, 3, 5, 7]
-        relu = [2, 4, 6]
         for i in range(len(ir.tstore[transformer])):
             transformerIr = ir.tstore[transformer][i]
             if transformerIr.op == 'Affine':
-                layer_indices = affine
+                layer_indices = json_obj['affine']
             elif transformerIr.op == 'Relu':
-                layer_indices = relu
+                layer_indices = json_obj['relu']
             else:
                 print("NOT IMPLEMENTED for op " + transformerIr.op)
                 continue
