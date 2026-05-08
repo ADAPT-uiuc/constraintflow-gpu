@@ -1,8 +1,11 @@
+import json
 import operator
+import os
 
 from . import irVisitor 
 import copy
 from .ir import * 
+from constraintflow.lib.globals import reuse_mode
 
 class CodeGen(irVisitor.IRVisitor):
     def __init__(self,folder):
@@ -18,6 +21,8 @@ class CodeGen(irVisitor.IRVisitor):
         self.file = open(self.main_file, "a")
         self.indent = 0
 
+        self.current_layer_index = None
+
         self.write("import sys")
         self.write("import os")
         self.write("from constraintflow.lib.spec import *")
@@ -32,6 +37,22 @@ class CodeGen(irVisitor.IRVisitor):
         self.visited = set()
 
         self.counter = 0
+
+    # This function is used to get the branch information for a tuple (block_id, layer_index) from the jit file. 
+    def get_profiled_branch(self, block_id):
+        if not reuse_mode.get_flag():
+            return None
+        if self.current_layer_index is None:
+            return None
+        capture_path = os.path.join("jit_branch", f"branch_{self.current_layer_index}_{block_id}.json")
+        if not os.path.exists(capture_path):
+            raise Exception(f"Profiled branch data not found for block_id {block_id} at {capture_path}")
+        with open(capture_path, "r") as json_file:
+            json_obj = json.load(json_file)
+        taken = json_obj["taken"]
+        if taken in ["then", "else"]:
+            return taken
+        return None
 
 
     def write(self, str, flag=True):
@@ -74,6 +95,8 @@ class CodeGen(irVisitor.IRVisitor):
         # GENERATE TRANSFORMERS
         self.open(self.transformers_file)
         self.indent = 0
+        self.write('import json')
+        self.write('import os')
         self.write('import torch')
         self.write('from constraintflow.lib.polyexp import PolyExpSparse')
         self.write('from constraintflow.lib.symexp import *')
@@ -111,7 +134,7 @@ class CodeGen(irVisitor.IRVisitor):
                         self.indent += 1
                         self.write('while_iteration = -1')
                         cfg = opStmtIr.layerwise_cfgs[layer_index]
-                        # print(layer_index, cfg.entry_node, len(cfg.ir[0].children), type(cfg.ir[cfg.entry_node]))
+                        self.current_layer_index = layer_index
                         self.visit(cfg.ir[cfg.entry_node])
                         self.indent -= 1
                         self.write('', True)
@@ -130,14 +153,35 @@ class CodeGen(irVisitor.IRVisitor):
             if node.inner_jump != None:
                 if len(node.inner_jump)==3:
                     cond = self.visit(node.inner_jump[0])
-                    self.write('if(' + str(cond) + '):')
-                    self.indent += 1
-                    self.visit(node.inner_jump[1])
-                    self.indent -= 1
-                    self.write('else:')
-                    self.indent += 1
-                    self.visit(node.inner_jump[2])
-                    self.indent -= 1
+                    block_id = node.block_id
+                    profiled_branch = self.get_profiled_branch(block_id)
+                    if profiled_branch == 'then':
+                        self.visit(node.inner_jump[1])
+                    elif profiled_branch == 'else':
+                        self.visit(node.inner_jump[2])
+                    else:
+                        self.write('if(' + str(cond) + '):')
+                        self.indent += 1
+                        if block_id is not None and not reuse_mode.get_flag():
+                            self.write('os.makedirs("jit_branch", exist_ok=True)')
+                            self.write('capture_path = "jit_branch/branch_" + str(layer_index) + "_' + str(block_id) + '.json"')
+                            self.write('with open(capture_path, "w") as json_file:')
+                            self.indent += 1
+                            self.write('json.dump({"taken": "then"}, json_file)')
+                            self.indent -= 1
+                        self.visit(node.inner_jump[1])
+                        self.indent -= 1
+                        self.write('else:')
+                        self.indent += 1
+                        if block_id is not None and not reuse_mode.get_flag():
+                            self.write('os.makedirs("jit_branch", exist_ok=True)')
+                            self.write('capture_path = "jit_branch/branch_" + str(layer_index) + "_' + str(block_id) + '.json"')
+                            self.write('with open(capture_path, "w") as json_file:')
+                            self.indent += 1
+                            self.write('json.dump({"taken": "else"}, json_file)')
+                            self.indent -= 1
+                        self.visit(node.inner_jump[2])
+                        self.indent -= 1
                 elif not isinstance(node.inner_jump[1], IrWhileBlock):
                     cond = self.visit(node.inner_jump[0])
                     self.write('if(' + str(cond) + '):')
@@ -300,6 +344,7 @@ class CodeGen(irVisitor.IRVisitor):
         OP_MAP = {
             "add": 'operator.add',
             "sub": 'operator.sub',
+            "eq": 'operator.eq',
             "ne": 'operator.ne',
             "ge": 'operator.ge',
             "gt": 'operator.gt',
@@ -579,7 +624,9 @@ class CodeGen(irVisitor.IRVisitor):
         elif rhsIr.irMetadata[-1].type == 'Neuron':
             return self.visit(rhsIr) + '.dot(' + self.visit(lhsIr) + ', abs_elem.get_poly_size())'
         elif lhsIr.irMetadata[-1].type == 'Float':
-            return 'inner_prod(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ') #' + str(node.ttb_counter)
+            if node.inside_while:
+                return 'inner_prod(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = True' + ', while_number = ' + str(node.while_number) + ', while_iteration=while_iteration) #' + str(node.ttb_counter)
+            return 'inner_prod(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = False' + ', while_number = ' + str(node.while_number) + ') #' + str(node.ttb_counter)
         else:
             raise Exception('NOT IMPLEMENTED')
 

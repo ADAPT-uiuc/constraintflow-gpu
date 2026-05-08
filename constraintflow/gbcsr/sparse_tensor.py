@@ -36,6 +36,9 @@ OP_MAP = {
     "floordiv": operator.floordiv,
     "mod": operator.mod,
     "pow": operator.pow,
+    "eq": operator.eq,
+    "or_": operator.or_,
+    "and_": operator.and_,
 }
 
 def get_operator_func(name: str):
@@ -1863,6 +1866,7 @@ Blocks Types: "
         return res
     
 def sparse_max(x:SparseTensor, y:SparseTensor):
+
     z = x.binary(y, operator.gt)
     return sp_where(z, x, y)
 

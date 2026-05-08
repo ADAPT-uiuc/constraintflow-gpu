@@ -159,6 +159,12 @@ def get_while_counter():
 
 def create_cfg(ir_list):
     cfg = Graph()
+
+    # The reasoning for creating this function is that we want to assign block ids to blocks as we assign them to the IR nodes. 
+    def register_block(node, block):
+        block.block_id = node
+        cfg.ir[node] = block
+
     def create_cfg_rec(ir_list, cfg, currBlock, currNode, whileBlock, exitWhileBlock, while_number=-1):
         end = 0
         while(end < len(ir_list)):
@@ -174,12 +180,12 @@ def create_cfg(ir_list):
                 node_2 = cfg.add()
 
                 block_2 = IrWhileBlock(ir_list[end].children[0])
-                cfg.ir[node_2] = block_2
+                register_block(node_2, block_2)
                 currBlock.inner_jump = [cond, block_2]
 
                 node_3 = cfg.add()
                 block_3 = IrBlock()
-                cfg.ir[node_3] = block_3
+                register_block(node_3, block_3)
                 
 
                 cond = IrUnaryOp(cond, 'not')
@@ -213,7 +219,7 @@ def create_cfg(ir_list):
                 cond_else = IrUnaryOp(cond_if, 'not')
                 block_if = IrBlock()
                 node_if = cfg.add()
-                cfg.ir[node_if] = block_if
+                register_block(node_if, block_if)
 
                 
                 
@@ -222,7 +228,7 @@ def create_cfg(ir_list):
                 if len(ir_list[end].rhsIrs) > 0:
                     block_else = IrBlock()
                     node_else = cfg.add()
-                    cfg.ir[node_else] = block_else
+                    register_block(node_else, block_else)
                     end_else_node = create_cfg_rec(ir_list[end].rhsIrs, cfg, block_else, node_else, whileBlock, exitWhileBlock, while_number)
                     currBlock.inner_jump = [cond_if, block_if, block_else]
                 else:
@@ -230,7 +236,7 @@ def create_cfg(ir_list):
                 
                 node_3 = cfg.add()
                 block_3 = IrBlock()
-                cfg.ir[node_3] = block_3
+                register_block(node_3, block_3)
                 create_cfg_rec(ir_list[end+1:], cfg, block_3, node_3, whileBlock, exitWhileBlock, while_number)
                 currBlock.jump = [cond_else, block_3]
 
@@ -284,7 +290,7 @@ def create_cfg(ir_list):
     rootBlock = IrBlock([])
     whileBlock = None
     rootNode = cfg.add()
-    cfg.ir[rootNode] = rootBlock
+    register_block(rootNode, rootBlock)
     create_cfg_rec(ir_list, cfg, rootBlock, rootNode, whileBlock, whileBlock)
     return cfg
     
