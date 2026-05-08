@@ -240,6 +240,7 @@ def run(
 
     typer.echo(f"Lower bounds: {lb}")
     typer.echo(f"Upper bounds: {ub}")
+    typer.echo(f"Total time: {total_time:.2f} seconds")
     # if eps == 0:
     #     assert(lb == ub).all(), "Bounds should be equal when eps=0"
 

@@ -27,6 +27,10 @@ class Flow:
         begin_time = time.time()
         prev_size = self.model.input_size
         size = self.model.input_size
+
+        layer_types = ['affine', 'relu', 'sigmoid']
+        json_obj = {i: [] for i in layer_types}
+
         
 
         for tmp, layer in enumerate(self.model):
@@ -38,21 +42,24 @@ class Flow:
                 prev = Llist(self.model, [1], None, None, layer.parents)
                 curr = Llist(self.model, [1], None, None, [tmp])
                 abs_shape = self.transformer.Relu(self.abs_elem, prev, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size, layer_index = tmp)
+                json_obj['relu'].append(tmp)
 
             elif layer.type == LayerType.Sigmoid:
                 prev = Llist(self.model, [1], None, None, layer.parents)
                 curr = Llist(self.model, [1], None, None, [tmp])
                 abs_shape = self.transformer.Sigmoid(self.abs_elem, prev, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size, layer_index = tmp)
-
+                json_obj['sigmoid'].append(tmp)
             elif layer.type == LayerType.Linear:
                 prev = Llist(self.model, [1, 1], None, None, layer.parents)
                 curr = Llist(self.model, [1], None, None, [tmp])
                 abs_shape = self.transformer.Affine(self.abs_elem, prev, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size, layer_index = tmp)
+                json_obj['affine'].append(tmp)
                 
             elif layer.type == LayerType.Conv2D:
                 prev = Llist(self.model, [1, 1], None, None, layer.parents)
                 curr = Llist(self.model, [1], None, None, [tmp])
                 abs_shape = self.transformer.Affine(self.abs_elem, prev, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size, layer_index = tmp)
+                json_obj['affine'].append(tmp)
 
             elif layer.type == LayerType.Input:
                 continue
@@ -190,5 +197,17 @@ class Flow:
                 print(f'U: {U}')
         lb = (abs_shape[0].get_dense())
         ub = (abs_shape[1].get_dense())
+
+        if dummy_mode:
+            os.makedirs("jit_layers", exist_ok=True)
+            capture_path = f"jit_layers/layers.json"
+            # if inside_while:
+            #     print(while_iteration)
+            #     print(capture_path)
+            
+            with open(capture_path, 'w') as f:
+                json.dump(json_obj, f, indent=4)
+
+
         return lb, ub
 
