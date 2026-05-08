@@ -35,11 +35,11 @@ func sigmoid_l(Neuron n) = (n[l] >= n[u]) ? (sigma(n[l])) : (n[l] > 0.0 ? ((sigm
 func sigmoid_u(Neuron n) = (n[l] >= n[u]) ? (sigma(n[l])) : (n[u] <= 0.0 ? ((sigma(n[u])) + (lambda(n[l], n[u]) * n) - (lambda(n[l], n[u]) * n[u])) : ((sigma(n[u])) + (lambda_prime(n[l], n[u]) * n) - (lambda_prime(n[l], n[u]) * n[u]))) ;
 
 
-transformer deeppoly{
+transformer crownibp{
     Affine -> curr[last_layer] == 1 ? (backsubs_lower(prev.dot(curr[weight]) + curr[bias], curr), backsubs_upper(prev.dot(curr[weight]) + curr[bias], curr), prev.dot(curr[weight]) + curr[bias], prev.dot(curr[weight]) + curr[bias]) : ((prev.dot(curr[weight]) + curr[bias]).map(simplify_lower), (prev.dot(curr[weight]) + curr[bias]).map(simplify_upper), prev.dot(curr[weight]) + curr[bias], prev.dot(curr[weight]) + curr[bias]);
     
     Relu -> (relu(prev[l]), relu(prev[u]), relu_n(prev), compute_upper(prev));
 
 }
 
-flow(forward, priority, stop, deeppoly);
+flow(forward, priority, stop, crownibp);

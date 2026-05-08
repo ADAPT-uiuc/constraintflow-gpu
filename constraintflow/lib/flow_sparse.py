@@ -182,8 +182,12 @@ class Flow:
                 print('---------------------------')
                 lb = (abs_shape[0].get_dense())
                 ub = (abs_shape[1].get_dense())
+                L = (abs_shape[2].mat)
+                U = (abs_shape[3].mat)
                 print(f'l: {lb}')
                 print(f'u: {ub}')
+                print(f'L: {L}')
+                print(f'U: {U}')
         lb = (abs_shape[0].get_dense())
         ub = (abs_shape[1].get_dense())
         return lb, ub

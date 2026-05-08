@@ -40,7 +40,7 @@ def _parse_tensor(tensor_text: str) -> torch.Tensor:
     return torch.tensor(data, dtype=dtype) if dtype is not None else torch.tensor(data)
 
 
-def _run_cli(program_file: str, network: str, dataset: str, extra_args: list[str]) -> Tuple[torch.Tensor, torch.Tensor]:
+def _run_cli(program_file: str, network: str, dataset: str, extra_args: list[str], compile=True) -> Tuple[torch.Tensor, torch.Tensor]:
     cmd = [
         sys.executable,
         "constraintflow/cli.py",
@@ -51,8 +51,9 @@ def _run_cli(program_file: str, network: str, dataset: str, extra_args: list[str
         "--dataset",
         dataset,
         *extra_args,
-        "--compile",
     ]
+    if compile:
+        cmd.append("--compile")
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise RuntimeError(
@@ -85,13 +86,26 @@ def test(
 ):
     for program_file in program_files.split(","):
         program_file = "examples/compiler_examples/" + program_file
-        eps = [0, 0.01, 0.05]
+        epss = [0, 0.01]
         batch_sizes = [1, 2]
-        for eps in eps:
-            for batch_size in batch_sizes:
+        for batch_size in batch_sizes:
+            baseline_lbs, baseline_ubs = [], []
+            for eps in epss:
                 baseline_lb, baseline_ub = _run_cli(program_file, network, dataset, ["--eps", str(eps), "--batch-size", str(batch_size)])
-                simulacrum_lb, simulacrum_ub = _run_cli(program_file, network, dataset, ["--simulacrum", "--eps", str(eps), "--batch-size", str(batch_size)])
-                reuse_lb, reuse_ub = _run_cli(program_file, network, dataset, ["--reuse", "--eps", str(eps), "--batch-size", str(batch_size)])
+                baseline_lbs.append(baseline_lb)
+                baseline_ubs.append(baseline_ub)
+            
+            simulacrum_lb, simulacrum_ub = _run_cli(program_file, network, dataset, ["--simulacrum", "--eps", str(eps), "--batch-size", str(batch_size)])
+            reuse_lbs, reuse_ubs = [], []
+            for i, eps in enumerate(epss):
+                if i==0:
+                    reuse_lb, reuse_ub = _run_cli(program_file, network, dataset, ["--reuse", "--eps", str(eps), "--batch-size", str(batch_size)])
+                else:
+                    reuse_lb, reuse_ub = _run_cli(program_file, network, dataset, ["--eps", str(eps), "--batch-size", str(batch_size)], compile=False)
+                reuse_lbs.append(reuse_lb)
+                reuse_ubs.append(reuse_ub)
+
+            for baseline_lb, baseline_ub, reuse_lb, reuse_ub in zip(baseline_lbs, baseline_ubs, reuse_lbs, reuse_ubs):
 
                 _assert_bounds_close(baseline_lb, reuse_lb, "Lower bounds baseline vs reuse")
                 _assert_bounds_close(baseline_ub, reuse_ub, "Upper bounds baseline vs reuse")

@@ -28,7 +28,7 @@ func x(Float l, Float u, SymExp z) = ((u * z) / (u - l)) + (((u * l) * (eps - 1)
 func y(Float l, Float u, SymExp z) = (u / 2) * (1 + eps);
 
 
-transformer deeppoly{
+transformer zid{
     Affine -> curr[last_layer] == 1 ? (
         backsubs_lower(prev.dot(curr[weight]) + curr[bias], curr), 
         backsubs_upper(prev.dot(curr[weight]) + curr[bias], curr), 
@@ -79,4 +79,4 @@ transformer deeppoly{
 }
 
 
-flow(forward, priority, stop, deeppoly);
+flow(forward, priority, stop, zid);

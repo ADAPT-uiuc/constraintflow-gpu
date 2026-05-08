@@ -967,30 +967,32 @@ Blocks Types: "
             assert(False)
             sp_tensor = convert_dense_to_sparse(sp_tensor)
         if isinstance(sp_tensor, float) or isinstance(sp_tensor, bool) or isinstance(sp_tensor, int):
+            original_type = type(sp_tensor)
             sp_tensor = SparseTensor([], [], self.dims, self.total_size, [], type(sp_tensor), sp_tensor)
             json_obj = {
                 "method": "SparseTensor",
-                "start_indices": "[]",
-                "blocks": "[]",
+                "start_indices": [],
+                "blocks": [],
                 "dims": self.dims,
                 "total_size": self.total_size.tolist(),
-                "end_indices": "[]",
-                "type": (type(sp_tensor).__name__),
+                "end_indices": [],
+                "type": (original_type.__name__),
                 "dense_const": sp_tensor.dense_const,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
             rhs_index = len(json_list) - 1
         elif (isinstance(sp_tensor, torch.Tensor) and sp_tensor.size()==1):
+            original_type = type(sp_tensor)
             sp_tensor = SparseTensor([], [], self.dims, self.total_size, [], type(sp_tensor.item()), sp_tensor.item())
             json_obj = {
                 "method": "SparseTensor",
-                "start_indices": "[]",
-                "blocks": "[]",
+                "start_indices": [],
+                "blocks": [],
                 "dims": self.dims,
                 "total_size": self.total_size.tolist(),
-                "end_indices": "[]",
-                "type": (type(sp_tensor.item()).__name__),
+                "end_indices": [],
+                "type": (original_type.__name__),
                 "dense_const": sp_tensor.item(),
                 "output": len(json_list),
             }
