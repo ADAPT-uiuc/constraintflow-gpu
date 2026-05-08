@@ -27,7 +27,7 @@ func compute_upper(Neuron n) = n[l] > 0.0 ? n : (n[u] < 0.0 ? 0.0 : (((n[u]) / (
 func x(Float l, Float u, SymExp z) = ((u * z) / (u - l)) + (((u * l) * (eps - 1)) / (2 * (u - l)));
 func y(Float l, Float u, SymExp z) = (u / 2) * (1 + eps);
 
-transformer deeppoly{
+transformer polyzono{
     Affine -> (
         max((prev[Z].dot(curr[weight]) + (curr[bias])).map(deepz_lower),backsubs_lower(prev.dot(curr[weight]) + curr[bias], curr)), 
         min((prev[Z].dot(curr[weight]) + (curr[bias])).map(deepz_upper),backsubs_upper(prev.dot(curr[weight]) + curr[bias], curr)), 
@@ -45,4 +45,4 @@ transformer deeppoly{
     );
 }
 
-flow(forward, priority, stop, deeppoly);
+flow(forward, priority, stop, polyzono);

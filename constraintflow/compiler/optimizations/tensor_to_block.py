@@ -109,7 +109,8 @@ def get_live_nodes(cfg, layer_index):
 
 
 def convert_to_ir_ttb(expr, layer_index, while_iteration):
-    targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot)
+    targets = ()
+    # targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot)
     if not isinstance(expr, targets):
         return expr, []
 
@@ -472,44 +473,68 @@ def remove_while(layer_index, num_iterations, cfg, root_node, first_while_node, 
                 raise Exception("NOT IMPLEMENTED for IR type " + str(type(ir)))
         tensor_to_block_block(None, layer_index=layer_index, ir_list=new_ir_list, while_iteration=i)
         ir_list += new_ir_list
-    new_ir_list = []
-    # new_vars = {}
-    combined_list = first_while_block.children 
-    for ir in combined_list:
-        if isinstance(ir, IrAssignment):
-            new_var_name = get_var_while(ir.children[0].name, num_iterations-1)
-            new_var = IrVar(new_var_name, ir.children[0].irMetadata)
-            old_rhs = copy.deepcopy(ir.children[1])
-            new_rhs = replace_all_occurrences_expr(old_rhs, new_vars)
-            new_assignment = IrAssignment(new_var, new_rhs)
-            new_ir_list.append(new_assignment)
-            new_vars[ir.children[0].name] = new_var
-        else:
-            raise Exception("NOT IMPLEMENTED for IR type " + str(type(ir)))
-    tensor_to_block_block(None, layer_index=layer_index, ir_list=new_ir_list, while_iteration=num_iterations-1)
-    ir_list += new_ir_list
+    
+    
+    # TODO: AVAL: This code block seems redundant. This must be checking the stopping condition. This will not be useful in the last iteration of the while loop.
+    # new_ir_list = []t
+    # # new_vars = {}
+    # combined_list = first_while_block.children 
+    # for ir in combined_list:
+    #     if isinstance(ir, IrAssignment):
+    #         new_var_name = get_var_while(ir.children[0].name, num_iterations-1)
+    #         new_var = IrVar(new_var_name, ir.children[0].irMetadata)
+    #         old_rhs = copy.deepcopy(ir.children[1])
+    #         new_rhs = replace_all_occurrences_expr(old_rhs, new_vars)
+    #         new_assignment = IrAssignment(new_var, new_rhs)
+    #         new_ir_list.append(new_assignment)
+    #         new_vars[ir.children[0].name] = new_var
+    #     else:
+    #         raise Exception("NOT IMPLEMENTED for IR type " + str(type(ir)))
+    # tensor_to_block_block(None, layer_index=layer_index, ir_list=new_ir_list, while_iteration=num_iterations-1)
+    # ir_list += new_ir_list
 
-    new_ir_list = []
-    for ir in exit_block.children:
-        # ir_list.append(ir)
-        if isinstance(ir, IrAssignment):
-            old_rhs = copy.deepcopy(ir.children[1])
-            new_rhs = replace_all_occurrences_expr(old_rhs, new_vars)
-            new_assignment = IrAssignment(ir.children[0], new_rhs)
-            new_ir_list.append(new_assignment)
-        elif isinstance(ir, IrTransRetBasic):
-            new_children = []
-            for child in ir.children:
-                old_child = copy.deepcopy(child)
-                new_child = replace_all_occurrences_expr(old_child, new_vars)
-                new_children.append(new_child)
-            new_ir_list.append(IrTransRetBasic(new_children))
-        else:
-            raise Exception("NOT IMPLEMENTED for IR type " + str(type(ir)))
-    tensor_to_block_block(None, layer_index=layer_index, ir_list=new_ir_list, while_iteration=None)
-    ir_list += new_ir_list
+
+
+    new_vars_temp = {}
+    for var_name in new_vars.keys():
+        if var_name.startswith('phi_trav_exp'):
+            new_vars_temp[var_name] = new_vars[var_name]
+    # new_vars = new_vars_temp
+    assert(len(new_vars_temp) <= 1)
+
+    if len(new_vars_temp) == 1:
+        old_var_name = list(new_vars_temp.keys())[0]
+        replaced_var = new_vars_temp[old_var_name]
+        new_var = IrVar(old_var_name, replaced_var.irMetadata)
+        new_assignment = IrAssignment(new_var, replaced_var)
+        ir_list.append(new_assignment)
+
+
+    # new_ir_list = []
+    # for ir in exit_block.children:
+    #     # ir_list.append(ir)
+    #     if isinstance(ir, IrAssignment):
+    #         old_rhs = copy.deepcopy(ir.children[1])
+    #         new_rhs = replace_all_occurrences_expr(old_rhs, new_vars)
+    #         new_assignment = IrAssignment(ir.children[0], new_rhs)
+    #         new_ir_list.append(new_assignment)
+    #     elif isinstance(ir, IrTransRetBasic):
+    #         new_children = []
+    #         for child in ir.children:
+    #             old_child = copy.deepcopy(child)
+    #             new_child = replace_all_occurrences_expr(old_child, new_vars)
+    #             new_children.append(new_child)
+    #         new_ir_list.append(IrTransRetBasic(new_children))
+    #     else:
+    #         raise Exception("NOT IMPLEMENTED for IR type " + str(type(ir)))
+    # tensor_to_block_block(None, layer_index=layer_index, ir_list=new_ir_list, while_iteration=None)
+    # ir_list += new_ir_list
+
+    ir_list += exit_block.children
 
     root_block.update_parent_child(ir_list)
+
+    
 
 
     predecessors_exit = cfg.predecessors[exit_node]

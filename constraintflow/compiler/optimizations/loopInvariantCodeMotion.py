@@ -13,6 +13,12 @@ def get_vars_expr(expr):
             vars = vars.union(get_vars_expr(child))
     return vars
 
+def remove_inside_while_flag(node):
+    if isinstance(node, IrAst):
+        node.inside_while = False
+        for child in node.children:
+            remove_inside_while_flag(child)
+
 def licm_while_block(block, combined_ir_list, predecessors, cfg):
     ir_list = block.children
     to_be_removed = []
@@ -29,6 +35,7 @@ def licm_while_block(block, combined_ir_list, predecessors, cfg):
                 to_be_removed.append(i)
     for predecessor in predecessors:
         for i in to_be_removed:
+            remove_inside_while_flag(ir_list[i])
             cfg.ir[predecessor].children.append(ir_list[i])
     for i in range(len(to_be_removed)-1, -1, -1):
         del ir_list[to_be_removed[i]]
