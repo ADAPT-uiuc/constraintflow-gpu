@@ -79,22 +79,24 @@ def _assert_bounds_close(lhs: torch.Tensor, rhs: torch.Tensor, name: str) -> Non
 
 @app.command()
 def test(
-    program_file: str = typer.Argument(..., help="ConstraintFlow program file"),
+    program_files: str = typer.Argument(..., help="Comma-separated list of ConstraintFlow program files to test"),
     network: str = typer.Argument(..., help="Network path/name"),
     dataset: str = typer.Argument(..., help="Dataset"),
 ):
-    eps = [0, 0.01, 0.05]
-    batch_sizes = [1, 2]
-    for eps in eps:
-        for batch_size in batch_sizes:
-            baseline_lb, baseline_ub = _run_cli(program_file, network, dataset, ["--eps", str(eps), "--batch-size", str(batch_size)])
-            simulacrum_lb, simulacrum_ub = _run_cli(program_file, network, dataset, ["--simulacrum", "--eps", str(eps), "--batch-size", str(batch_size)])
-            reuse_lb, reuse_ub = _run_cli(program_file, network, dataset, ["--reuse", "--eps", str(eps), "--batch-size", str(batch_size)])
+    for program_file in program_files.split(","):
+        program_file = "examples/compiler_examples/" + program_file
+        eps = [0, 0.01, 0.05]
+        batch_sizes = [1, 2]
+        for eps in eps:
+            for batch_size in batch_sizes:
+                baseline_lb, baseline_ub = _run_cli(program_file, network, dataset, ["--eps", str(eps), "--batch-size", str(batch_size)])
+                simulacrum_lb, simulacrum_ub = _run_cli(program_file, network, dataset, ["--simulacrum", "--eps", str(eps), "--batch-size", str(batch_size)])
+                reuse_lb, reuse_ub = _run_cli(program_file, network, dataset, ["--reuse", "--eps", str(eps), "--batch-size", str(batch_size)])
 
-            _assert_bounds_close(baseline_lb, reuse_lb, "Lower bounds baseline vs reuse")
-            _assert_bounds_close(baseline_ub, reuse_ub, "Upper bounds baseline vs reuse")
+                _assert_bounds_close(baseline_lb, reuse_lb, "Lower bounds baseline vs reuse")
+                _assert_bounds_close(baseline_ub, reuse_ub, "Upper bounds baseline vs reuse")
 
-            typer.echo(f"JIT test passed: baseline and jit modes bounds match for eps={eps} and batch_size={batch_size}.")
+                typer.echo(f"JIT test passed: baseline and jit modes bounds match for eps={eps} and batch_size={batch_size}.")
     
     print("JIT test passed: all eps and batch sizes passed.")
 
