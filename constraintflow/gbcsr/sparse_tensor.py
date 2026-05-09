@@ -1867,17 +1867,18 @@ Blocks Types: "
         res = sp_tensor_from_overlap_classes(overlap_classes, start_indices, blocks, total_size, self.dims-1, self.dense_const, self.type)
         return res
     
-def sparse_max(x:SparseTensor, y:SparseTensor):
+def sparse_max(x:SparseTensor, y:SparseTensor, json_list=[], x_json_index=-1, y_json_index=-1):
+    z = x.binary(y, operator.gt, json_list=json_list, lhs_index=x_json_index, rhs_index=y_json_index)
+    cond_json_index = len(json_list) - 1
+    return sp_where(z, x, y, json_list=json_list, x_json_index=cond_json_index, y_json_index=x_json_index, z_json_index=y_json_index)
 
-    z = x.binary(y, operator.gt)
-    return sp_where(z, x, y)
-
-def sparse_min(x:SparseTensor, y:SparseTensor):
-    z = x.binary(y, operator.lt)
-    return sp_where(z, x, y)
+def sparse_min(x:SparseTensor, y:SparseTensor, json_list=[], x_json_index=-1, y_json_index=-1):
+    z = x.binary(y, operator.lt, json_list=json_list, lhs_index=x_json_index, rhs_index=y_json_index)
+    cond_json_index = len(json_list) - 1
+    return sp_where(z, x, y, json_list=json_list, x_json_index=cond_json_index, y_json_index=x_json_index, z_json_index=y_json_index)
 
 
-def sp_where(x: SparseTensor, y: SparseTensor, z: SparseTensor):
+def sp_where(x: SparseTensor, y: SparseTensor, z: SparseTensor, json_list=[], x_json_index=-1, y_json_index=-1, z_json_index=-1):
     assert((x.total_size == y.total_size).all() and (y.total_size == z.total_size).all())
     assert(x.dims == y.dims and x.dims == z.dims)
     assert(y.type==z.type or (y.type in [int, float] and z.type in [int, float]))
@@ -1901,6 +1902,17 @@ def sp_where(x: SparseTensor, y: SparseTensor, z: SparseTensor):
     res_start_indices = []
     res_end_indices = []
     res_blocks = []
+
+    json_obj = {
+        "method": "initialise",
+        "name": "res_blocks",
+        "value": "[]",
+        "output": len(json_list),
+    }
+    json_list.append(json_obj)
+    res_blocks_json_list_index = len(json_list) - 1
+
+
     for i in range(len(start_indices)):
         start_index = start_indices[i]
         end_index = end_indices[i]
@@ -1910,17 +1922,58 @@ def sp_where(x: SparseTensor, y: SparseTensor, z: SparseTensor):
             z_indices = yz_indices[yz_index][1]
             if x.dense_const and len(y_indices) == 1:
                 block = y.get_sub_block_custom_range(start_index, end_index, y_indices[0], False)
+                json_obj = {
+                "method": "get_sub_block_custom_range",
+                "lhs": "json_list_" + str(y_json_index),
+                "start_index": start_index.tolist(),
+                "end_index": end_index.tolist(),
+                "block_id": y_indices[0],
+                "tensor": False,
+                "output": len(json_list),
+                }
+                json_list.append(json_obj)
             elif not(x.dense_const) and len(z_indices) == 1:
                 block = z.get_sub_block_custom_range(start_index, end_index, z_indices[0], False)
+                json_obj = {
+                "method": "get_sub_block_custom_range",
+                "lhs": "json_list_" + str(z_json_index),
+                "start_index": start_index.tolist(),
+                "end_index": end_index.tolist(),
+                "block_id": z_indices[0],
+                "tensor": False,
+                "output": len(json_list),
+                }
+                json_list.append(json_obj)
             else:
                 continue
             res_start_indices.append(start_index)
             res_end_indices.append(end_index)
             res_blocks.append(block)
 
+            json_obj = {
+                "method": "append_list",
+                "list": "json_list_" + str(res_blocks_json_list_index),
+                "value": "json_list_" + str(len(json_list)-1),
+                "output": len(json_list)
+            }
+            json_list.append(json_obj)
+            res_blocks_json_list_index = len(json_list) - 1
+
 
         elif len(indices[i][1]) > 0:
             x_index = indices[i][0][0]
+            json_obj = {
+                "method": "get_sub_block_custom_range",
+                "lhs": "json_list_" + str(x_json_index),
+                "start_index": start_index.tolist(),
+                "end_index": end_index.tolist(),
+                "block_id": x_index,
+                "tensor": False,
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            x_block_index = len(json_list) - 1
+
             x_block = x.get_sub_block_custom_range(start_index, end_index, x_index, False)
 
             yz_index = indices[i][1][0]
@@ -1928,17 +1981,90 @@ def sp_where(x: SparseTensor, y: SparseTensor, z: SparseTensor):
             z_indices = yz_indices[yz_index][1]
 
             if len(y_indices) == 0:
+                json_obj = {
+                "method": "ConstBlock",
+                "block": y.dense_const,
+                "total_shape": (end_index-start_index).tolist(),
+                "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                y_block_index = len(json_list) - 1
+
                 y_block = ConstBlock(y.dense_const, end_index-start_index)
             else:
+                json_obj = {
+                "method": "get_sub_block_custom_range",
+                "lhs": "json_list_" + str(y_json_index),
+                "start_index": start_index.tolist(),
+                "end_index": end_index.tolist(),
+                "block_id": y_indices[0],
+                "tensor": False,
+                "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                y_block_index = len(json_list) - 1
+
                 y_block = y.get_sub_block_custom_range(start_index, end_index, y_indices[0], False)
 
             if len(z_indices) == 0:
+                json_obj = {
+                "method": "ConstBlock",
+                "block": z.dense_const,
+                "total_shape": (end_index-start_index).tolist(),
+                "output": len(json_list),
+                }                
+                json_list.append(json_obj)
+                z_block_index = len(json_list) - 1
+
                 z_block = ConstBlock(z.dense_const, end_index-start_index)
             else:
+                json_obj = {
+                "method": "get_sub_block_custom_range",
+                "lhs": "json_list_" + str(z_json_index),
+                "start_index": start_index.tolist(),
+                "end_index": end_index.tolist(),
+                "block_id": z_indices[0],
+                "tensor": False,
+                "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                z_block_index = len(json_list) - 1
+
                 z_block = z.get_sub_block_custom_range(start_index, end_index, z_indices[0], False)
 
             block = sp_where_block(x_block, y_block, z_block)
+            json_obj = {
+                "method": "sp_where_block",
+                "x": "json_list_" + str(x_block_index),
+                "y": "json_list_" + str(y_block_index),
+                "z": "json_list_" + str(z_block_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+
             res_start_indices.append(start_index)
             res_end_indices.append(end_index)
             res_blocks.append(block)
+
+            json_obj = {
+                "method": "append_list",
+                "list": "json_list_" + str(res_blocks_json_list_index),
+                "value": "json_list_" + str(len(json_list)-1),
+                "output": len(json_list)
+            }
+            json_list.append(json_obj)
+            res_blocks_json_list_index = len(json_list) - 1
+
+    json_obj = {
+        "method": "SparseTensor",
+        "start_indices": [tensor_to_list(x) for x in res_start_indices],
+        "blocks": "json_list_" + str(res_blocks_json_list_index),
+        "dims": x.dims,
+        "total_size": x.total_size.tolist(),
+        "end_indices": [tensor_to_list(x) for x in res_end_indices],
+        "type": new_type.__name__,
+        "dense_const": dense_const,
+        "output": len(json_list),
+    }
+    json_list.append(json_obj)
     return SparseTensor(res_start_indices, res_blocks, x.dims, x.total_size, res_end_indices, new_type, dense_const)

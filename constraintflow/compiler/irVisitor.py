@@ -171,6 +171,9 @@ class IRVisitor:
         elif isinstance(node, IR.IrBlockBinaryOp):
             return self.visitIrBlockBinaryOp(node)
         
+        elif isinstance(node, IR.IrBlockWhereBlock):
+            return self.visitIrBlockWhereBlock(node)
+        
         elif isinstance(node, IR.IrBlockInnerProduct):
             return self.visitIrBlockInnerProduct(node)
         
