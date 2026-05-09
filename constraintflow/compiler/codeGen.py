@@ -114,6 +114,12 @@ class CodeGen(irVisitor.IRVisitor):
                 if opStmtIr.layerwise_cfgs is None:
                     self.write('def ' + opStmtIr.op + '(self, abs_elem, prev, curr, poly_size, curr_size, prev_size, input_size, batch_size, layer_index = None):')
                     self.indent += 1
+                    # self.write('torch.cuda.memory._record_memory_history(')
+                    # self.indent += 1
+                    # self.write('max_entries=1000000')
+                    # self.indent -= 1
+                    # self.write(')')
+    
                     cfg = opStmtIr.cfg
                     self.visit(cfg.ir[cfg.entry_node])
                     self.indent -= 1
@@ -121,6 +127,11 @@ class CodeGen(irVisitor.IRVisitor):
                 else:
                     self.write('def ' + opStmtIr.op + '(self, abs_elem, prev, curr, poly_size, curr_size, prev_size, input_size, batch_size, layer_index = None):')
                     self.indent += 1
+                    # self.write('torch.cuda.memory._record_memory_history(')
+                    # self.indent += 1
+                    # self.write('max_entries=1000000')
+                    # self.indent -= 1
+                    # self.write(')')
                     for layer_index in opStmtIr.layerwise_cfgs.keys():
                         self.write('if layer_index == ' + str(layer_index) + ':')
                         self.indent += 1
@@ -223,6 +234,15 @@ class CodeGen(irVisitor.IRVisitor):
         self.write('break')
 
     def visitIrTransRetBasic(self, node):
+        # self.write('try:')
+        # self.indent += 1
+        # self.write('torch.cuda.memory._dump_snapshot(f"memory_usage_{layer_index}.pickle")')
+        # self.indent -= 1
+        # self.write('except:')
+        # self.indent += 1
+        # self.write('raise Exception("CUDA memory snapshot failed. This can happen if the file prefix is too long or if there are issues with the CUDA setup. Please check your CUDA configuration and ensure that the file prefix is valid.")')
+        # self.indent -= 1
+        
         exprs = []
         for i in range(len(node.children)):
             expr = self.visit(node.children[i])
