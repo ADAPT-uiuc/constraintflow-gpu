@@ -724,7 +724,7 @@ def hoist_split_targets(expr, inside_while, while_number):
         new_assignments += child_assignments
     expr.update_parent_child(new_children)
 
-    targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat, IrClamp, IrDot, IrUnaryOp)
+    targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat, IrClamp, IrDot, IrUnaryOp, IrTernary)
     if isinstance(expr, targets):
         expr.inside_while = inside_while
         expr.while_number = while_number
@@ -746,7 +746,7 @@ def assign_ttb_counter(expr):
         new_child, _ = assign_ttb_counter(child)
         new_children.append(new_child)
     expr.update_parent_child(new_children)
-    targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat, IrClamp, IrDot)
+    targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat, IrClamp, IrDot, IrTernary)
     if isinstance(expr, targets):
         ttb_counter += 1
         expr.ttb_counter = ttb_counter

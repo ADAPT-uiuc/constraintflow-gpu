@@ -191,24 +191,42 @@ def binary(x, y, op, layer_index = None, counter = None, inside_while = False, w
                 json.dump(json_list, f, indent=4)
     return res
 
-def cf_max(x, y):
+def cf_max(x, y, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None):
     start_time = time.perf_counter()
     sanityCheck(x, y)
     if isinstance(x, SparseTensor):
         if isinstance(y, SparseTensor):
-            res = sparse_max(x, y)
+            json_list = []
+            json_list.append({"method": "noop", "input": "lhs", "output": 0})
+            json_list.append({"method": "noop", "input": "rhs", "output": 1})
+            res = sparse_max(x, y, json_list=json_list, x_json_index=0, y_json_index=1)
+            if dummy_mode:
+                if layer_index is not None and counter is not None:
+                    os.makedirs("jit_binary", exist_ok=True)
+                    capture_path = f"jit_binary/binary_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+                    with open(capture_path, 'w') as f:
+                        json.dump(json_list, f, indent=4)
             where_time.update_total_time(time.perf_counter() - start_time)
             return res
     res = torch.max(x, y)
     where_time.update_total_time(time.perf_counter() - start_time)
     return res
 
-def cf_min(x, y):
+def cf_min(x, y, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None):
     start_time = time.perf_counter()
     sanityCheck(x, y)
     if isinstance(x, SparseTensor):
         if isinstance(y, SparseTensor):
-            res = sparse_min(x, y)
+            json_list = []
+            json_list.append({"method": "noop", "input": "lhs", "output": 0})
+            json_list.append({"method": "noop", "input": "rhs", "output": 1})
+            res = sparse_min(x, y, json_list=json_list, x_json_index=0, y_json_index=1)
+            if dummy_mode:
+                if layer_index is not None and counter is not None:
+                    os.makedirs("jit_binary", exist_ok=True)
+                    capture_path = f"jit_binary/binary_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+                    with open(capture_path, 'w') as f:
+                        json.dump(json_list, f, indent=4)
             where_time.update_total_time(time.perf_counter() - start_time)
             return res
     res = torch.min(x, y)
@@ -229,8 +247,13 @@ def lcm(a, b):
 def const_to_sparse(c, total_size):
     return SparseTensor([], [], total_size.shape[0], total_size, type=type(c), dense_const=c)
 
-def where(x, y, z):
+def where(x, y, z, layer_index = None, counter = None, inside_while = False, while_number = None, while_iteration = None):
     start_time = time.perf_counter()
+    json_list = []
+    json_list.append({"method": "noop", "input": "cond", "output": 0})   # index 0
+    json_list.append({"method": "noop", "input": "lhs",  "output": 1})   # index 1
+    json_list.append({"method": "noop", "input": "rhs",  "output": 2})   # index 2
+    
     if isinstance(x, torch.Tensor) and isinstance(y, torch.Tensor) and isinstance(z, torch.Tensor):
         checkShapes(x, y)
         sanityCheck(y, z)
@@ -263,31 +286,58 @@ def where(x, y, z):
         z_size = 0
 
     total_size = lcm(x_size, lcm(y_size, z_size))
-
     if isinstance(x, torch.Tensor):
-        x1 = convert_dense_to_sparse(x)
+        x1 = convert_dense_to_sparse(x, json_list=json_list, x_index=0)
+        x_json_index = len(json_list)-1
+
     elif isinstance(x, bool):
         x1 = const_to_sparse(x, total_size)
+        json_list.append({"method": "SparseTensor", "start_indices": [], "blocks": [],
+                      "dims": len(total_size), "total_size": total_size.tolist(),
+                      "type": "bool", "dense_const": x, "output": len(json_list)})
+        x_json_index = len(json_list)-1
+
     else:
         x1 = x
+        x_json_index = 0
 
     if isinstance(y, torch.Tensor):
-        y1 = convert_dense_to_sparse(y)
+        y1 = convert_dense_to_sparse(y, json_list=json_list, x_index=1)
+        y_json_index = len(json_list)-1
     elif isinstance(y, float):
         y1 = const_to_sparse(y, total_size)
+        json_list.append({"method": "SparseTensor", "start_indices": [], "blocks": [],
+                      "dims": len(total_size), "total_size": total_size.tolist(),
+                      "type": "float", "dense_const": y, "output": len(json_list)})
+        y_json_index = len(json_list)-1
     else:
         y1 = y
+        y_json_index = 1
+
 
     if isinstance(z, torch.Tensor):
-        z1 = convert_dense_to_sparse(z)
+        z1 = convert_dense_to_sparse(z, json_list=json_list, x_index=2)
+        z_json_index = len(json_list)-1
     elif isinstance(z, float):
         z1 = const_to_sparse(z, total_size)
+        json_list.append({"method": "SparseTensor", "start_indices": [], "blocks": [],
+                      "dims": len(total_size), "total_size": total_size.tolist(),
+                      "type": "float", "dense_const": z, "output": len(json_list)})
+        z_json_index = len(json_list)-1
     else:
         z1 = z
+        z_json_index = 2
     checkShapes(x1, y1)
     sanityCheck(y1, z1)
 
-    res = sp_where(x1, y1, z1)
+    res = sp_where(x1, y1, z1, json_list = json_list, x_json_index = x_json_index, y_json_index = y_json_index, z_json_index = z_json_index)
+    if dummy_mode:
+        if layer_index is not None and counter is not None:
+            os.makedirs("jit_where", exist_ok=True)
+            capture_path = f"jit_where/where_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+            
+            with open(capture_path, 'w') as f:
+                json.dump(json_list, f, indent=4)
     where_time.update_total_time(time.perf_counter() - start_time)
     return res
 

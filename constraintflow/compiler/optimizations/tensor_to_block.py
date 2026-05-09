@@ -110,14 +110,13 @@ def get_live_nodes(cfg, layer_index):
 
 def convert_to_ir_ttb(expr, layer_index, while_iteration):
     # targets = ()
-    targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot)
+    targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot, IrTernary)
     if not isinstance(expr, targets):
         return expr, []
 
     if isinstance(expr, IrBinaryOp) and expr.op in ('max', 'min'):
         return expr, []
     binary_instance = expr.ttb_counter
-
     if isinstance(expr, IrMult) or isinstance(expr, IrBinaryOp):
         # print(expr)
         filename = f"jit_binary/binary_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
@@ -127,6 +126,8 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         filename = f"jit_repeat/repeat_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrClamp):
         filename = f"jit_clamp/clamp_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
+    elif isinstance(expr, IrTernary):
+        filename = f"jit_where/where_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrDot):
         [lhsIr, rhsIr] = expr.children
         if lhsIr.irMetadata[-1].type != 'Float':
@@ -135,8 +136,14 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
     with open(filename, 'r') as f:
         json_list = json.load(f)
     print(binary_instance)
-    lhs = expr.children[0]
-    rhs = expr.children[1]
+    if isinstance(expr, IrTernary):
+        cond = expr.children[0]
+        lhs = expr.children[1]
+        rhs = expr.children[2]
+    else:
+        cond = None
+        lhs = expr.children[0]
+        rhs = expr.children[1]
     if isinstance(rhs, IrAst):
         irMetadata = rhs.irMetadata
     else:
@@ -148,7 +155,9 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         new_name = get_var()
         new_var = IrVar(new_name, irMetadata)
         if json_obj["method"] == "noop":
-            if json_obj["input"] == "rhs":
+            if json_obj["input"] == "cond":
+                output = cond
+            elif json_obj["input"] == "rhs":
                 output = rhs
             elif json_obj["input"] == "lhs":
                 output = lhs
@@ -389,6 +398,13 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             else:
                 raise Exception("NOT IMPLEMENTED")
             output = IrSimpleBinary(lhsIr, rhsIr, json_obj['op'])
+        
+        elif json_obj["method"] == "sp_where_block":
+            condIr = output_vars[int(json_obj["x"].split("_")[-1])]
+            lhsIr  = output_vars[int(json_obj["y"].split("_")[-1])]
+            rhsIr  = output_vars[int(json_obj["z"].split("_")[-1])]
+            output = IrBlockWhereBlock(condIr, lhsIr, rhsIr)
+
         
         else:
             raise Exception(f"Unknown method {json_obj['method']} in replay")

@@ -367,6 +367,9 @@ class CodeGen(irVisitor.IRVisitor):
 
     def visitIrBlockBinaryOp(self, node):
         return self.visit(node.children[0]) + '.binary(' + self.visit(node.children[1]) + ', ' + self.get_operator_func(node.op) + ')'
+
+    def visitIrBlockWhereBlock(self, node):
+        return 'sp_where_block(' + self.visit(node.children[0]) + ', ' + self.visit(node.children[1]) + ', ' + self.visit(node.children[2]) + ')'
     
     def visitIrBinaryToUnary(self, node):
         return 'binary_to_identity_unary(' + self.get_operator_func(node.op) + ')(' + self.visit(node.children[0]) + ')'
@@ -486,7 +489,9 @@ class CodeGen(irVisitor.IRVisitor):
         
         [lhsIr, rhsIr] = node.children
         if flag:
-            return op_name + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ')'
+            if node.inside_while:
+                return op_name + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=True, while_number=' + str(node.while_number) + ', while_iteration=while_iteration)'
+            return op_name + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=False, while_number=' + str(node.while_number) + ')'
         else:
             if node.inside_while:
                 return 'binary(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = True' + ', while_number = ' + str(node.while_number) + ', while_iteration=while_iteration) #' + str(node.ttb_counter)
@@ -632,7 +637,7 @@ class CodeGen(irVisitor.IRVisitor):
 
     def visitIrTernary(self, node):
         [condIr, lhsIr, rhsIr] = node.children
-        return 'where(' + self.visit(condIr) + ', ' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ')'
+        return 'where(' + self.visit(condIr) + ', ' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', layer_index = layer_index, counter = ' + str(node.ttb_counter) + ', inside_while = ' + ('True' if node.inside_while else 'False') + ', while_number = ' + str(node.while_number) + ') #' + str(node.ttb_counter)
 
     def visitIrClamp(self, node):
         [inputIr, const] = node.children

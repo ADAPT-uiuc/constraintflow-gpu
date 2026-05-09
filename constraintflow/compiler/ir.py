@@ -860,6 +860,11 @@ class IrBlockBinaryOp(IrExpression):
                     return False
         return False
 
+class IrBlockWhereBlock(IrExpression):
+    def __init__(self, condIr, lhsIr, rhsIr):
+        super().__init__()
+        self.update_parent_child([condIr, lhsIr, rhsIr])
+
 class IrUnaryOp(IrExpression):
     def __init__(self, inputIr, op):
         super().__init__()
