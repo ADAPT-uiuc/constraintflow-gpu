@@ -23,4 +23,5 @@ cifar-10-python.tar.gz
 jit*
 cifar-10-batches-py
 **/*.csv
+**/*.pickle
 cifar_relu_9_200.onnx_cifar_cpu.csv

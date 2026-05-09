@@ -462,96 +462,21 @@ def remove_while(layer_index, num_iterations, cfg, root_node, first_while_node, 
     root_block = cfg.ir[root_node]
     first_while_block = cfg.ir[first_while_node]
     second_while_block = cfg.ir[second_while_node]
+    exit_block = cfg.ir[exit_node]
 
     tensor_to_block_block(root_block, layer_index)
-    # tensor_to_block_block(exit_block, layer_index)
-
-    if exit_node is not None:
-        exit_block = cfg.ir[exit_node]
+    tensor_to_block_block(exit_block, layer_index)
 
 
     ir_list = root_block.children
-
-    new_vars = {}
-    for i in range(num_iterations-1):
-        new_ir_list = []
-        combined_list = first_while_block.children + second_while_block.children
-        for ir in combined_list:
-            if isinstance(ir, IrAssignment):
-                new_var_name = get_var_while(ir.children[0].name, i)
-                new_var = IrVar(new_var_name, ir.children[0].irMetadata)
-                old_rhs = copy.deepcopy(ir.children[1])
-                new_rhs = replace_all_occurrences_expr(old_rhs, new_vars)
-                new_assignment = IrAssignment(new_var, new_rhs)
-                new_ir_list.append(new_assignment)
-                new_vars[ir.children[0].name] = new_var
-            else:
-                raise Exception("NOT IMPLEMENTED for IR type " + str(type(ir)))
-        tensor_to_block_block(None, layer_index=layer_index, ir_list=new_ir_list, while_iteration=i)
-        ir_list += new_ir_list
-    
-    
-    # TODO: AVAL: This code block seems redundant. This must be checking the stopping condition. This will not be useful in the last iteration of the while loop.
-    # new_ir_list = []t
-    # # new_vars = {}
-    # combined_list = first_while_block.children 
-    # for ir in combined_list:
-    #     if isinstance(ir, IrAssignment):
-    #         new_var_name = get_var_while(ir.children[0].name, num_iterations-1)
-    #         new_var = IrVar(new_var_name, ir.children[0].irMetadata)
-    #         old_rhs = copy.deepcopy(ir.children[1])
-    #         new_rhs = replace_all_occurrences_expr(old_rhs, new_vars)
-    #         new_assignment = IrAssignment(new_var, new_rhs)
-    #         new_ir_list.append(new_assignment)
-    #         new_vars[ir.children[0].name] = new_var
-    #     else:
-    #         raise Exception("NOT IMPLEMENTED for IR type " + str(type(ir)))
-    # tensor_to_block_block(None, layer_index=layer_index, ir_list=new_ir_list, while_iteration=num_iterations-1)
-    # ir_list += new_ir_list
-
-
-
-    new_vars_temp = {}
-    for var_name in new_vars.keys():
-        if var_name.startswith('phi_trav_exp'):
-            new_vars_temp[var_name] = new_vars[var_name]
-    # new_vars = new_vars_temp
-    assert(len(new_vars_temp) <= 1)
-
-    if len(new_vars_temp) == 1:
-        old_var_name = list(new_vars_temp.keys())[0]
-        replaced_var = new_vars_temp[old_var_name]
-        new_var = IrVar(old_var_name, replaced_var.irMetadata)
-        new_assignment = IrAssignment(new_var, replaced_var)
-        ir_list.append(new_assignment)
-
-
-    # new_ir_list = []
-    # for ir in exit_block.children:
-    #     # ir_list.append(ir)
-    #     if isinstance(ir, IrAssignment):
-    #         old_rhs = copy.deepcopy(ir.children[1])
-    #         new_rhs = replace_all_occurrences_expr(old_rhs, new_vars)
-    #         new_assignment = IrAssignment(ir.children[0], new_rhs)
-    #         new_ir_list.append(new_assignment)
-    #     elif isinstance(ir, IrTransRetBasic):
-    #         new_children = []
-    #         for child in ir.children:
-    #             old_child = copy.deepcopy(child)
-    #             new_child = replace_all_occurrences_expr(old_child, new_vars)
-    #             new_children.append(new_child)
-    #         new_ir_list.append(IrTransRetBasic(new_children))
-    #     else:
-    #         raise Exception("NOT IMPLEMENTED for IR type " + str(type(ir)))
-    # tensor_to_block_block(None, layer_index=layer_index, ir_list=new_ir_list, while_iteration=None)
-    # ir_list += new_ir_list
+    for i in range(num_iterations):
+        combined_list = copy.deepcopy(first_while_block.children + second_while_block.children)
+        tensor_to_block_block(None, layer_index=layer_index, ir_list=combined_list, while_iteration=i)
+        ir_list += combined_list
 
     ir_list += exit_block.children
 
     root_block.update_parent_child(ir_list)
-
-    
-
 
     predecessors_exit = cfg.predecessors[exit_node]
     for pred in predecessors_exit:
@@ -597,15 +522,12 @@ def unroll_while(cfg, layer_index):
         if block.inner_jump is None:
             tensor_to_block_block(block, layer_index)
             i+=1
-            continue
-        if len(block.inner_jump) == 3:
+        elif len(block.inner_jump) == 3:
             tensor_to_block_block(block, layer_index)
             i+=1
-            continue
-        if not isinstance(block.inner_jump[1], IrWhileBlock):
+        elif not isinstance(block.inner_jump[1], IrWhileBlock):
             tensor_to_block_block(block, layer_index)
             i+=1
-            continue
         else:
             root_node = node
             first_while_node = cfg.successors[node][0]
@@ -619,9 +541,7 @@ def unroll_while(cfg, layer_index):
             print(f"Reading while iteration count from {filename}")
             with open(filename, 'r') as f:
                 json_obj = json.load(f)
-                num_iterations = json_obj["num_iterations"]+1
-            
-            
+                num_iterations = json_obj["num_iterations"]
             remove_while(layer_index, num_iterations, cfg, root_node, first_while_node, second_while_node, exit_node, break_node)
 
 
