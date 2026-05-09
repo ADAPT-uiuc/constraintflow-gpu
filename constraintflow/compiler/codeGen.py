@@ -162,24 +162,28 @@ class CodeGen(irVisitor.IRVisitor):
                     else:
                         self.write('if(' + str(cond) + '):')
                         self.indent += 1
-                        if block_id is not None and not reuse_mode.get_flag():
+                        if block_id is not None:
+                            self.write('if dummy_mode:')
+                            self.indent += 1
                             self.write('os.makedirs("jit_branch", exist_ok=True)')
                             self.write('capture_path = "jit_branch/branch_" + str(layer_index) + "_' + str(block_id) + '.json"')
                             self.write('with open(capture_path, "w") as json_file:')
                             self.indent += 1
                             self.write('json.dump({"taken": "then"}, json_file)')
-                            self.indent -= 1
+                            self.indent -= 2
                         self.visit(node.inner_jump[1])
                         self.indent -= 1
                         self.write('else:')
                         self.indent += 1
-                        if block_id is not None and not reuse_mode.get_flag():
+                        if block_id is not None:
+                            self.write('if dummy_mode:')
+                            self.indent += 1
                             self.write('os.makedirs("jit_branch", exist_ok=True)')
                             self.write('capture_path = "jit_branch/branch_" + str(layer_index) + "_' + str(block_id) + '.json"')
                             self.write('with open(capture_path, "w") as json_file:')
                             self.indent += 1
                             self.write('json.dump({"taken": "else"}, json_file)')
-                            self.indent -= 1
+                            self.indent -= 2
                         self.visit(node.inner_jump[2])
                         self.indent -= 1
                 elif not isinstance(node.inner_jump[1], IrWhileBlock):
