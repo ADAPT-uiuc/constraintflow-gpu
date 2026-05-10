@@ -255,7 +255,7 @@ class CodeGen(irVisitor.IRVisitor):
         for i in range(len(node.children)-1):
             ret_expr += exprs[i]
             ret_expr += ', '
-        ret_expr += exprs[-1]
+        ret_expr += exprs[-1] + ', '
         self.write(ret_expr)
 
     def visitIrTransRetIf(self, node):
