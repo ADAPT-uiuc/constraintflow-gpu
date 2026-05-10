@@ -939,21 +939,75 @@ Blocks Types: "
             return False
         return True
 
-    def unary(self, op):
+    def unary(self, op, json_list=[], lhs_index=-1):
         if op == operator.not_:
             assert(self.type == bool)
             dense_const = not(self.dense_const)
+            op_name = 'not'
         elif op == operator.neg:
             assert(self.type == float or self.type == int)
             dense_const = -self.dense_const
+            op_name = '-'
         elif op == 'sigma':
             assert(self.type == float or self.type == int)
             dense_const = 1 / (1 + math.exp(-self.dense_const))
+            op_name = 'sigma'
         else:
             assert(False)
+
+        json_obj = {
+            "method": "initialise",
+            "name": "res_blocks",
+            "value": "[]",
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        current_list_index = len(json_list) - 1
+
         blocks = []
         for i in range(self.num_blocks):
+            json_obj = {
+                "method": "extract_block",
+                "input": "json_list_" + str(lhs_index),
+                "index": i,
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            block_json_index = len(json_list) - 1
+
+            json_obj = {
+                "method": "unary_block",
+                "input": "json_list_" + str(block_json_index),
+                "op": op_name,
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            result_block_json_index = len(json_list) - 1
+
+            json_obj = {
+                "method": "append_list",
+                "list": "json_list_" + str(current_list_index),
+                "value": "json_list_" + str(result_block_json_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            current_list_index = len(json_list) - 1
+
             blocks.append(self.blocks[i].unary(op))
+
+        json_obj = {
+            "method": "SparseTensor",
+            "start_indices": [tensor_to_list(x) for x in self.start_indices],
+            "blocks": "json_list_" + str(current_list_index),
+            "dims": self.dims,
+            "total_size": self.total_size.tolist(),
+            "end_indices": [tensor_to_list(x) for x in self.end_indices],
+            "type": self.type.__name__,
+            "dense_const": dense_const,
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+
         return SparseTensor(self.start_indices, blocks, self.dims, self.total_size, end_indices=self.end_indices, type=self.type, dense_const=dense_const)
     
 

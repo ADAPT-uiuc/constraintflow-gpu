@@ -85,32 +85,66 @@ def sanityCheck(x, y):
     end_time = time.perf_counter()
     sanity_time.update_total_time(end_time - start_time)
 
-def unary(x, op):
+def unary(x, op, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None):
     start_time = time.perf_counter()
     if isinstance(x, torch.Tensor):
+        json_list = []
+        json_list.append({"method": "noop", "input": "lhs", "output": 0})
+        op_name = '-' if op == operator.neg else 'not' if op == operator.not_ else 'sigma'
+        json_list.append({"method": "simple_unary", "input": "json_list_0", "op": op_name, "output": 1})
         res = op(x)
+        if dummy_mode:
+            if layer_index is not None and counter is not None:
+                os.makedirs("jit_unary", exist_ok=True)
+                capture_path = f"jit_unary/unary_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+                with open(capture_path, 'w') as f:
+                    json.dump(json_list, f, indent=4)
     elif isinstance(x, SparseTensor):
-        res = x.unary(op)
+        json_list = []
+        json_list.append({"method": "noop", "input": "lhs", "output": 0})
+        res = x.unary(op, json_list=json_list, lhs_index=0)
+        if dummy_mode:
+            if layer_index is not None and counter is not None:
+                os.makedirs("jit_unary", exist_ok=True)
+                capture_path = f"jit_unary/unary_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+                with open(capture_path, 'w') as f:
+                    json.dump(json_list, f, indent=4)
     else:
         res = op(x)
     unary_time.update_total_time(time.perf_counter() - start_time)
     return res
 
-def any(x):
+def any(x, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None):
     start_time = time.perf_counter()
     if type(x)!=torch.Tensor and type(x)!=SparseTensor:
         raise Exception('TYPE MISMATCH')
-    
+    json_list = [
+        {"method": "noop", "input": "lhs", "output": 0},
+        {"method": "any", "input": "json_list_0", "output": 1},
+    ]
     res = x.any()
+    if dummy_mode:
+        if layer_index is not None and counter is not None:
+            os.makedirs("jit_any", exist_ok=True)
+            with open(f"jit_any/any_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json", 'w') as f:
+                json.dump(json_list, f, indent=4)
     any_time.update_total_time(time.perf_counter() - start_time)
     return res
 
-def all(x):
+def all(x, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None):
     start_time = time.perf_counter()
     if type(x)!=torch.Tensor and type(x)!=SparseTensor:
         raise Exception('TYPE MISMATCH')
-    
+    json_list = [
+        {"method": "noop", "input": "lhs", "output": 0},
+        {"method": "all", "input": "json_list_0", "output": 1},
+    ]
     res = x.all()
+    if dummy_mode:
+        if layer_index is not None and counter is not None:
+            os.makedirs("jit_all", exist_ok=True)
+            with open(f"jit_all/all_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json", 'w') as f:
+                json.dump(json_list, f, indent=4)
     all_time.update_total_time(time.perf_counter() - start_time)
     return res
 
@@ -119,49 +153,41 @@ def all(x):
 #         raise Exception('TYPE MISMATCH')
 #     return x.all()
 
-def binary(x, y, op, layer_index = None, counter = None, inside_while = False, while_number = None, while_iteration = None):
+def binary(x, y, op, layer_index = None, counter = None, inside_while = False, while_number = None, while_iteration = None, parent_json_list = None):
     total_start_time = time.perf_counter()
     start_time = time.perf_counter()
     sanityCheck(x, y)
     binary_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
-    json_list = []
+    if parent_json_list is None:
+        json_list = []
+    else:
+        json_list = parent_json_list
     if isinstance(x, SparseTensor):
         start_time = time.perf_counter()
-        json_obj = {
-            "method": "noop",
-            "input": "lhs",
-            "output": len(json_list),
-        }
+        lhs_idx = len(json_list)
+        json_obj = {"method": "noop", "input": "lhs", "output": len(json_list)}
         json_list.append(json_obj)
-        json_obj = {
-            "method": "noop",
-            "input": "rhs",
-            "output": len(json_list),
-        }
+        rhs_idx = len(json_list)
+        json_obj = {"method": "noop", "input": "rhs", "output": len(json_list)}
         json_list.append(json_obj)
-        
-        res = x.binary(y, op, json_list = json_list, lhs_index=0, rhs_index=1)
+
+        res = x.binary(y, op, json_list = json_list, lhs_index=lhs_idx, rhs_index=rhs_idx)
         binary_tensor_ops_x_sparsity.update_total_time(time.perf_counter() - start_time)
 
         
         
     elif isinstance(y, SparseTensor):
-        json_obj = {
-            "method": "noop",
-            "input": "lhs",
-            "output": len(json_list),
-        }
+        lhs_idx = len(json_list)
+        json_obj = {"method": "noop", "input": "lhs", "output": len(json_list)}
         json_list.append(json_obj)
-        json_obj = {
-            "method": "noop",
-            "input": "rhs",
-            "output": len(json_list),
-        }
+        rhs_idx = len(json_list)
+        json_obj = {"method": "noop", "input": "rhs", "output": len(json_list)}
         json_list.append(json_obj)
+
         start_time = time.perf_counter()
-        temp = convert_dense_to_sparse(x, y.total_size, json_list=json_list, x_index=0)
+        temp = convert_dense_to_sparse(x, y.total_size, json_list=json_list, x_index=lhs_idx)
         binary_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
-        res = temp.binary(y, op, json_list = json_list, lhs_index=2, rhs_index=1)
+        res = temp.binary(y, op, json_list = json_list, lhs_index=lhs_idx, rhs_index=rhs_idx)
         binary_tensor_ops_y_sparsity.update_total_time(time.perf_counter() - start_time)
         
     else:
@@ -179,7 +205,7 @@ def binary(x, y, op, layer_index = None, counter = None, inside_while = False, w
     total_binary_tensor_ops.update_total_time(time.perf_counter() - total_start_time)
     # if inside_while:
     #     print(while_iteration)
-    if dummy_mode:
+    if dummy_mode and parent_json_list is None:
         if layer_index is not None and counter is not None:
             os.makedirs("jit_binary", exist_ok=True)
             capture_path = f"jit_binary/binary_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
@@ -459,35 +485,80 @@ def inner_prod(x, y, layer_index = None, counter = None, inside_while = False, w
 
 def convert_to_float(x):
     if isinstance(x, torch.Tensor):
-        return x.float() 
-    if isinstance(x, SparseTensor):
-        return x.float()
+        res = x.float()
+    elif isinstance(x, SparseTensor):
+        res = x.float()
+    else:
+        return x
+    return res
 
-def get_default_stop1(shape):
-    return SparseTensor([], [], len(shape), torch.tensor(shape), type=bool, dense_const=False)
+# This does not seem to be used anywhere
+# def get_default_stop1(shape):
+#     return SparseTensor([], [], len(shape), torch.tensor(shape), type=bool, dense_const=False)
 
-def get_default_stop(shape, abs_elem, batch_size, curr_size, poly_size):
+def get_default_stop(shape, abs_elem, batch_size, curr_size, poly_size, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None):
     res = []
     res_start_indices = []
     res_end_indices = []
+    json_list = []
     live_layers = list((abs_elem.d['llist']))
+    json_list.append({"method": "initialise", "value": "[]", "output": 0})
+    current_list_index = 0
+
     for i in range(len(abs_elem.network)):
         if live_layers[i]:
             res_start_indices.append(torch.tensor([0, 0, abs_elem.network[i].start]))
             res_end_indices.append(torch.tensor([batch_size, curr_size, abs_elem.network[i].end]))
+            json_obj = {
+                "method": "ConstBlock",
+                "block": False,
+                "total_shape": [batch_size, curr_size, abs_elem.network[i].size],
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
             res.append(ConstBlock(False, torch.tensor([batch_size, curr_size, abs_elem.network[i].size])))
+
+            block_index = len(json_list) - 1
+            json_obj = {
+                "method": "append_list",
+                "list": f"json_list_{current_list_index}",
+                "value": f"json_list_{block_index}",
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            current_list_index = len(json_list) - 1
+    
+    json_list.append({
+        "method": "SparseTensor",
+        "start_indices": [si.tolist() for si in res_start_indices],
+        "blocks": f"json_list_{current_list_index}",
+        "end_indices": [ei.tolist() for ei in res_end_indices],
+        "dims": len(shape),
+        "total_size": list(shape),
+        "type": "bool",
+        "dense_const": True,
+        "output": len(json_list)
+    })
+    
     temp = SparseTensor(res_start_indices, res, len(shape), torch.tensor(shape), res_end_indices, type=bool, dense_const=True)
+    if dummy_mode:
+        if layer_index is not None and counter is not None:
+            os.makedirs("jit_defaultstop", exist_ok=True)
+            capture_path = f"jit_defaultstop/stop_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+            
+            with open(capture_path, 'w') as f:
+                json.dump(json_list, f, indent=4)
     return temp
 
+# This does not seem to be used anywhere
+# def get_default_stop2(shape):
+#     global input_size
+#     vertices_stop_default = torch.zeros(shape)
+#     vertices_stop_default[:, 0:834] = 1
+#     vertices_stop_default = vertices_stop_default.bool()
+#     return vertices_stop_default
 
-def get_default_stop2(shape):
-    global input_size
-    vertices_stop_default = torch.zeros(shape)
-    vertices_stop_default[:, 0:834] = 1
-    vertices_stop_default = vertices_stop_default.bool()
-    return vertices_stop_default
-
-def get_max_priority(sp_tensor, active_vertices: SparseTensor):
+def get_max_priority(sp_tensor, active_vertices: SparseTensor, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None):
     priorities = []
     for i in range(sp_tensor.num_blocks):
         # print(f'sp_tensor.blocks[i] type: {type(sp_tensor.blocks[i])}')
@@ -511,35 +582,138 @@ def get_max_priority(sp_tensor, active_vertices: SparseTensor):
             res_start_indices.append(sp_tensor.start_indices[i])
             res_end_indices.append(sp_tensor.end_indices[i])
             # continue
+    json_list = []
+    json_list.append({"method": "initialise", "value": "[]", "output": 0})
+    current_list_index = 0
+    if dummy_mode:
+        for i in range(len(res_blocks)):
+            json_list.append({
+                "method": "ConstBlock",
+                "block": True,
+                "total_shape": res_blocks[i].total_shape.tolist(),
+                "output": len(json_list),
+            })
+            block_index = len(json_list) - 1
+            json_list.append({
+                "method": "append_list",
+                "list": f"json_list_{current_list_index}",
+                "value": f"json_list_{block_index}",
+                "output": len(json_list),
+            })
+            current_list_index = len(json_list) - 1
+        json_list.append({
+            "method": "SparseTensor",
+            "start_indices": [si.tolist() for si in res_start_indices],
+            "blocks": f"json_list_{current_list_index}",
+            "end_indices": [ei.tolist() for ei in res_end_indices],
+            "dims": sp_tensor.dims,
+            "total_size": sp_tensor.total_size.tolist(),
+            "type": "bool",
+            "dense_const": False,
+            "output": len(json_list),
+        })
+        if dummy_mode:
+            os.makedirs("jit_priority", exist_ok=True)
+            capture_path = f"jit_priority/priority_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+            with open(capture_path, 'w') as f:
+                json.dump(json_list, f, indent=4)
     return SparseTensor(res_start_indices, res_blocks, sp_tensor.dims, sp_tensor.total_size, end_indices=res_end_indices, type=bool, dense_const=False)
 
-def filter_trav_exp_stop(trav_exp, stop):
+def filter_trav_exp_stop(trav_exp, stop, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None):
     stop_float = convert_to_float(stop)
-    # polyexp_stop_mat = trav_exp.mat.binary(stop_float, operator.mul)
-    polyexp_stop_mat = binary(trav_exp.mat, stop_float, operator.mul)
+    json_list = []
+    json_obj = {
+        "method": "noop",
+        "input": "lhs",
+        "output": len(json_list),
+    }    
+    json_list.append(json_obj)
+    lhs_index = len(json_list)-1
+
+    polyexp_stop_mat = binary(trav_exp.mat, stop_float, operator.mul, layer_index=layer_index, counter=counter, inside_while=inside_while, while_number=while_number, while_iteration=while_iteration, parent_json_list=json_list)
+    json_obj = {
+        "method": "create_similar",
+        "input": f"json_list_{lhs_index}",
+        "mat": f"json_list_{len(json_list)-1}",
+        "output": len(json_list),
+    }
+    json_list.append(json_obj)
     polyexp_stop = trav_exp.create_similar(mat = polyexp_stop_mat)
+    if dummy_mode:
+        os.makedirs("jit_polyexp_stop", exist_ok=True)
+        capture_path = f"jit_polyexp_stop/stop_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+        with open(capture_path, 'w') as f:
+            json.dump(json_list, f, indent=4)
+
     return polyexp_stop
 
-def filter_trav_exp_not_stop(trav_exp, stop):
+def filter_trav_exp_not_stop(trav_exp, stop, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None):
+    json_list = []
+    json_obj = {
+        "method": "noop",
+        "input": "lhs",
+        "output": len(json_list),
+    }
+    json_list.append(json_obj)
+    lhs_index = len(json_list)-1
+
     if isinstance(trav_exp.const, SparseTensor):
         polyexp_not_stop_const = SparseTensor([], [], trav_exp.const.dims, trav_exp.const.total_size, type=float, dense_const=0)
+        json_obj = {
+            "method": "SparseTensor",
+            "start_indices": [],
+            "blocks": [],
+            "dims": trav_exp.const.dims,
+            "total_size": trav_exp.const.total_size.tolist(),
+            "type": "float",
+            "dense_const": 0,
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        polyexp_not_stop_const_index = len(json_list)-1
     else:
         polyexp_not_stop_const = 0
+        json_obj = {"method":"scalar_cost", "value": 0, "output": len(json_list)}
+        json_list.append(json_obj)
+        polyexp_not_stop_const_index = len(json_list)-1
     stop_float = convert_to_float(stop.unary(operator.not_))
-    # polyexp_not_stop_mat = trav_exp.mat.binary(stop_float, operator.mul)
-    polyexp_not_stop_mat = binary(trav_exp.mat, stop_float, operator.mul)
+    polyexp_not_stop_mat = binary(trav_exp.mat, stop_float, operator.mul, layer_index=layer_index, counter=counter, inside_while=inside_while, while_number=while_number, while_iteration=while_iteration, parent_json_list=json_list)
     polyexp_not_stop = trav_exp.create_similar(mat = polyexp_not_stop_mat, const = polyexp_not_stop_const)
+    json_obj = {
+        "method": "create_similar",
+        "input": f"json_list_{lhs_index}",
+        "mat": f"json_list_{len(json_list)-1}",
+        "const": f"json_list_{polyexp_not_stop_const_index}",
+        "output": len(json_list),
+    }
+    json_list.append(json_obj)
+    if dummy_mode:
+        os.makedirs("jit_polyexp_not_stop", exist_ok=True)
+        capture_path = f"jit_polyexp_not_stop/notstop_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+        with open(capture_path, 'w') as f:
+            json.dump(json_list, f, indent=4)
     return polyexp_not_stop
 
 
 
-def get_dims(x):
+def get_dims(x, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None):
     if isinstance(x, SparseTensor):
-        return x.dims
-    if isinstance(x, torch.Tensor):
-        return x.dim()
-    assert(False)
-    return 1
+        res = x.dims
+    elif isinstance(x, torch.Tensor):
+        res = x.dim()
+    else:
+        assert(False)
+        res = 1
+    json_list = [
+        {"method": "noop", "input": "lhs", "output": 0},
+        {"method": "get_dims", "input": "json_list_0", "output": 1},
+    ]
+    if dummy_mode:
+        if layer_index is not None and counter is not None:
+            os.makedirs("jit_get_dims", exist_ok=True)
+            with open(f"jit_get_dims/get_dims_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json", 'w') as f:
+                json.dump(json_list, f, indent=4)
+    return res
 
 def get_shape_1(x):
     if isinstance(x, SparseTensor):

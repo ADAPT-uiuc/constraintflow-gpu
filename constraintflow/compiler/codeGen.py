@@ -102,7 +102,11 @@ class CodeGen(irVisitor.IRVisitor):
         self.write('from constraintflow.lib.symexp import *')
         self.write('from constraintflow.gbcsr.sparse_tensor import SparseTensor')
         self.write('from constraintflow.lib.llist import Llist')
-        self.write('from constraintflow.gbcsr.tensor_ops import *')
+        if reuse_mode.get_flag():
+            # Will remove this later. 
+            self.write("def convert_to_float(x):\n    if isinstance(x, torch.Tensor):\n        return x.float()\n    if isinstance(x, SparseTensor):\n        return x.float()")
+        else:
+            self.write('from constraintflow.gbcsr.tensor_ops import *')
 
         for i, transformer_name in enumerate(node.tstore.keys()):
             self.write('class ' + transformer_name + ':')
@@ -394,6 +398,18 @@ class CodeGen(irVisitor.IRVisitor):
 
     def visitIrBlockWhereBlock(self, node):
         return 'sp_where_block(' + self.visit(node.children[0]) + ', ' + self.visit(node.children[1]) + ', ' + self.visit(node.children[2]) + ')'
+
+    def visitIrBlockUnaryOp(self, node):
+        op = node.op
+        if op == '-':
+            op_str = 'operator.neg'
+        elif op == 'not':
+            op_str = 'operator.not_'
+        elif op == 'sigma':
+            op_str = "'sigma'"
+        else:
+            raise Exception('OP NOT IDENTIFIED', op)
+        return self.visit(node.children[0]) + '.unary(' + op_str + ')'
     
     def visitIrBinaryToUnary(self, node):
         return 'binary_to_identity_unary(' + self.get_operator_func(node.op) + ')(' + self.visit(node.children[0]) + ')'
@@ -551,11 +567,29 @@ class CodeGen(irVisitor.IRVisitor):
             raise Exception('OP NOT IDENTIFIED', node.op)
         
         [inputIr] = node.children
-        if flag:
+        if flag and node.op in ('get_shape_1', 'get_shape_0'):
             return op_name + '(' + self.visit(inputIr) + ')'
+        elif flag:
+            if node.inside_while:
+                return f'{op_name}({self.visit(inputIr)}, layer_index=layer_index, counter={node.ttb_counter}, inside_while=True, while_number={node.while_number}, while_iteration=while_iteration)'
+            return f'{op_name}({self.visit(inputIr)}, layer_index=layer_index, counter={node.ttb_counter}, inside_while=False, while_number={node.while_number})'
         else:
-            return 'unary(' + self.visit(inputIr) + ', ' + op_name + ')'
+            if node.inside_while:
+                return 'unary(' + self.visit(inputIr) + ', ' + op_name + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=True, while_number=' + str(node.while_number) + ', while_iteration=while_iteration)'
+            return 'unary(' + self.visit(inputIr) + ', ' + op_name + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=False, while_number=' + str(node.while_number) + ')'
         
+    def visitIrSimpleUnary(self, node):
+        op = node.op
+        if op == '-':
+            op_str = 'operator.neg'
+        elif op == 'not':
+            op_str = 'operator.not_'
+        elif op == 'sigma':
+            op_str = "'sigma'"
+        else:
+            raise Exception('OP NOT IDENTIFIED', op)
+        return op_str + '(' + self.visit(node.children[0]) + ')'
+
     def visitIrSimpleBinary(self, node):
         [lhsIr, rhsIr] = node.children
         return self.get_operator_func(node.op) + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ')'
@@ -593,16 +627,56 @@ class CodeGen(irVisitor.IRVisitor):
             repeat_dims += self.visit(node.children[i])
             if i<len(node.children)-1:
                 repeat_dims += ', '
-        return 'get_default_stop([' + repeat_dims + '], abs_elem, batch_size, curr_size, poly_size)'
+        if node.inside_while:
+            return f'get_default_stop([{repeat_dims}], abs_elem, batch_size, curr_size, poly_size, layer_index=layer_index, counter={node.ttb_counter}, inside_while=True, while_number={node.while_number}, while_iteration=while_iteration)'
+        return f'get_default_stop([{repeat_dims}], abs_elem, batch_size, curr_size, poly_size, layer_index=layer_index, counter={node.ttb_counter}, inside_while=False, while_number={node.while_number})'
     
     def visitIrGetPriorityLList(self, node):
-        return 'get_max_priority(' + self.visit(node.children[0]) + ', ' + self.visit(node.children[1]) + ')'
+        if node.inside_while:
+            return f'get_max_priority({self.visit(node.children[0])}, {self.visit(node.children[1])}, layer_index=layer_index, counter={node.ttb_counter}, inside_while=True, while_number={node.while_number}, while_iteration=while_iteration)'
+        return f'get_max_priority({self.visit(node.children[0])}, {self.visit(node.children[1])}, layer_index=layer_index, counter={node.ttb_counter}, inside_while=False, while_number={node.while_number})'
+    
+    # def visitIrGetPolyexpStop(self, node):
+    #     return 'filter_trav_exp_stop(' + self.visit(node.children[0]) + ', ' + self.visit(node.children[1]) + ')'
+    
+    # def visitIrGetPolyexpNotStop(self, node):
+    #     return 'filter_trav_exp_not_stop(' + self.visit(node.children[0]) + ', ' + self.visit(node.children[1]) + ')'
     
     def visitIrGetPolyexpStop(self, node):
-        return 'filter_trav_exp_stop(' + self.visit(node.children[0]) + ', ' + self.visit(node.children[1]) + ')'
-    
+        trav = self.visit(node.children[0])
+        stop = self.visit(node.children[1])
+        if node.inside_while:
+            return f'filter_trav_exp_stop({trav}, {stop}, layer_index=layer_index, counter={node.ttb_counter}, inside_while=True, while_number={node.while_number}, while_iteration=while_iteration)'
+        return f'filter_trav_exp_stop({trav}, {stop}, layer_index=layer_index, counter={node.ttb_counter}, inside_while=False, while_number={node.while_number})'
+
     def visitIrGetPolyexpNotStop(self, node):
-        return 'filter_trav_exp_not_stop(' + self.visit(node.children[0]) + ', ' + self.visit(node.children[1]) + ')'
+        trav = self.visit(node.children[0])
+        stop = self.visit(node.children[1])
+        if node.inside_while:
+            return f'filter_trav_exp_not_stop({trav}, {stop}, layer_index=layer_index, counter={node.ttb_counter}, inside_while=True, while_number={node.while_number}, while_iteration=while_iteration)'
+        return f'filter_trav_exp_not_stop({trav}, {stop}, layer_index=layer_index, counter={node.ttb_counter}, inside_while=False, while_number={node.while_number})'
+
+    def visitIrPolyExpMat(self, node):
+        return self.visit(node.children[0]) + '.mat'
+
+    def visitIrPolyExpNotStopFloat(self, node):
+        return 'convert_to_float(' + self.visit(node.children[0]) + '.unary(operator.not_))'
+
+    def visitIrBlockPolyexpStop(self, node):
+        return self.visit(node.children[0]) + '.create_similar(mat=' + self.visit(node.children[1]) + ')'
+
+    def visitIrBlockPolyexpNotStop(self, node):
+        return (self.visit(node.children[0]) + '.create_similar(mat=' +
+                self.visit(node.children[1]) + ', const=' + self.visit(node.children[2]) + ')')
+
+    def visitIrBlockAny(self, node):
+        return self.visit(node.children[0]) + '.any()'
+
+    def visitIrBlockAll(self, node):
+        return self.visit(node.children[0]) + '.all()'
+
+    def visitIrBlockGetDims(self, node):
+        return self.visit(node.children[0]) + '.dims'
     
     def visitIrConvertToTensor(self, node):
         repeat_dims = ''

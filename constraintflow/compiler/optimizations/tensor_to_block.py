@@ -110,14 +110,28 @@ def get_live_nodes(cfg, layer_index):
 
 def convert_to_ir_ttb(expr, layer_index, while_iteration):
     # targets = ()
-    targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot, IrTernary)
+    targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop)
     if not isinstance(expr, targets):
         return expr, []
 
-    if isinstance(expr, IrBinaryOp) and expr.op in ('max', 'min'):
+    # if isinstance(expr, IrBinaryOp) and expr.op in ('max', 'min'):
+    #     return expr, []
+    if isinstance(expr, IrUnaryOp) and expr.op in ('get_shape_1', 'get_shape_0'):
         return expr, []
     binary_instance = expr.ttb_counter
-    if isinstance(expr, IrMult) or isinstance(expr, IrBinaryOp):
+    
+    
+    
+    if isinstance(expr, IrUnaryOp):
+        if expr.op == 'any':
+            filename = f"jit_any/any_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
+        elif expr.op == 'all':
+            filename = f"jit_all/all_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
+        elif expr.op == 'get_dims':
+            filename = f"jit_get_dims/get_dims_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
+        else:
+            filename = f"jit_unary/unary_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
+    elif isinstance(expr, IrMult) or isinstance(expr, IrBinaryOp):
         # print(expr)
         filename = f"jit_binary/binary_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrInnerProduct):
@@ -133,6 +147,16 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         if lhsIr.irMetadata[-1].type != 'Float':
             return expr, []
         filename = f"jit_matmul/matmul_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
+    elif isinstance(expr, IrGetDefaultStop):
+        filename = f"jit_defaultstop/stop_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
+    elif isinstance(expr, IrGetPriorityLList):
+        filename = f"jit_priority/priority_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
+    
+    elif isinstance(expr, IrGetPolyexpStop):
+        filename = f"jit_polyexp_stop/stop_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
+    elif isinstance(expr, IrGetPolyexpNotStop):
+        filename = f"jit_polyexp_not_stop/notstop_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
+    
     with open(filename, 'r') as f:
         json_list = json.load(f)
     print(binary_instance)
@@ -140,12 +164,34 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         cond = expr.children[0]
         lhs = expr.children[1]
         rhs = expr.children[2]
+    elif isinstance(expr, IrUnaryOp):
+        cond = None
+        lhs = expr.children[0]
+        rhs = None
+    elif isinstance(expr, IrGetDefaultStop):
+        cond = None
+        lhs = None
+        rhs = None
+    elif isinstance(expr, IrGetPriorityLList):
+        cond = None
+        lhs = None
+        rhs = None
+    elif isinstance(expr, IrGetPolyexpStop):
+        cond = None
+        lhs = IrPolyExpMat(expr.children[0])
+        rhs = IrConvertBoolToFloat(expr.children[1])
+    elif isinstance(expr, IrGetPolyexpNotStop):
+        cond = None
+        lhs = IrPolyExpMat(expr.children[0])
+        rhs = IrPolyExpNotStopFloat(expr.children[1])
     else:
         cond = None
         lhs = expr.children[0]
         rhs = expr.children[1]
     if isinstance(rhs, IrAst):
         irMetadata = rhs.irMetadata
+    elif isinstance(lhs, IrAst):
+        irMetadata = lhs.irMetadata
     else:
         irMetadata = None
     new_assignments = []
@@ -212,6 +258,24 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             else:
                 raise Exception("NOT IMPLEMENTED")
             output = IrGetSubBlockCustomRange(inputIr, torch.tensor(json_obj["start_index"], dtype=torch.int64), torch.tensor(json_obj["end_index"], dtype=torch.int64), json_obj["block_id"], json_obj["tensor"])
+
+        elif json_obj["method"] == "unary_block":
+            if "json_list_" in json_obj["input"]:
+                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            elif json_obj["input"] == "lhs":
+                inputIr = lhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrBlockUnaryOp(inputIr, json_obj["op"])
+
+        elif json_obj["method"] == "simple_unary":
+            if "json_list_" in json_obj["input"]:
+                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            elif json_obj["input"] == "lhs":
+                inputIr = lhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrSimpleUnary(inputIr, json_obj["op"])
 
         elif json_obj["method"] == "binary_to_identity_unary":
             if "json_list_" in json_obj["unary_source"]:
@@ -377,7 +441,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 inputIr = rhs
             else:
                 raise Exception("NOT IMPLEMENTED")
-            output = IrTensorClamp(inputIr, json_list['const'], json_list['min_true'])
+            output = IrTensorClamp(inputIr, json_obj['const'], json_obj['min_true'])
 
         elif json_obj["method"] == "simple_binary":
             if "json_list_" in json_obj["lhs"]:
@@ -405,6 +469,25 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             rhsIr  = output_vars[int(json_obj["z"].split("_")[-1])]
             output = IrBlockWhereBlock(condIr, lhsIr, rhsIr)
 
+        elif json_obj["method"] == "scalar_const":
+            output = IrConst(json_obj["value"], 'Float')
+
+        elif json_obj["method"] == "create_similar":
+            matIr = output_vars[int(json_obj["mat"].split("_")[-1])]
+            if "const" in json_obj:
+                constIr = output_vars[int(json_obj["const"].split("_")[-1])]
+                output = IrBlockPolyexpNotStop(expr.children[0], matIr, constIr)
+            else:
+                output = IrBlockPolyexpStop(expr.children[0], matIr)
+
+        elif json_obj["method"] == "any":
+            output = IrBlockAny(output_vars[int(json_obj["input"].split("_")[-1])])
+
+        elif json_obj["method"] == "all":
+            output = IrBlockAll(output_vars[int(json_obj["input"].split("_")[-1])])
+
+        elif json_obj["method"] == "get_dims":
+            output = IrBlockGetDims(output_vars[int(json_obj["input"].split("_")[-1])])
         
         else:
             raise Exception(f"Unknown method {json_obj['method']} in replay")
