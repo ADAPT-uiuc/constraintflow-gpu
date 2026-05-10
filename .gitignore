@@ -16,6 +16,7 @@ __pycache__/
 dist/
 build/
 .venv/
+.vscode/
 tinyimagenet/
 stats/
 test_model/
