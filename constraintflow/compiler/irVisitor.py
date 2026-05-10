@@ -174,6 +174,12 @@ class IRVisitor:
         elif isinstance(node, IR.IrBlockWhereBlock):
             return self.visitIrBlockWhereBlock(node)
         
+        elif isinstance(node, IR.IrBlockUnaryOp):
+            return self.visitIrBlockUnaryOp(node)
+        
+        elif isinstance(node, IR.IrSimpleUnary):
+            return self.visitIrSimpleUnary(node)
+        
         elif isinstance(node, IR.IrBlockInnerProduct):
             return self.visitIrBlockInnerProduct(node)
         
@@ -215,6 +221,27 @@ class IRVisitor:
         
         elif isinstance(node, IR.IrTensorClamp):
             return self.visitIrTensorClamp(node)
+
+        elif isinstance(node, IR.IrPolyExpMat):
+            return self.visitIrPolyExpMat(node)
+        
+        elif isinstance(node, IR.IrPolyExpNotStopFloat):
+            return self.visitIrPolyExpNotStopFloat(node)
+        
+        elif isinstance(node, IR.IrBlockPolyexpStop):
+            return self.visitIrBlockPolyexpStop(node)
+        
+        elif isinstance(node, IR.IrBlockPolyexpNotStop):
+            return self.visitIrBlockPolyexpNotStop(node)
+
+        elif isinstance(node, IR.IrBlockAny):
+            return self.visitIrBlockAny(node)
+
+        elif isinstance(node, IR.IrBlockAll):
+            return self.visitIrBlockAll(node)
+
+        elif isinstance(node, IR.IrBlockGetDims):
+            return self.visitIrBlockGetDims(node)
 
         else:
             print("This is an error. This shouldn't happen")

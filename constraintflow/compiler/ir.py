@@ -865,6 +865,55 @@ class IrBlockWhereBlock(IrExpression):
         super().__init__()
         self.update_parent_child([condIr, lhsIr, rhsIr])
 
+class IrBlockUnaryOp(IrExpression):
+    def __init__(self, inputIr, op):
+        super().__init__()
+        self.op = op
+        self.update_parent_child([inputIr])
+
+class IrPolyExpMat(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.irMetadata = copy_metadata(inputIr.irMetadata)
+        self.update_parent_child([inputIr])
+
+class IrPolyExpNotStopFloat(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.irMetadata = copy_metadata(inputIr.irMetadata)
+        self.irMetadata[-1].type = 'Float'
+        self.update_parent_child([inputIr])
+
+class IrBlockPolyexpStop(IrExpression):
+    def __init__(self, travIr, blockMatIr):
+        super().__init__()
+        self.irMetadata = copy_metadata(travIr.irMetadata)
+        self.update_parent_child([travIr, blockMatIr])
+
+class IrBlockPolyexpNotStop(IrExpression):
+    def __init__(self, travIr, blockMatIr, constIr):
+        super().__init__()
+        self.irMetadata = copy_metadata(travIr.irMetadata)
+        self.update_parent_child([travIr, blockMatIr, constIr])
+
+class IrBlockAny(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.irMetadata = copy_metadata(inputIr.irMetadata)
+        self.update_parent_child([inputIr])
+
+class IrBlockAll(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.irMetadata = copy_metadata(inputIr.irMetadata)
+        self.update_parent_child([inputIr])
+
+class IrBlockGetDims(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.irMetadata = [IrMetadataElement([1], 'Int', [1], True)]
+        self.update_parent_child([inputIr])
+
 class IrUnaryOp(IrExpression):
     def __init__(self, inputIr, op):
         super().__init__()
@@ -951,6 +1000,12 @@ class IrMult(IrExpression):
                     return False
         return False
 
+
+class IrSimpleUnary(IrExpression):
+    def __init__(self, inputIr, op):
+        super().__init__()
+        self.op = op
+        self.update_parent_child([inputIr])
 
 class IrSimpleBinary(IrExpression):
     def __init__(self, lhsIr, rhsIr, op):
