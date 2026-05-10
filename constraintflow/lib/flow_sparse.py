@@ -196,7 +196,7 @@ class Flow:
                 print(f'L: {L}')
                 print(f'U: {U}')
         lb = (abs_shape[0].get_dense())
-        ub = (abs_shape[1].get_dense())
+        # ub = (abs_shape[1].get_dense())
 
         if dummy_mode:
             os.makedirs("jit_layers", exist_ok=True)
@@ -209,5 +209,5 @@ class Flow:
                 json.dump(json_obj, f, indent=4)
 
 
-        return lb, ub
+        return lb
 

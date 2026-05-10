@@ -818,7 +818,7 @@ class IrBinaryOp(IrExpression):
 
         self.irMetadata = copy_metadata(lhsIr.irMetadata)
         new_type = 'Float' if lhsIrMetadata[-1].type!=rhsIrMetadata[-1].type else lhsIrMetadata[-1].type
-        if self.op in ['>', '>=', '==', '<', '<=']:
+        if self.op in ['>', '>=', '==', '!=', '<', '<=']:
             new_type = 'Bool'
         self.irMetadata[-1].type = new_type
         self.irMetadata[-1].isConst = lhsIrMetadata[-1].isConst and rhsIrMetadata[-1].isConst    
