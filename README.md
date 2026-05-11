@@ -115,9 +115,11 @@ constraintflow compile example.cf --simulacrum --compile [OPTIONS]
 
 Using the profiled information, run the second pass to generate optimized code:
 
-​```bash
+```bash
 constraintflow compile example.cf --reuse --compile [OPTIONS]
 ```
+
+**Options:**
 
 | Flag                           | Description                                 | Default           |
 | ------------------------------ | ------------------------------------------- | ----------------- |
