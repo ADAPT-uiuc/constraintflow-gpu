@@ -103,21 +103,21 @@ constraintflow run example.cf [OPTIONS]
 
 To apply the JIT optimization, there is a two-step process.
 
-### `Step 1: Profiling Pass (Simulacrum)`
+##### `Step 1: Profiling Pass (Simulacrum)`
 
 Run the first pass to profile shape and index metadata:
 
-​```bash
-constraintflow run example.cf --simulacrum --compile [OPTIONS]
-​```
+```bash
+constraintflow compile example.cf --simulacrum --compile [OPTIONS]
+```
 
-### `Step 2: Reuse Pass`
+##### `Step 2: Reuse Pass`
 
 Using the profiled information, run the second pass to generate optimized code:
 
 ​```bash
-constraintflow run example.cf --reuse --compile [OPTIONS]
-​```
+constraintflow compile example.cf --reuse --compile [OPTIONS]
+```
 
 | Flag                           | Description                                 | Default           |
 | ------------------------------ | ------------------------------------------- | ----------------- |
