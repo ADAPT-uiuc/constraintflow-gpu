@@ -99,7 +99,7 @@ constraintflow run example.cf [OPTIONS]
 | `--output-path`                | Path where compiled program is stored       | `output/`         |
 | `--compile`                    | Compile the program before running          | False             |
 
-### JIT Optimization
+#### 'JIT Optimization'
 
 To apply the JIT optimization, there is a two-step process.
 
