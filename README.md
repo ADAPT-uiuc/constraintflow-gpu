@@ -99,11 +99,11 @@ constraintflow run example.cf [OPTIONS]
 | `--output-path`                | Path where compiled program is stored       | `output/`         |
 | `--compile`                    | Compile the program before running          | False             |
 
-#### 'JIT Optimization'
+#### `JIT Optimization`
 
 To apply the JIT optimization, there is a two-step process.
 
-**Step 1: Profiling Pass (Simulacrum)**
+### `Step 1: Profiling Pass (Simulacrum)`
 
 Run the first pass to profile shape and index metadata:
 
@@ -111,19 +111,7 @@ Run the first pass to profile shape and index metadata:
 constraintflow run example.cf --simulacrum --compile [OPTIONS]
 ​```
 
-| Flag                           | Description                                 | Default           |
-| ------------------------------ | ------------------------------------------- | ----------------- |
-| `--network`                    | Network name                                | `mnist_relu_3_50` |
-| `--network-format`             | Format of the network file                  | `onnx`            |
-| `--dataset`                    | Dataset to use (`mnist` or `cifar`)         | `mnist`           |
-| `--batch-size`                 | Batch size                                  | 1                 |
-| `--eps`                        | Epsilon                                     | 0.01              |
-| `--train`                      | Use training dataset                        | False             |
-| `--print-intermediate-results` | Print intermediate results during execution | False             |
-| `--no-sparsity`                | Disable sparsity optimizations              | False             |
-| `--output-path`                | Path where compiled program is stored       | `output/`         |
-
-**Step 2: Reuse Pass**
+### `Step 2: Reuse Pass`
 
 Using the profiled information, run the second pass to generate optimized code:
 
