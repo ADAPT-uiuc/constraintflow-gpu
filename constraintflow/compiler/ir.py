@@ -1119,6 +1119,48 @@ class IrBlockClamp(IrExpression):
                     return False
         return False
 
+class IrBlockSqueeze(IrExpression):
+    def __init__(self, inputIr, index):
+        super().__init__()
+        self.index = index
+        self.update_parent_child([inputIr])
+
+    def __hash__(self):
+        return 0
+
+    def __eq__(self, obj):
+        if type(self)==type(obj) and self.index == obj.index:
+            if len(self.children) == len(obj.children):
+                for i in range(len(self.children)):
+                    if self.children[i] != obj.children[i]:
+                        return False
+                if checkEqualMetadata(self.irMetadata, obj.irMetadata):
+                    return True
+                else:
+                    return False
+        return False
+
+class IrBlockUnsqueeze(IrExpression):
+    def __init__(self, inputIr, index):
+        super().__init__()
+        self.index = index
+        self.update_parent_child([inputIr])
+
+    def __hash__(self):
+        return 0
+
+    def __eq__(self, obj):
+        if type(self)==type(obj) and self.index == obj.index:
+            if len(self.children) == len(obj.children):
+                for i in range(len(self.children)):
+                    if self.children[i] != obj.children[i]:
+                        return False
+                if checkEqualMetadata(self.irMetadata, obj.irMetadata):
+                    return True
+                else:
+                    return False
+        return False
+
 class IrInnerProduct(IrExpression):
     def __init__(self, lhsIr, rhsIr):
         super().__init__()
@@ -1358,6 +1400,31 @@ class IrCombineToSym(IrExpression):
         # new_children = [coeffIr, constIr, convert_z3_to_ir(constIr.irMetadata[-1].shape[0])]
         self.update_parent_child(new_children)
 
+
+
+class IrObjectLookup(IrExpression):
+    def __init__(self, inputIr, object_name):
+        super().__init__()
+        self.object_name = object_name
+        self.update_parent_child([inputIr])
+
+class IrBlockCreateSimilar(IrExpression):
+    def __init__(self, inputIr, argIr):
+        super().__init__()
+        self.update_parent_child([inputIr, argIr])
+
+class IrSetBlockTotalShapeLastDim(IrStatement):
+    def __init__(self, inputVarIr, valueIr):
+        super().__init__()
+        self.update_parent_child([inputVarIr, valueIr])
+
+class IrBlockGetSubBlockCustomRange(IrExpression):
+    def __init__(self, inputIr, start_index, end_index, block_start_index):
+        super().__init__()
+        self.start_index = start_index
+        self.end_index = end_index
+        self.block_start_index = block_start_index
+        self.update_parent_child([inputIr])
 
 class IrReduce(IrExpression):
     def __init__(self, inputIr):
