@@ -110,7 +110,7 @@ def get_live_nodes(cfg, layer_index):
 
 def convert_to_ir_ttb(expr, layer_index, while_iteration):
     # targets = ()
-    targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop)
+    targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop, IrAddDimension, IrRemoveDimension)
     if not isinstance(expr, targets):
         return expr, []
 
@@ -140,6 +140,10 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         filename = f"jit_repeat/repeat_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrClamp):
         filename = f"jit_clamp/clamp_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
+    elif isinstance(expr, IrAddDimension):
+        filename = f"jit_unsqueeze/unsqueeze_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
+    elif isinstance(expr, IrRemoveDimension):
+        filename = f"jit_squeeze/squeeze_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrTernary):
         filename = f"jit_where/where_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrDot):
@@ -178,12 +182,20 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         rhs = None
     elif isinstance(expr, IrGetPolyexpStop):
         cond = None
-        lhs = IrPolyExpMat(expr.children[0])
-        rhs = IrConvertBoolToFloat(expr.children[1])
+        lhs_input = expr.children[0]
+        rhs_input = expr.children[1]
+        lhs = IrPolyExpMat(lhs_input)
+        rhs = IrConvertBoolToFloat(rhs_input)
     elif isinstance(expr, IrGetPolyexpNotStop):
         cond = None
-        lhs = IrPolyExpMat(expr.children[0])
-        rhs = IrPolyExpNotStopFloat(expr.children[1])
+        lhs_input = expr.children[0]
+        rhs_input = expr.children[1]
+        lhs = IrPolyExpMat(lhs_input)
+        rhs = IrPolyExpNotStopFloat(rhs_input)
+    elif isinstance(expr, IrAddDimension) or isinstance(expr, IrRemoveDimension):
+        cond = None
+        lhs = expr.children[0]
+        rhs = None
     else:
         cond = None
         lhs = expr.children[0]
@@ -417,6 +429,28 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 raise Exception("NOT IMPLEMENTED")
             output = IrBlockClamp(inputIr, json_obj["const"], json_obj["min_true"])
 
+        elif json_obj["method"] == "block_squeeze":
+            if "json_list_" in json_obj["input"]:
+                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            elif json_obj["input"] == "lhs":
+                inputIr = lhs
+            elif json_obj["input"] == "rhs":
+                inputIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrBlockSqueeze(inputIr, json_obj["index"])
+
+        elif json_obj["method"] == "block_unsqueeze":
+            if "json_list_" in json_obj["input"]:
+                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            elif json_obj["input"] == "lhs":
+                inputIr = lhs
+            elif json_obj["input"] == "rhs":
+                inputIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrBlockUnsqueeze(inputIr, json_obj["index"])
+
         elif json_obj["method"] == "tensor_ones":
             output = IrTensorOnes(torch.tensor(json_obj["repeat_dims"], dtype=torch.int64))
 
@@ -489,6 +523,61 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         elif json_obj["method"] == "get_dims":
             output = IrBlockGetDims(output_vars[int(json_obj["input"].split("_")[-1])])
         
+        elif json_obj["method"] == "object_lookup":
+            if "json_list_" in json_obj["input"]:
+                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrObjectLookup(inputIr, json_obj["object"])
+
+        elif json_obj["method"] == "block_create_similar":
+            if "json_list_" in json_obj["input"]:
+                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+
+            if "json_list_" in json_obj["arg"]:
+                argIr = output_vars[int(json_obj["arg"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+
+            output = IrBlockCreateSimilar(inputIr, argIr)
+
+        elif json_obj["method"] == "block_set_total_shape_last_dim":
+            if "json_list_" in json_obj["input"]:
+                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+
+            if isinstance(json_obj["value"], int):
+                valueIr = json_obj["value"]
+            elif "json_list_" in json_obj["value"]:
+                valueIr = output_vars[int(json_obj["value"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+
+            new_assignment = IrAssignment(new_var, inputIr)
+            new_assignments.append(new_assignment)
+            output_vars.append(new_var)
+            new_assignments.append(IrSetBlockTotalShapeLastDim(new_var, valueIr))
+
+            if len(output_vars) != json_obj["output"] + 1:
+                print(f"Output list length: {len(output_vars)}, expected: {json_obj['output'] + 1}")
+            assert(len(output_vars) == json_obj["output"] + 1)
+            continue
+
+        elif json_obj["method"] == "get_sub_block_custom_range_block":
+            if "json_list_" in json_obj["lhs"]:
+                inputIr = output_vars[int(json_obj["lhs"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+
+            output = IrBlockGetSubBlockCustomRange(
+                inputIr,
+                torch.tensor(json_obj["start_index"], dtype=torch.int64),
+                torch.tensor(json_obj["end_index"], dtype=torch.int64),
+                torch.tensor(json_obj["block_start_index"], dtype=torch.int64),
+            )
         else:
             raise Exception(f"Unknown method {json_obj['method']} in replay")
         

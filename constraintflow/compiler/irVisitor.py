@@ -212,6 +212,12 @@ class IRVisitor:
         
         elif isinstance(node, IR.IrBlockClamp):
             return self.visitIrBlockClamp(node)
+
+        elif isinstance(node, IR.IrBlockSqueeze):
+            return self.visitIrBlockSqueeze(node)
+
+        elif isinstance(node, IR.IrBlockUnsqueeze):
+            return self.visitIrBlockUnsqueeze(node)
         
         elif isinstance(node, IR.IrTensorOnes):
             return self.visitIrTensorOnes(node)
@@ -242,6 +248,18 @@ class IRVisitor:
 
         elif isinstance(node, IR.IrBlockGetDims):
             return self.visitIrBlockGetDims(node)
+
+        elif isinstance(node, IR.IrObjectLookup):
+            return self.visitIrObjectLookup(node)
+
+        elif isinstance(node, IR.IrBlockCreateSimilar):
+            return self.visitIrBlockCreateSimilar(node)
+
+        elif isinstance(node, IR.IrSetBlockTotalShapeLastDim):
+            return self.visitIrSetBlockTotalShapeLastDim(node)
+
+        elif isinstance(node, IR.IrBlockGetSubBlockCustomRange):
+            return self.visitIrBlockGetSubBlockCustomRange(node)
 
         else:
             print("This is an error. This shouldn't happen")

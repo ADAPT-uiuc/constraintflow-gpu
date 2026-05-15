@@ -100,7 +100,10 @@ class CodeGen(irVisitor.IRVisitor):
         self.write('import torch')
         self.write('from constraintflow.lib.polyexp import PolyExpSparse')
         self.write('from constraintflow.lib.symexp import *')
-        self.write('from constraintflow.gbcsr.sparse_tensor import SparseTensor')
+        if reuse_mode.get_flag():
+            self.write('from constraintflow.gbcsr.sparse_tensor import SparseTensor')
+        else:
+            self.write('from constraintflow.gbcsr.sparse_tensor import SparseTensor')
         self.write('from constraintflow.lib.llist import Llist')
         if reuse_mode.get_flag():
             # Will remove this later. 
@@ -466,15 +469,25 @@ class CodeGen(irVisitor.IRVisitor):
             for j in range(len(node.irMetadata[i].broadcast)):
                 size += 1
         size += len(inputIr.irMetadata[-1].shape)
-        ret = self.visit(inputIr)
+        indices = []
         for i in range(len(node.irMetadata[-1].shape) - len(inputIr.irMetadata[-1].shape)):
-            ret += '.unsqueeze(' + str(size) + ')'
+            indices.append(str(size))
             size += 1
+        if len(indices) == 0:
+            return self.visit(inputIr)
+        unsqueeze_indices = '[' + ', '.join(indices) + ']'
+        if node.inside_while:
+            ret = '(' + self.visit(inputIr) + ').unsqueeze(' + unsqueeze_indices + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = True' + ', while_number = ' + str(node.while_number) + ', while_iteration=while_iteration)'
+        else:
+            ret = '(' + self.visit(inputIr) + ').unsqueeze(' + unsqueeze_indices + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = False' + ', while_number = ' + str(node.while_number) + ')'
         return ret
     
     def visitIrRemoveDimension(self, node):
         [inputIr] = node.children
-        ret = self.visit(inputIr) + '.squeeze('+str(node.numDim) + ')'
+        if node.inside_while:
+            ret = '(' + self.visit(inputIr) + ').squeeze(' + str(node.numDim) + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = True' + ', while_number = ' + str(node.while_number) + ', while_iteration=while_iteration)'
+        else:
+            ret = '(' + self.visit(inputIr) + ').squeeze(' + str(node.numDim) + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = False' + ', while_number = ' + str(node.while_number) + ')'
         return ret
 
     def visitIrAddDimensionConst(self, node):
@@ -599,6 +612,9 @@ class CodeGen(irVisitor.IRVisitor):
 
     def visitTensorRepeat(self, node):
         return 'torch.repeat(' + self.visit(node.children[0]) + ', *' + node.repeat_dims + ')'
+
+    def visitIrTensorRepeat(self, node):
+        return self.visitTensorRepeat(node)
     
     def visitTensorClamp(self, node):
         if node.min_true:
@@ -606,8 +622,17 @@ class CodeGen(irVisitor.IRVisitor):
         else:
             return 'torch.clamp(' + self.visit(node.children[0]) + ', max=' + str(node.const) + ')'
 
+    def visitIrTensorClamp(self, node):
+        return self.visitTensorClamp(node)
+
     def visitIrBlockClamp(self, node):
         return self.visit(node.children[0]) + '.clamp(' + str(node.const) + ', min_true=' + str(node.min_true) + ')'
+
+    def visitIrBlockSqueeze(self, node):
+        return self.visit(node.children[0]) + '.squeeze(' + str(node.index) + ')'
+
+    def visitIrBlockUnsqueeze(self, node):
+        return self.visit(node.children[0]) + '.unsqueeze(' + str(node.index) + ')'
 
     
 
@@ -823,3 +848,31 @@ class CodeGen(irVisitor.IRVisitor):
         self.write('flow = Flow(abs_elem, ' + str(node.transformer) + '(), network, print_intermediate_results, no_sparsity)')
         self.write('return flow.flow()')
         self.indent -= 1
+
+    def visitIrObjectLookup(self, node):
+        if node.object_name == "block":
+            return self.visit(node.children[0]) + ".block"
+        raise Exception("NOT IMPLEMENTED")
+
+    def visitIrBlockCreateSimilar(self, node):
+        return (
+            self.visit(node.children[0]) +
+            ".create_similar(" +
+            self.visit(node.children[1]) +
+            ")"
+        )
+
+    def visitIrSetBlockTotalShapeLastDim(self, node):
+        block_var = self.visit(node.children[0])
+        value = self.visit(node.children[1])
+        self.write(block_var + ".total_shape[-1] = " + value)
+
+    def visitIrBlockGetSubBlockCustomRange(self, node):
+        return (
+            self.visit(node.children[0]) +
+            ".get_sub_block_custom_range(" +
+            self.visit(node.start_index) + ", " +
+            self.visit(node.end_index) + ", " +
+            self.visit(node.block_start_index) +
+            ")"
+        )
