@@ -35,6 +35,14 @@ cd constraintflow
 pip install -e .
 ```
 
+Several fixes (fix PyTorch version to prevent it to require a higher CUDA version; solve `pkg_resources` problem with z3):
+
+```bash
+pip install -e . -c requirements.txt
+pip uninstall z3_solver
+pip install z3_solver
+```
+
 ### Prepare Models
 
 Create a directory for neural networks:
