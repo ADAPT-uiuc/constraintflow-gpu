@@ -475,11 +475,21 @@ class CodeGen(irVisitor.IRVisitor):
             size += 1
         if len(indices) == 0:
             return self.visit(inputIr)
-        unsqueeze_indices = '[' + ', '.join(indices) + ']'
         if node.inside_while:
-            ret = '(' + self.visit(inputIr) + ').unsqueeze(' + unsqueeze_indices + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = True' + ', while_number = ' + str(node.while_number) + ', while_iteration=while_iteration)'
+            kw_suffix = (
+                'layer_index = layer_index, '
+                'counter = ' + str(node.ttb_counter) + ', inside_while = True, '
+                'while_number = ' + str(node.while_number) + ', while_iteration=while_iteration)'
+            )
         else:
-            ret = '(' + self.visit(inputIr) + ').unsqueeze(' + unsqueeze_indices + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = False' + ', while_number = ' + str(node.while_number) + ')'
+            kw_suffix = (
+                'layer_index = layer_index, '
+                'counter = ' + str(node.ttb_counter) + ', inside_while = False, '
+                'while_number = ' + str(node.while_number) + ')'
+            )
+        ret = '(' + self.visit(inputIr) + ')'
+        for dim in indices:
+            ret = ret + '.unsqueeze(' + dim + ', ' + kw_suffix
         return ret
     
     def visitIrRemoveDimension(self, node):

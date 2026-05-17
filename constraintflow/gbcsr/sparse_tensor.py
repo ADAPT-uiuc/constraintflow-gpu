@@ -1441,7 +1441,7 @@ Blocks Types: "
             
         
 
-    def any(self):
+    def any(self, json_list=[]):
         # return self.num_blocks > 0
         if not self.check_dense():
             if self.dense_const == True:
@@ -1948,32 +1948,6 @@ Blocks Types: "
     
     def unsqueeze(self, index, json_list=None, lhs_index=-1, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None):
         start_time = time.perf_counter()
-        if isinstance(index, int):
-            indices = [index]
-        elif isinstance(index, torch.Tensor):
-            indices = [int(i) for i in index.tolist()]
-        else:
-            indices = [int(i) for i in index]
-
-        owns_capture = json_list is None and dummy_mode 
-        if len(indices) > 1:
-            if owns_capture:
-                json_list = [{"method": "noop", "input": "lhs", "output": 0}]
-                lhs_index = 0
-            current_index = lhs_index
-            result = self
-            for current_dim in indices:
-                result = result.unsqueeze(current_dim, json_list=json_list, lhs_index=current_index)
-                if json_list is not None:
-                    current_index = len(json_list) - 1
-            if owns_capture:
-                write_jit_capture_file("jit_unsqueeze", "unsqueeze", layer_index, counter, inside_while, while_number, while_iteration, json_list)
-            return result
-
-        index = indices[0]
-        if owns_capture:
-            json_list = [{"method": "noop", "input": "lhs", "output": 0}]
-            lhs_index = 0
         trace = json_list is not None
         if not trace:
             json_list = []
@@ -2037,9 +2011,10 @@ Blocks Types: "
         end_time = time.perf_counter()
         unsqueeze_time.update_total_time(end_time-start_time)
         result = SparseTensor(start_indices, blocks, dims, total_size, end_indices, self.type, self.dense_const)
-        if owns_capture:
+        if trace:
             write_jit_capture_file("jit_unsqueeze", "unsqueeze", layer_index, counter, inside_while, while_number, while_iteration, json_list)
         return result
+        
     
     def repeat(self, repeat_dims, json_list=[], lhs_index=-1):
         total_size = self.total_size * repeat_dims
