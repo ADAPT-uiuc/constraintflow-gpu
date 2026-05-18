@@ -235,7 +235,10 @@ class CodeGen(irVisitor.IRVisitor):
         self.write(var + ' = ' + expr )
         # node.counter = self.counter
         # self.counter += 1
-        
+
+    # For the del statements
+    def visitIrDel(self, node):
+        self.write('del ' + ', '.join(node.var_names))
 
     def visitIrBreak(self, node):
         self.write('break')

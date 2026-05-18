@@ -603,6 +603,38 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
     return output_vars[-1], new_assignments
 
 
+
+# For the del statements
+def collect_ir_var_names(expr, names=None):
+    if names is None:
+        names = set()
+    if isinstance(expr, IrVar):
+        names.add(expr.name)
+    elif isinstance(expr, int):
+        pass
+    elif hasattr(expr, "children"):
+        for child in expr.children:
+            collect_ir_var_names(child, names)
+    return names
+
+
+def make_ttb_del_statement(new_assignments, keep_var_names=None):
+    if keep_var_names is None:
+        keep_var_names = set()
+    var_names = []
+    for assignment in new_assignments:
+        if not isinstance(assignment, IrAssignment):
+            continue
+        lhs = assignment.children[0]
+        if not isinstance(lhs, IrVar):
+            continue
+        if lhs.name.startswith("ttb_var_") and lhs.name not in keep_var_names:
+            var_names.append(lhs.name)
+    if not var_names:
+        return None
+    return IrDel(var_names)
+
+
 def tensor_to_block_block(block, layer_index, ir_list = None, while_iteration=None):
     if ir_list is None:
         ir_list = block.children
@@ -617,6 +649,11 @@ def tensor_to_block_block(block, layer_index, ir_list = None, while_iteration=No
             for j in range(len(new_assignments)):
                 ir_list.insert(index, new_assignments[j])
                 index += 1
+            # Create the IR node for the del statements
+            del_stmt = make_ttb_del_statement(new_assignments)
+            if del_stmt is not None:
+                ir_list.insert(index + 1, del_stmt)
+                index += 1
         elif isinstance(l, IrTransRetBasic):
             new_children = []
             new_assignments = []
@@ -627,6 +664,16 @@ def tensor_to_block_block(block, layer_index, ir_list = None, while_iteration=No
             l.update_parent_child(new_children)
             for j in range(len(new_assignments)):
                 ir_list.insert(index, new_assignments[j])
+                index += 1
+            
+            # We want to collect the var names that are used in the return expression, so that we can 
+            # exclude them from the del statements
+            keep_var_names = set()
+            for child in new_children:
+                keep_var_names |= collect_ir_var_names(child)
+            del_stmt = make_ttb_del_statement(new_assignments, keep_var_names=keep_var_names)
+            if del_stmt is not None:
+                ir_list.insert(index, del_stmt)
                 index += 1
         index += 1
 

@@ -1563,6 +1563,12 @@ class IrBreak(IrStatement):
     def __init__(self):
         super().__init__()
 
+# For the del statements
+class IrDel(IrStatement):
+    def __init__(self, var_names):
+        super().__init__()
+        self.var_names = var_names
+
 class IrBlock(IrAst):
     def __init__(self, ir_list = [], jump = None, inner_jump = None, loopBack = None):
         super().__init__()

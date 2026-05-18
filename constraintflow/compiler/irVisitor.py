@@ -116,6 +116,10 @@ class IRVisitor:
         
         elif isinstance(node, IR.IrBreak):
             return self.visitIrBreak(node)
+
+        # For the del statements
+        elif isinstance(node, IR.IrDel):
+            return self.visitIrDel(node)
         
         elif isinstance(node, IR.IrTransRetBasic):
             return self.visitIrTransRetBasic(node)
