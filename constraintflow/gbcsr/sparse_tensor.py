@@ -2011,7 +2011,9 @@ Blocks Types: "
         if owns_capture:
             json_list = [{"method": "noop", "input": "lhs", "output": 0}]
             lhs_index = 0
-        trace = owns_capture
+        trace = json_list is not None
+        if not trace:
+            json_list = []
         dims = self.dims+1
         total_size = torch.concat([self.total_size[:index], torch.tensor([1]), self.total_size[index:]])
         total_size = total_size.type(torch.int64)
