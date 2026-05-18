@@ -257,8 +257,13 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             output = json_obj["value"]
             if output == "[]":
                 output = IrEmptyList()
+            elif isinstance(output, bool):
+                output = IrConst(output, 'Bool')
             else:
                 raise Exception("NOT IMPLEMENTED")
+
+        elif json_obj["method"] == "bool_value":
+            output = IrConst(json_obj["value"], 'Bool')
 
         elif json_obj["method"] == "get_sub_block_custom_range":
             if "json_list_" in json_obj["lhs"]:
@@ -517,7 +522,13 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         elif json_obj["method"] == "any":
             output = IrBlockAny(output_vars[int(json_obj["input"].split("_")[-1])])
 
+        elif json_obj["method"] == "any_torch":
+            output = IrBlockAny(output_vars[int(json_obj["input"].split("_")[-1])])
+
         elif json_obj["method"] == "all":
+            output = IrBlockAll(output_vars[int(json_obj["input"].split("_")[-1])])
+
+        elif json_obj["method"] == "all_torch":
             output = IrBlockAll(output_vars[int(json_obj["input"].split("_")[-1])])
 
         elif json_obj["method"] == "get_dims":

@@ -120,9 +120,12 @@ def any(x, layer_index=None, counter=None, inside_while=False, while_number=None
         raise Exception('TYPE MISMATCH')
     json_list = [
         {"method": "noop", "input": "lhs", "output": 0},
-        {"method": "any", "input": "json_list_0", "output": 1},
     ]
-    res = x.any()
+    if type(x) == torch.Tensor:
+        json_list.append({"method": "any", "input": "json_list_0", "output": len(json_list)})
+        res = x.any()
+    else:
+        res = x.any(json_list=json_list, lhs_index=0)
     if dummy_mode:
         if layer_index is not None and counter is not None:
             os.makedirs("jit_any", exist_ok=True)
@@ -135,11 +138,16 @@ def all(x, layer_index=None, counter=None, inside_while=False, while_number=None
     start_time = time.perf_counter()
     if type(x)!=torch.Tensor and type(x)!=SparseTensor:
         raise Exception('TYPE MISMATCH')
-    json_list = [
-        {"method": "noop", "input": "lhs", "output": 0},
-        {"method": "all", "input": "json_list_0", "output": 1},
-    ]
-    res = x.all()
+    
+    json_list = [{"method": "noop", "input": "lhs", "output": 0}]
+    if type(x) == torch.Tensor:
+        json_list.append({"method": "all", "input": "json_list_0", "output": len(json_list)})
+        res = x.all()
+    else:
+        #It never takes this branch
+        nknkkjk
+        res = x.all()
+
     if dummy_mode:
         if layer_index is not None and counter is not None:
             os.makedirs("jit_all", exist_ok=True)
