@@ -1441,17 +1441,76 @@ Blocks Types: "
             
         
 
-    def any(self, json_list=[]):
+    def any(self, json_list=None, lhs_index=0):
+        trace = json_list is not None
+
+        res = False
         # return self.num_blocks > 0
         if not self.check_dense():
             if self.dense_const == True:
-                return True
-            if self.type != bool and self.dense_const != 0.0:
-                return True
-        for i in range(self.num_blocks):
-            if self.blocks[i].any():
-                return True
-        return False
+                if trace:
+                    json_list.append(
+                        {
+                            "method": "bool_value",
+                            "value": True,
+                            "output": len(json_list)
+                        }
+                    )
+                res = True
+            elif self.type != bool and self.dense_const != 0.0:
+                if trace:
+                    json_list.append(
+                        {
+                            "method": "bool_value",
+                            "value": True,
+                            "output": len(json_list)
+                        }
+                    )
+                res = True
+        if not res:
+            if trace:
+                json_obj = {
+                    "method": "initialise",
+                    "name": "bool_value",
+                    "value": False,
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                acc_json_list_index = len(json_list) - 1
+
+            for i in range(self.num_blocks):
+                if trace:
+                    json_obj = {
+                        "method": "extract_block",
+                        "input": "json_list_" + str(lhs_index),
+                        "index": i,
+                        "output": len(json_list),
+                    }
+                    json_list.append(json_obj)
+                    block_json_index = len(json_list) - 1
+
+                    json_obj = {
+                        "method": "any",
+                        "input": "json_list_" + str(block_json_index),
+                        "output": len(json_list),
+                    }
+                    json_list.append(json_obj)
+                    any_json_index = len(json_list) - 1
+
+                    json_obj = {
+                        "method": "simple_binary",
+                        "op": "or_",
+                        "lhs": "json_list_" + str(acc_json_list_index),
+                        "rhs": "json_list_" + str(any_json_index),
+                        "output": len(json_list),
+                    }
+                    json_list.append(json_obj)
+                    acc_json_list_index = len(json_list) - 1
+
+                if self.blocks[i].any():
+                    res = True
+                    break
+        return res
     
     def float(self):
         blocks = [b.float() for b in self.blocks]
@@ -1948,9 +2007,11 @@ Blocks Types: "
     
     def unsqueeze(self, index, json_list=None, lhs_index=-1, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None):
         start_time = time.perf_counter()
-        trace = json_list is not None
-        if not trace:
-            json_list = []
+        owns_capture = json_list is None and dummy_mode
+        if owns_capture:
+            json_list = [{"method": "noop", "input": "lhs", "output": 0}]
+            lhs_index = 0
+        trace = owns_capture
         dims = self.dims+1
         total_size = torch.concat([self.total_size[:index], torch.tensor([1]), self.total_size[index:]])
         total_size = total_size.type(torch.int64)
@@ -2011,7 +2072,7 @@ Blocks Types: "
         end_time = time.perf_counter()
         unsqueeze_time.update_total_time(end_time-start_time)
         result = SparseTensor(start_indices, blocks, dims, total_size, end_indices, self.type, self.dense_const)
-        if trace:
+        if owns_capture:
             write_jit_capture_file("jit_unsqueeze", "unsqueeze", layer_index, counter, inside_while, while_number, while_iteration, json_list)
         return result
         

@@ -899,13 +899,15 @@ class IrBlockPolyexpNotStop(IrExpression):
 class IrBlockAny(IrExpression):
     def __init__(self, inputIr):
         super().__init__()
-        self.irMetadata = copy_metadata(inputIr.irMetadata)
+        # Is all always results in a bool, this is justified
+        self.irMetadata = [IrMetadataElement([1], 'Bool', [1], True)]
         self.update_parent_child([inputIr])
 
 class IrBlockAll(IrExpression):
     def __init__(self, inputIr):
         super().__init__()
-        self.irMetadata = copy_metadata(inputIr.irMetadata)
+        # Is all always results in a bool, this is justified
+        self.irMetadata = [IrMetadataElement([1], 'Bool', [1], True)]
         self.update_parent_child([inputIr])
 
 class IrBlockGetDims(IrExpression):
@@ -920,6 +922,8 @@ class IrUnaryOp(IrExpression):
         self.op = op
         if self.op == 'get_dims':
             self.irMetadata = [IrMetadataElement([1], 'Int', [1], True)]
+        elif self.op in ('any', 'all'):
+            self.irMetadata = [IrMetadataElement([1], 'Bool', [1], True)]
         else:
             self.irMetadata = copy_metadata(inputIr.irMetadata)
         self.update_parent_child([inputIr])
