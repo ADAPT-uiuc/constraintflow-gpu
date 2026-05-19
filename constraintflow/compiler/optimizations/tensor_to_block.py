@@ -603,39 +603,111 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
     return output_vars[-1], new_assignments
 
 
-
-# For the del statements
-def collect_ir_var_names(expr, names=None):
-    if names is None:
-        names = set()
-    if isinstance(expr, IrVar):
-        names.add(expr.name)
-    elif isinstance(expr, int):
-        pass
-    elif hasattr(expr, "children"):
-        for child in expr.children:
-            collect_ir_var_names(child, names)
-    return names
+def ttb_name_component(value):
+    text = str(value)
+    if text.startswith("-"):
+        return "n" + text[1:]
+    return text
 
 
-def make_ttb_del_statement(new_assignments, keep_var_names=None):
-    if keep_var_names is None:
-        keep_var_names = set()
-    var_names = []
-    for assignment in new_assignments:
-        if not isinstance(assignment, IrAssignment):
-            continue
-        lhs = assignment.children[0]
-        if not isinstance(lhs, IrVar):
-            continue
-        if lhs.name.startswith("ttb_var_") and lhs.name not in keep_var_names:
-            var_names.append(lhs.name)
-    if not var_names:
-        return None
-    return IrDel(var_names)
+def make_ttb_function_name(expr, layer_index, while_iteration):
+    return (
+        f"_ttb_{layer_index}_{expr.ttb_counter}_"
+        f"{expr.inside_while}_{ttb_name_component(expr.while_number)}_"
+        f"{ttb_name_component(while_iteration)}"
+    )
 
 
-def tensor_to_block_block(block, layer_index, ir_list = None, while_iteration=None):
+def collect_ttb_free_params(body, result):
+    params = []
+    seen = set()
+
+    def visit(node):
+        if isinstance(node, IrVar):
+            if not node.name.startswith("ttb_var_") and node.name not in seen:
+                seen.add(node.name)
+                params.append(node)
+        elif isinstance(node, int):
+            pass
+        elif isinstance(node, IrAssignment):
+            visit(node.children[0])
+            visit(node.children[1])
+        elif isinstance(node, IrSetBlockTotalShapeLastDim):
+            for child in node.children:
+                visit(child)
+        elif hasattr(node, "children"):
+            for child in node.children:
+                visit(child)
+
+    for stmt in body:
+        visit(stmt)
+    visit(result)
+    return params
+
+
+def scan_implicit_ttb_scope_names(body, result):
+    needed = set()
+
+    def visit(node):
+        if isinstance(node, IrAccess):
+            if node.isMetadata:
+                needed.add("batch_size")
+            else:
+                needed.add("abs_elem")
+            for child in node.children:
+                visit(child)
+        elif isinstance(node, IrGetDefaultStop):
+            needed.update(["abs_elem", "batch_size", "curr_size", "poly_size", "layer_index"])
+        elif isinstance(node, (IrMapCoeff, IrMapNeuron, IrCombineToPoly, IrCombineToSym,
+                               IrExtractPolyCoeff, IrExtractSymCoeff, IrConvertNeuronToPoly,
+                               IrConvertConstToPoly, IrConvertConstToSym)):
+            needed.add("abs_elem")
+        elif isinstance(node, IrAssignment):
+            visit(node.children[0])
+            visit(node.children[1])
+        elif isinstance(node, IrSetBlockTotalShapeLastDim):
+            for child in node.children:
+                visit(child)
+        elif hasattr(node, "children"):
+            for child in node.children:
+                visit(child)
+
+    for stmt in body:
+        visit(stmt)
+    visit(result)
+    return needed
+
+
+def merge_ttb_params(free_params, body, result):
+    implicit_order = [
+        "batch_size",
+        "layer_index",
+        "while_iteration",
+        "abs_elem",
+        "curr_size",
+        "poly_size",
+        "prev_size",
+        "input_size",
+    ]
+    needed_implicit = scan_implicit_ttb_scope_names(body, result)
+    seen = {param.name for param in free_params}
+    merged = list(free_params)
+    for name in implicit_order:
+        if name in needed_implicit and name not in seen:
+            merged.append(IrVar(name, []))
+            seen.add(name)
+    return merged
+
+
+def wrap_ttb_expansion(expr, new_assignments, new_expr, layer_index, while_iteration, ttb_functions):
+    name = make_ttb_function_name(expr, layer_index, while_iteration)
+    params = merge_ttb_params(collect_ttb_free_params(new_assignments, new_expr), new_assignments, new_expr)
+    irMetadata = new_expr.irMetadata if hasattr(new_expr, "irMetadata") else []
+    ttb_functions.append(IrTtbFunction(name, params, new_assignments, new_expr))
+    return IrTtbCall(name, params, irMetadata=irMetadata)
+
+
+def tensor_to_block_block(block, layer_index, ir_list=None, while_iteration=None, ttb_functions=None):
     if ir_list is None:
         ir_list = block.children
     length = len(ir_list)
@@ -644,37 +716,26 @@ def tensor_to_block_block(block, layer_index, ir_list = None, while_iteration=No
         l = ir_list[index]
         if isinstance(l, IrAssignment):
             new_expr, new_assignments = convert_to_ir_ttb(l.children[1], layer_index, while_iteration)
-            new_children = [l.children[0], new_expr]
-            l.update_parent_child(new_children)
-            for j in range(len(new_assignments)):
-                ir_list.insert(index, new_assignments[j])
-                index += 1
-            # Create the IR node for the del statements
-            del_stmt = make_ttb_del_statement(new_assignments)
-            if del_stmt is not None:
-                ir_list.insert(index + 1, del_stmt)
-                index += 1
+            if new_assignments:
+                call = wrap_ttb_expansion(
+                    l.children[1], new_assignments, new_expr, layer_index, while_iteration, ttb_functions
+                )
+                l.update_parent_child([l.children[0], call])
+            else:
+                l.update_parent_child([l.children[0], new_expr])
         elif isinstance(l, IrTransRetBasic):
             new_children = []
-            new_assignments = []
             for child in l.children:
-                new_expr, new_assignments_inner = convert_to_ir_ttb(child, layer_index, while_iteration)
-                new_children.append(new_expr)
-                new_assignments += new_assignments_inner
+                new_expr, new_assignments = convert_to_ir_ttb(child, layer_index, while_iteration)
+                if new_assignments:
+                    new_children.append(
+                        wrap_ttb_expansion(
+                            child, new_assignments, new_expr, layer_index, while_iteration, ttb_functions
+                        )
+                    )
+                else:
+                    new_children.append(new_expr)
             l.update_parent_child(new_children)
-            for j in range(len(new_assignments)):
-                ir_list.insert(index, new_assignments[j])
-                index += 1
-            
-            # We want to collect the var names that are used in the return expression, so that we can 
-            # exclude them from the del statements
-            keep_var_names = set()
-            for child in new_children:
-                keep_var_names |= collect_ir_var_names(child)
-            del_stmt = make_ttb_del_statement(new_assignments, keep_var_names=keep_var_names)
-            if del_stmt is not None:
-                ir_list.insert(index, del_stmt)
-                index += 1
         index += 1
 
 
@@ -688,20 +749,20 @@ def replace_all_occurrences_expr(expr, var_map):
         expr.children[i] = new_child
     return expr
 
-def remove_while(layer_index, num_iterations, cfg, root_node, first_while_node, second_while_node, exit_node, break_node):
+def remove_while(layer_index, num_iterations, cfg, root_node, first_while_node, second_while_node, exit_node, break_node, ttb_functions):
     root_block = cfg.ir[root_node]
     first_while_block = cfg.ir[first_while_node]
     second_while_block = cfg.ir[second_while_node]
     exit_block = cfg.ir[exit_node]
 
-    tensor_to_block_block(root_block, layer_index)
-    tensor_to_block_block(exit_block, layer_index)
+    tensor_to_block_block(root_block, layer_index, ttb_functions=ttb_functions)
+    tensor_to_block_block(exit_block, layer_index, ttb_functions=ttb_functions)
 
 
     ir_list = root_block.children
     for i in range(num_iterations):
         combined_list = copy.deepcopy(first_while_block.children + second_while_block.children)
-        tensor_to_block_block(None, layer_index=layer_index, ir_list=combined_list, while_iteration=i)
+        tensor_to_block_block(None, layer_index=layer_index, ir_list=combined_list, while_iteration=i, ttb_functions=ttb_functions)
         ir_list += combined_list
 
     ir_list += exit_block.children
@@ -738,7 +799,7 @@ def remove_while(layer_index, num_iterations, cfg, root_node, first_while_node, 
     cfg.nodes.remove(break_node)
     cfg.nodes.remove(exit_node)
 
-def unroll_while(cfg, layer_index):
+def unroll_while(cfg, layer_index, ttb_functions):
     i = 0
     while True:
         live_nodes = get_live_nodes(cfg, layer_index)
@@ -750,13 +811,13 @@ def unroll_while(cfg, layer_index):
         
         block = cfg.ir[node]
         if block.inner_jump is None:
-            tensor_to_block_block(block, layer_index)
+            tensor_to_block_block(block, layer_index, ttb_functions=ttb_functions)
             i+=1
         elif len(block.inner_jump) == 3:
-            tensor_to_block_block(block, layer_index)
+            tensor_to_block_block(block, layer_index, ttb_functions=ttb_functions)
             i+=1
         elif not isinstance(block.inner_jump[1], IrWhileBlock):
-            tensor_to_block_block(block, layer_index)
+            tensor_to_block_block(block, layer_index, ttb_functions=ttb_functions)
             i+=1
         else:
             root_node = node
@@ -772,20 +833,21 @@ def unroll_while(cfg, layer_index):
             with open(filename, 'r') as f:
                 json_obj = json.load(f)
                 num_iterations = json_obj["num_iterations"]
-            remove_while(layer_index, num_iterations, cfg, root_node, first_while_node, second_while_node, exit_node, break_node)
+            remove_while(layer_index, num_iterations, cfg, root_node, first_while_node, second_while_node, exit_node, break_node, ttb_functions)
 
 
-def tensor_to_block_cfg(cfg, layer_index):
+def tensor_to_block_cfg(cfg, layer_index, ttb_functions):
     live_nodes = get_live_nodes(cfg, layer_index)
     for node in cfg.nodes:
         if node not in live_nodes:
             continue
         block = cfg.ir[node]
-        tensor_to_block_block(block, layer_index)
+        tensor_to_block_block(block, layer_index, ttb_functions=ttb_functions)
 
 def tensor_to_block(ir):
     # TODO: DEBUG THE FOLLOWING LINE
     # uses.populate_uses_defs(ir)
+    ir.ttb_functions = []
     filename = f"jit_layers/layers.json"
     with open(filename, 'r') as f:
         json_obj = json.load(f)
@@ -803,7 +865,7 @@ def tensor_to_block(ir):
             new_cfgs = {}
             for j, layer_index in enumerate(layer_indices):
                 cfg = deepcopy_cfg_with_fresh_identifiers(transformerIr.cfg)
-                unroll_while(cfg, layer_index)
+                unroll_while(cfg, layer_index, ir.ttb_functions)
                 print(layer_index, 'after unroll while')
                 new_cfgs[layer_index] = cfg
             

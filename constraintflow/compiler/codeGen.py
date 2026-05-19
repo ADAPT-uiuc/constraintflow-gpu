@@ -111,6 +111,8 @@ class CodeGen(irVisitor.IRVisitor):
         else:
             self.write('from constraintflow.gbcsr.tensor_ops import *')
 
+        self.emit_ttb_functions(node.ttb_functions)
+
         for i, transformer_name in enumerate(node.tstore.keys()):
             self.write('class ' + transformer_name + ':')
             self.indent += 1
@@ -236,9 +238,26 @@ class CodeGen(irVisitor.IRVisitor):
         # node.counter = self.counter
         # self.counter += 1
 
-    # For the del statements
-    def visitIrDel(self, node):
-        self.write('del ' + ', '.join(node.var_names))
+    def emit_ttb_functions(self, ttb_functions):
+        for fn in ttb_functions:
+            param_str = ', '.join(p.name for p in fn.params)
+            self.write(f'def {fn.name}({param_str}):')
+            self.indent += 1
+            for stmt in fn.body:
+                if isinstance(stmt, IrAssignment):
+                    self.visitIrAssignment(stmt)
+                elif isinstance(stmt, IrSetBlockTotalShapeLastDim):
+                    self.visitIrSetBlockTotalShapeLastDim(stmt)
+                else:
+                    raise Exception(f"Unsupported TTB function body statement: {type(stmt)}")
+            result = self.visit(fn.result)
+            self.write(f'return {result}')
+            self.indent -= 1
+            self.write('')
+
+    def visitIrTtbCall(self, node):
+        args = ', '.join(self.visit(arg) for arg in node.args)
+        return f'{node.function_name}({args})'
 
     def visitIrBreak(self, node):
         self.write('break')
