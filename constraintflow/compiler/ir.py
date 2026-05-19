@@ -1563,11 +1563,21 @@ class IrBreak(IrStatement):
     def __init__(self):
         super().__init__()
 
-# For the del statements
-class IrDel(IrStatement):
-    def __init__(self, var_names):
+class IrTtbFunction(IrAst):
+    def __init__(self, name, params, body, result):
         super().__init__()
-        self.var_names = var_names
+        self.name = name
+        self.params = params
+        self.body = body
+        self.result = result
+
+class IrTtbCall(IrExpression):
+    def __init__(self, function_name, args, irMetadata=None):
+        super().__init__()
+        self.function_name = function_name
+        self.args = args
+        self.irMetadata = irMetadata if irMetadata is not None else []
+        self.update_parent_child(args)
 
 class IrBlock(IrAst):
     def __init__(self, ir_list = [], jump = None, inner_jump = None, loopBack = None):
@@ -1619,10 +1629,11 @@ class IrProgram(IrAst):
         super().__init__()
         self.shape = shape
         # tstore: map { certifier name -> list of abstract transformers of operators of this CF program }
-        # tstore type: dict[str -> list[IrOpStmt with elem: op, cfg]]
+        # tstore type: dict[str -> list[IrOpStmt with elem: op, cfg>]
         self.tstore = tstore
         self.fstore = fstore
         self.irNodes = irNodes
+        self.ttb_functions = []
         
 
 
