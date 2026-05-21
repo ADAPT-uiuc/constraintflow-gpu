@@ -10,6 +10,7 @@ print(f'reuse_mode in cli: {globals.reuse_mode}')
 
 
 
+import json
 import os
 import sys
 import torch
@@ -241,6 +242,104 @@ def run(
     typer.echo(f"Lower bounds: {lb}")
     typer.echo(f"Upper bounds: {ub}")
     typer.echo(f"Total time: {total_time:.2f} seconds")
+
+    def _ratio_vs_block_sparse(baseline, other):
+        if baseline <= 0:
+            return "n/a"
+        if other <= 0:
+            return "0 s"
+        r = other / baseline
+        if r >= 1:
+            return f"{r:.1f}x slower than block sparse"
+        return f"{1 / r:.1f}x faster than block sparse"
+
+    baseline = matmul_original_time.get_total_time()
+    inner_total = matmul_tensor_ops.get_total_time()
+    inner_overhead = max(inner_total - baseline, 0.0)
+    matmul_lines = [
+        ("block sparse (SparseTensor.matmul)", matmul_original_time, matmul_original_time.num_used, True),
+        # (
+        #     "inner_prod overhead (shape checks, jit json)",
+        #     matmul_tensor_ops_expenses,
+        #     matmul_tensor_ops_expenses.num_used,
+        #     False,
+        # ),
+        # ("verify (get_dense + asserts)", matmul_verify_time, matmul_verify_time.num_used, False),
+        # ("CSR encode", matmul_csr_encode_time, matmul_csr_encode_time.num_used, False),
+        ("CSR multiply", matmul_csr_mul_time, matmul_csr_mul_time.num_used, False),
+        # ("COO encode", matmul_coo_encode_time, matmul_coo_encode_time.num_used, False),
+        ("COO multiply", matmul_coo_mul_time, matmul_coo_mul_time.num_used, False),
+        # (
+        #     "BSR encode (8x8)",
+        #     matmul_bsr_const_encode_time,
+        #     matmul_bsr_const_encode_time.num_used,
+        #     False,
+        # ),
+        (
+            "BSR multiply (8x8, via COO)",
+            matmul_bsr_const_mul_time,
+            matmul_bsr_const_mul_time.num_used,
+            False,
+        ),
+        # (
+        #     "BSR encode (derived block)",
+        #     matmul_bsr_derived_encode_time,
+        #     matmul_bsr_derived_encode_time.num_used,
+        #     False,
+        # ),
+        (
+            "BSR multiply (derived, via COO)",
+            matmul_bsr_derived_mul_time,
+            matmul_bsr_derived_mul_time.num_used,
+            False,
+        ),
+    ]
+    typer.echo("Matmul timing (vs block sparse):")
+    for label, timer, n_calls, is_baseline in matmul_lines:
+        t = timer.get_total_time()
+        if is_baseline:
+            typer.echo(f"  {label}: {t:.5f} s ({n_calls} calls) [baseline]")
+        else:
+            typer.echo(
+                f"  {label}: {t:.5f} s ({n_calls} calls) — {_ratio_vs_block_sparse(baseline, t)}"
+            )
+
+    matmul_measured = sum(timer.get_total_time() for _, timer, _, _ in matmul_lines)
+
+    if os.environ.get("CONSTRAINTFLOW_TIMING_JSON"):
+        def _t(timer):
+            return {"seconds": timer.get_total_time(), "calls": timer.num_used}
+
+        timing_payload = {
+            "wall_time_s": total_time,
+            "block_sparse": _t(matmul_original_time),
+            "csr": {"encode": _t(matmul_csr_encode_time), "mul": _t(matmul_csr_mul_time)},
+            "coo": {"encode": _t(matmul_coo_encode_time), "mul": _t(matmul_coo_mul_time)},
+            "bsr_fixed": {
+                "encode": _t(matmul_bsr_const_encode_time),
+                "mul": _t(matmul_bsr_const_mul_time),
+            },
+            "bsr_dynamic": {
+                "encode": _t(matmul_bsr_derived_encode_time),
+                "mul": _t(matmul_bsr_derived_mul_time),
+            },
+            "verify": _t(matmul_verify_time),
+            "inner_prod_total": _t(matmul_tensor_ops),
+        }
+        typer.echo("CONSTRAINTFLOW_TIMING_JSON=" + json.dumps(timing_payload))
+
+    # typer.echo(
+    #     f"  sum (all rows): {matmul_measured:.5f} s — "
+    #     f"{_ratio_vs_block_sparse(baseline, matmul_measured)}"
+    # )
+    # typer.echo(
+    #     f"  inner_prod total: {inner_total:.5f} s ({matmul_tensor_ops.num_used} calls) — "
+    #     f"{_ratio_vs_block_sparse(baseline, inner_total)}"
+    # )
+    # typer.echo(
+    #     f"  inner_prod − block sparse: {inner_overhead:.5f} s "
+    #     f"(jit json setup in inner_prod; not in block-sparse timer)"
+    # )
     # if eps == 0:
     #     assert(lb == ub).all(), "Bounds should be equal when eps=0"
 

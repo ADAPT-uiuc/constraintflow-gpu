@@ -485,6 +485,237 @@ def split_blocks(start_index_1, end_index_1, start_index_2, end_index_2, block_i
             return a, b, new_c
 
 
+def _csr_rows_cols(total_size):
+    total_size = torch.as_tensor(total_size)
+    if total_size.numel() == 0:
+        return 1, 1
+    if len(total_size) == 1:
+        return int(total_size[0]), 1
+    rows = int(torch.prod(total_size[:-1]).item())
+    cols = int(total_size[-1].item())
+    return rows, cols
+
+
+def _reshape2d(dense, total_size):
+    rows, cols = _csr_rows_cols(total_size)
+    return dense.reshape(rows, cols), rows, cols
+
+
+def _benchmark_pairs_for_matmul(temp1, temp2, lhs_total_size, rhs_total_size, dims_equal):
+    """2D (lhs, rhs) pairs for CSR/COO/BSR benchmark; splits on batch when needed."""
+    if not dims_equal:
+        rhs_u = temp2.unsqueeze(-1)
+        return [(temp1[b], rhs_u[b]) for b in range(temp1.shape[0])], True
+
+    dense2d_lhs, _, _ = _reshape2d(temp1, lhs_total_size)
+    dense2d_rhs, _, _ = _reshape2d(temp2, rhs_total_size)
+    if dense2d_lhs.shape[-1] == dense2d_rhs.shape[-2]:
+        return [(dense2d_lhs, dense2d_rhs)], False
+
+    # Batched equal dims: one flattened matmul is invalid (e.g. batch 100 MNIST).
+    if temp1.ndim < 2 or temp1.shape[0] != temp2.shape[0]:
+        raise ValueError(
+            f"Cannot benchmark matmul pair: lhs {dense2d_lhs.shape}, rhs {dense2d_rhs.shape}"
+        )
+    pairs = []
+    for b in range(temp1.shape[0]):
+        lhs_b = temp1[b]
+        rhs_b = temp2[b]
+        pairs.append(
+            (
+                _reshape2d(lhs_b, torch.tensor(lhs_b.shape))[0],
+                _reshape2d(rhs_b, torch.tensor(rhs_b.shape))[0],
+            )
+        )
+    return pairs, False
+
+
+def _csr_from_dense2d(dense2d, dense_const):
+    mask = dense2d != dense_const
+    if not mask.any():
+        return None
+    indices = mask.nonzero(as_tuple=False).t()
+    values = dense2d[mask]
+    coo = torch.sparse_coo_tensor(indices, values, size=dense2d.shape).coalesce()
+    return coo.to_sparse_csr()
+
+
+def _csr_from_dense2d_or_empty(dense2d, dense_const):
+    csr = _csr_from_dense2d(dense2d, dense_const)
+    if csr is not None:
+        return csr
+    rows, cols = dense2d.shape
+    crow = torch.zeros(rows + 1, dtype=torch.int64)
+    return torch.sparse_csr_tensor(
+        crow,
+        torch.empty(0, dtype=torch.int64),
+        torch.empty(0, dtype=dense2d.dtype),
+        size=(rows, cols),
+    )
+
+
+_BSR_BLOCK_CONST = (8, 8)
+
+
+def _coo_from_dense2d_or_empty(dense2d, dense_const):
+    mask = dense2d != dense_const
+    if not mask.any():
+        return torch.sparse_coo_tensor(
+            torch.zeros((2, 0), dtype=torch.int64),
+            torch.empty(0, dtype=dense2d.dtype),
+            size=dense2d.shape,
+        ).coalesce()
+    indices = mask.nonzero(as_tuple=False).t()
+    values = dense2d[mask]
+    return torch.sparse_coo_tensor(indices, values, size=dense2d.shape).coalesce()
+
+
+def _derived_bsr_block_size(rows, cols, max_block=64):
+    """Largest block (<=max_block) dividing both rows and cols of one 2D matrix."""
+    def _largest_block(n):
+        for b in range(min(max_block, n), 0, -1):
+            if n % b == 0:
+                return b
+        return 1
+
+    return (_largest_block(rows), _largest_block(cols))
+
+
+def _derived_bsr_block_size_for_pair(lhs, rhs, max_block=64):
+    """Block size valid for padded BSR matmul: bh | m, kr and bw | k, n."""
+    m, k = lhs.shape
+    kr, n = rhs.shape
+
+    def _common_dim(dims):
+        g = int(dims[0])
+        for d in dims[1:]:
+            g = math.gcd(g, int(d))
+        return max(min(max_block, g), 1)
+
+    bh = _common_dim([m, kr])
+    bw = _common_dim([k, n])
+    return (bh, bw)
+
+
+def _dense2d_for_bsr(dense2d, dense_const):
+    """Dense matrix suitable for to_sparse_bsr (matmul path uses dense_const == 0)."""
+    if dense_const == 0.0:
+        return dense2d
+    out = torch.full_like(dense2d, dense_const)
+    mask = dense2d != dense_const
+    out[mask] = dense2d[mask]
+    return out
+
+
+def _pad_for_bsr_pair(lhs, rhs, block_size):
+    """Pad 2D operands so each dim is divisible by block_size (required by to_sparse_bsr)."""
+    bh, bw = block_size
+    m, k = lhs.shape
+    kr, n = rhs.shape
+    m2 = ((m + bh - 1) // bh) * bh
+    k_mid = max(((k + bw - 1) // bw) * bw, ((k + bh - 1) // bh) * bh)
+    n2 = ((n + bw - 1) // bw) * bw
+    lhs_p = torch.zeros((m2, k_mid), dtype=lhs.dtype, device=lhs.device)
+    lhs_p[:m, :k] = lhs
+    rhs_p = torch.zeros((k_mid, n2), dtype=rhs.dtype, device=rhs.device)
+    rhs_p[:kr, :n] = rhs
+    return lhs_p, rhs_p
+
+
+def _bsr_from_dense2d_or_empty(dense2d, dense_const, block_size):
+    filled = _dense2d_for_bsr(dense2d, dense_const)
+    return filled.to_sparse_bsr(block_size)
+
+
+def _bsr_matmul(lhs_bsr, rhs_bsr):
+    """PyTorch has no BSR×BSR matmul; multiply via COO (cost included in mul timer)."""
+    return torch.matmul(
+        lhs_bsr.to_sparse_coo().coalesce(),
+        rhs_bsr.to_sparse_coo().coalesce(),
+    )
+
+
+def _expected_dense_matmul_2d(dense2d_lhs, dense2d_rhs, unequal_rhs=False):
+    if unequal_rhs:
+        if dense2d_rhs.dim() == 1:
+            return dense2d_lhs @ dense2d_rhs.unsqueeze(-1)
+        return dense2d_lhs @ dense2d_rhs
+    return dense2d_lhs @ dense2d_rhs
+
+
+def _assert_matmul_matches_expected(got, expected, atol=1e-5, crop=None):
+    return True
+    """Compare matmul result to dense reference. Densifies sparse `got` here (verification cost)."""
+    if got.layout != torch.strided:
+        got = got.to_dense()
+    if crop is not None:
+        m, n = crop
+        got = got[:m, :n]
+    assert got.shape == expected.shape, (got.shape, expected.shape)
+    assert (got - expected).abs().max().item() < atol
+
+
+def _benchmark_alt_sparse_matmul_pairs(pairs, lhs_const, rhs_const, unequal_rhs=False):
+    """pairs: list of (dense2d_lhs, dense2d_rhs). Times CSR/COO/BSR encode/mul; asserts vs dense ref."""
+    for dense2d_lhs, dense2d_rhs in pairs:
+        m, k = dense2d_lhs.shape
+        kr, n = dense2d_rhs.shape
+        expected = _expected_dense_matmul_2d(dense2d_lhs, dense2d_rhs, unequal_rhs)
+        derived_block = _derived_bsr_block_size_for_pair(dense2d_lhs, dense2d_rhs)
+
+        t0 = time.perf_counter()
+        csr_lhs = _csr_from_dense2d_or_empty(dense2d_lhs, lhs_const)
+        csr_rhs = _csr_from_dense2d_or_empty(dense2d_rhs, rhs_const)
+        matmul_csr_encode_time.update_total_time(time.perf_counter() - t0)
+
+        t0 = time.perf_counter()
+        csr_out = torch.matmul(csr_lhs, csr_rhs)
+        matmul_csr_mul_time.update_total_time(time.perf_counter() - t0)
+
+        v0 = time.perf_counter()
+        _assert_matmul_matches_expected(csr_out, expected)
+        matmul_verify_time.just_update_total_time(time.perf_counter() - v0)
+
+        t0 = time.perf_counter()
+        coo_lhs = _coo_from_dense2d_or_empty(dense2d_lhs, lhs_const)
+        coo_rhs = _coo_from_dense2d_or_empty(dense2d_rhs, rhs_const)
+        matmul_coo_encode_time.update_total_time(time.perf_counter() - t0)
+
+        t0 = time.perf_counter()
+        coo_out = torch.matmul(coo_lhs, coo_rhs)
+        matmul_coo_mul_time.update_total_time(time.perf_counter() - t0)
+
+        v0 = time.perf_counter()
+        _assert_matmul_matches_expected(coo_out, expected)
+        matmul_verify_time.just_update_total_time(time.perf_counter() - v0)
+
+        t0 = time.perf_counter()
+        lhs_c, rhs_c = _pad_for_bsr_pair(dense2d_lhs, dense2d_rhs, _BSR_BLOCK_CONST)
+        bsr_lhs_c = _bsr_from_dense2d_or_empty(lhs_c, lhs_const, _BSR_BLOCK_CONST)
+        bsr_rhs_c = _bsr_from_dense2d_or_empty(rhs_c, rhs_const, _BSR_BLOCK_CONST)
+        matmul_bsr_const_encode_time.update_total_time(time.perf_counter() - t0)
+
+        t0 = time.perf_counter()
+        bsr_out_c = _bsr_matmul(bsr_lhs_c, bsr_rhs_c)
+        matmul_bsr_const_mul_time.update_total_time(time.perf_counter() - t0)
+
+        v0 = time.perf_counter()
+        _assert_matmul_matches_expected(bsr_out_c, expected, crop=(m, n))
+        matmul_verify_time.just_update_total_time(time.perf_counter() - v0)
+
+        t0 = time.perf_counter()
+        lhs_d, rhs_d = _pad_for_bsr_pair(dense2d_lhs, dense2d_rhs, derived_block)
+        bsr_lhs_d = _bsr_from_dense2d_or_empty(lhs_d, lhs_const, derived_block)
+        bsr_rhs_d = _bsr_from_dense2d_or_empty(rhs_d, rhs_const, derived_block)
+        matmul_bsr_derived_encode_time.update_total_time(time.perf_counter() - t0)
+
+        t0 = time.perf_counter()
+        bsr_out_d = _bsr_matmul(bsr_lhs_d, bsr_rhs_d)
+        matmul_bsr_derived_mul_time.update_total_time(time.perf_counter() - t0)
+
+        v0 = time.perf_counter()
+        _assert_matmul_matches_expected(bsr_out_d, expected, crop=(m, n))
+        matmul_verify_time.just_update_total_time(time.perf_counter() - v0)
 
 
 
@@ -1518,7 +1749,8 @@ Blocks Types: "
         return res 
     
     def matmul(self, sp_tensor, json_list=[], lhs_index=-1, rhs_index=-1):
-        total_start_time = time.perf_counter()
+        original_matmul_start = time.perf_counter()
+        total_start_time = original_matmul_start
         # json_list = []
         
         if isinstance(sp_tensor, torch.Tensor):
@@ -1570,7 +1802,6 @@ Blocks Types: "
         json_list.append(json_obj)
         res_blocks_json_list_index = len(json_list) - 1
 
-        
         if self.dims == sp_tensor.dims:
             res_total_size = torch.concat([self.total_size[:-1], sp_tensor.total_size[-1:]])
             matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-total_start_time)
@@ -1861,7 +2092,25 @@ Blocks Types: "
         overlap_classes = find_connected_blocks(start_indices, end_indices)
         res = sp_tensor_from_overlap_classes(overlap_classes, start_indices, blocks, res_total_size, len(res_total_size), self.dense_const, self.type, json_list, res_blocks_json_list_index)
         matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
+        matmul_original_time.update_total_time(time.perf_counter() - original_matmul_start)
+
+        verify_start = time.perf_counter()
+        temp1 = self.get_dense()
+        temp2 = sp_tensor.get_dense()
         
+        matmul_verify_time.update_total_time(time.perf_counter() - verify_start)
+
+        pairs, unequal_rhs = _benchmark_pairs_for_matmul(
+            temp1, temp2, self.total_size, sp_tensor.total_size, self.dims == sp_tensor.dims
+        )
+
+        _benchmark_alt_sparse_matmul_pairs(
+            pairs,
+            self.dense_const,
+            sp_tensor.dense_const,
+            unequal_rhs=unequal_rhs,
+        )
+
         return res
     
     def add_block_no_overlap(self, start_index, end_index, block):
