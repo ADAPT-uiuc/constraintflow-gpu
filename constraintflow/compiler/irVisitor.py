@@ -171,6 +171,18 @@ class IRVisitor:
         
         elif isinstance(node, IR.IrConstBlock):
             return self.visitIrConstBlock(node)
+
+        elif isinstance(node, IR.IrDenseBlock):
+            return self.visitIrDenseBlock(node)
+
+        elif isinstance(node, IR.IrTorchDiagonal):
+            return self.visitIrTorchDiagonal(node)
+
+        elif isinstance(node, IR.IrTorchPermute):
+            return self.visitIrTorchPermute(node)
+
+        elif isinstance(node, IR.IrDiagonalBlock):
+            return self.visitIrDiagonalBlock(node)
         
         elif isinstance(node, IR.IrBlockBinaryOp):
             return self.visitIrBlockBinaryOp(node)

@@ -481,6 +481,38 @@ class IrConstBlock(IrExpression):
         self.total_shape = total_shape
         self.update_parent_child([inputIr])
 
+class IrDenseBlock(IrExpression):
+    def __init__(self, blockIr):
+        super().__init__()
+        self.update_parent_child([blockIr])
+
+
+# sparse_block.get_diagonal simulacrum trace — step 1: torch.diagonal on block tensor payload.
+class IrTorchDiagonal(IrExpression):
+    def __init__(self, inputIr, dim1, dim2):
+        super().__init__()
+        self.dim1 = dim1
+        self.dim2 = dim2
+        self.update_parent_child([inputIr])
+
+
+# sparse_block.get_diagonal simulacrum trace — step 2: permute after diagonal.
+class IrTorchPermute(IrExpression):
+    def __init__(self, inputIr, permutation):
+        super().__init__()
+        self.permutation = permutation
+        self.update_parent_child([inputIr])
+
+
+# create_similar_diagonal trace: wrap tensor payload as DiagonalBlock.
+class IrDiagonalBlock(IrExpression):
+    def __init__(self, blockIr, total_shape, diag_index):
+        super().__init__()
+        self.total_shape = total_shape
+        self.diag_index = diag_index
+        self.update_parent_child([blockIr])
+
+
 class IrEmptyList(IrExpression):
     def __init__(self):
         super().__init__()

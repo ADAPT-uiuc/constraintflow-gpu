@@ -101,7 +101,10 @@ class CodeGen(irVisitor.IRVisitor):
         self.write('from constraintflow.lib.polyexp import PolyExpSparse')
         self.write('from constraintflow.lib.symexp import *')
         if reuse_mode.get_flag():
+            self.write('import operator')
             self.write('from constraintflow.gbcsr.sparse_tensor import SparseTensor')
+            self.write('from constraintflow.gbcsr.tensor_ops import *')
+            self.write('from constraintflow.gbcsr.sparse_block import SparseBlock, DenseBlock, DiagonalBlock, ConstBlock, sp_where_block')
         else:
             self.write('from constraintflow.gbcsr.sparse_tensor import SparseTensor')
         self.write('from constraintflow.lib.llist import Llist')
@@ -348,6 +351,29 @@ class CodeGen(irVisitor.IRVisitor):
 
     def visitIrConstBlock(self, node):
         return 'ConstBlock(' + self.visit(node.children[0]) + ',' + self.visit(node.total_shape) + ')'
+
+    def visitIrDenseBlock(self, node):
+        return 'DenseBlock(' + self.visit(node.children[0]) + ')'
+
+    def visitIrDiagonalBlock(self, node):
+        return (
+            'DiagonalBlock(' + self.visit(node.children[0]) + ', '
+            + self.visit(node.total_shape) + ', '
+            + str(node.diag_index) + ')'
+        )
+
+    def visitIrTorchDiagonal(self, node):
+        input_expr = self.visit(node.children[0])
+        return (
+            'torch.diagonal(' + input_expr
+            + ', dim1=' + str(node.dim1)
+            + ', dim2=' + str(node.dim2) + ')'
+        )
+
+    def visitIrTorchPermute(self, node):
+        input_expr = self.visit(node.children[0])
+        perm_args = ', '.join(str(i) for i in node.permutation)
+        return input_expr + '.permute(' + perm_args + ')'
     
     def visitIrEmptyList(self, node):
         return '[]'
@@ -618,10 +644,12 @@ class CodeGen(irVisitor.IRVisitor):
 
     def visitIrSimpleBinary(self, node):
         [lhsIr, rhsIr] = node.children
-        return self.get_operator_func(node.op) + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ')'
+        lhs = self.visit(lhsIr)
+        rhs = self.visit(rhsIr)
+        return self.get_operator_func(node.op) + '(' + lhs + ', ' + rhs + ')'
     
     def visitIrTensorOnes(self, node):
-        return 'torch.ones(*' + node.repeat_dims + ')'
+        return 'torch.ones(*' + str(node.total_size.tolist()) + ')'
 
     def visitTensorRepeat(self, node):
         return 'torch.repeat(' + self.visit(node.children[0]) + ', *' + node.repeat_dims + ')'

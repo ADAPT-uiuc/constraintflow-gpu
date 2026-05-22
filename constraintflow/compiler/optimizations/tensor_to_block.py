@@ -110,7 +110,9 @@ def get_live_nodes(cfg, layer_index):
 
 def convert_to_ir_ttb(expr, layer_index, while_iteration):
     # targets = ()
-    targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop, IrAddDimension, IrRemoveDimension)
+    targets = (IrBinaryOp)
+    # targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop, IrAddDimension, IrRemoveDimension, IrDiagonalBlock, IrTorchDiagonal, IrTorchPermute)
+    
     if not isinstance(expr, targets):
         return expr, []
 
@@ -353,7 +355,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 lhsIr = rhs
             else:
                 raise Exception("NOT IMPLEMENTED")
-            
+
             if "json_list_" in json_obj["rhs"]:
                 rhsIr = output_vars[int(json_obj["rhs"].split("_")[-1])]
             elif json_obj["rhs"] == "lhs":
@@ -362,8 +364,42 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 rhsIr = rhs
             else:
                 raise Exception("NOT IMPLEMENTED")
-            
+
             output = IrBlockBinaryOp(lhsIr, rhsIr, get_operator_func(json_obj["op"]))
+
+        elif json_obj["method"] == "torch_binary":
+            if "json_list_" in json_obj["lhs"]:
+                lhsIr = output_vars[int(json_obj["lhs"].split("_")[-1])]
+            elif json_obj["lhs"] == "lhs":
+                lhsIr = lhs
+            elif json_obj["lhs"] == "rhs":
+                lhsIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+
+            if "json_list_" in json_obj["rhs"]:
+                rhsIr = output_vars[int(json_obj["rhs"].split("_")[-1])]
+            elif json_obj["rhs"] == "lhs":
+                rhsIr = lhs
+            elif json_obj["rhs"] == "rhs":
+                rhsIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+
+            output = IrSimpleBinary(lhsIr, rhsIr, json_obj["op"])
+
+        elif json_obj["method"] == "DenseBlock":
+            if "json_list_" not in json_obj["block"]:
+                raise Exception("NOT IMPLEMENTED DenseBlock block ref")
+            blockIr = output_vars[int(json_obj["block"].split("_")[-1])]
+            output = IrDenseBlock(blockIr)
+
+        elif json_obj["method"] == "DiagonalBlock":
+            if "json_list_" not in json_obj["block"]:
+                raise Exception("NOT IMPLEMENTED DiagonalBlock block ref")
+            blockIr = output_vars[int(json_obj["block"].split("_")[-1])]
+            shape = torch.tensor(json_obj["total_shape"], dtype=torch.int64)
+            output = IrDiagonalBlock(blockIr, shape, json_obj["diag_index"])
 
         elif json_obj["method"] == "matmul_unequal_dims":
             if "json_list_" in json_obj["lhs"]:
@@ -409,7 +445,11 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         
         elif json_obj["method"] == "ConstBlock":
             shape = torch.tensor(json_obj["total_shape"], dtype=torch.int64)
-            output = IrConstBlock(json_obj["block"], shape)
+            if isinstance(json_obj["block"], str) and "json_list_" in json_obj["block"]:
+                blockIr = output_vars[int(json_obj["block"].split("_")[-1])]
+            else:
+                blockIr = json_obj["block"]
+            output = IrConstBlock(blockIr, shape)
         
         elif json_obj["method"] == "repeat":
             if "json_list_" in json_obj["input"]:
@@ -458,6 +498,53 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
 
         elif json_obj["method"] == "tensor_ones":
             output = IrTensorOnes(torch.tensor(json_obj["repeat_dims"], dtype=torch.int64))
+
+        # torch_ones: sparse_block DummyBlock.get_dense_const_block (size = total_shape).
+        elif json_obj["method"] == "torch_ones":
+            output = IrTensorOnes(torch.tensor(json_obj["size"], dtype=torch.int64))
+
+        elif json_obj["method"] == "torch_mul":
+            if "json_list_" in json_obj["lhs"]:
+                lhsIr = output_vars[int(json_obj["lhs"].split("_")[-1])]
+            elif json_obj["lhs"] == "lhs":
+                lhsIr = lhs
+            elif json_obj["lhs"] == "rhs":
+                lhsIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+
+            if "json_list_" in json_obj["rhs"]:
+                rhsIr = output_vars[int(json_obj["rhs"].split("_")[-1])]
+            elif json_obj["rhs"] == "lhs":
+                rhsIr = lhs
+            elif json_obj["rhs"] == "rhs":
+                rhsIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+
+            output = IrSimpleBinary(lhsIr, rhsIr, "mul")
+
+        elif json_obj["method"] == "torch_diagonal":
+            if "json_list_" in json_obj["input"]:
+                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            elif json_obj["input"] == "lhs":
+                inputIr = lhs
+            elif json_obj["input"] == "rhs":
+                inputIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrTorchDiagonal(inputIr, json_obj["dim1"], json_obj["dim2"])
+
+        elif json_obj["method"] == "torch_permute":
+            if "json_list_" in json_obj["input"]:
+                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            elif json_obj["input"] == "lhs":
+                inputIr = lhs
+            elif json_obj["input"] == "rhs":
+                inputIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrTorchPermute(inputIr, json_obj["permutation"])
 
         elif json_obj["method"] == "tensor_repeat":
             if "json_list_" in json_obj["lhs"]:
@@ -540,6 +627,13 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             else:
                 raise Exception("NOT IMPLEMENTED")
             output = IrObjectLookup(inputIr, json_obj["object"])
+
+        elif json_obj["method"] in ("sparse_block_extract", "extract_sparse_block"):
+            if "json_list_" in json_obj["input"]:
+                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrObjectLookup(inputIr, "block")
 
         elif json_obj["method"] == "block_create_similar":
             if "json_list_" in json_obj["input"]:
