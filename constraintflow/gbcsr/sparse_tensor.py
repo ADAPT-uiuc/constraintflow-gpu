@@ -1246,16 +1246,18 @@ Blocks Types: "
 
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
                     # Index Dependant
-                    block = temp_block.binary(block, op)
+                    block = temp_block.binary(block, op, json_list = json_list,
+                    lhs_index = len(json_list) - 1,
+                    rhs_index = rhs_json_index)
 
-                    json_obj = {
-                        "method": "binary",
-                        "op": op.__name__,
-                        "lhs": "json_list_" + str(const_json_index),
-                        "rhs": "json_list_" + str(rhs_json_index),
-                        "output": len(json_list)
-                    }
-                    json_list.append(json_obj)
+                    # json_obj = {
+                    #     "method": "binary",
+                    #     "op": op.__name__,
+                    #     "lhs": "json_list_" + str(const_json_index),
+                    #     "rhs": "json_list_" + str(rhs_json_index),
+                    #     "output": len(json_list)
+                    # }
+                    # json_list.append(json_obj)
                     block_json_index = len(json_list) - 1
 
                 binary_sparse_tensor_dom2.update_total_time(time.perf_counter()-start_time)
@@ -1311,16 +1313,19 @@ Blocks Types: "
 
                     binary_fixed_costs.update_total_time(time.perf_counter()-start_time)
                     # Index Dependant
-                    block = block.binary(temp_block, op)
+                    block = block.binary(temp_block, op,
+                    json_list = json_list,
+                    lhs_index = block_json_index,
+                    rhs_index = const_json_index)
 
-                    json_obj = {
-                        "method": "binary",
-                        "op": op.__name__,
-                        "lhs": "json_list_" + str(lhs_json_index),
-                        "rhs": "json_list_" + str(const_json_index),
-                        "output": len(json_list)
-                    }
-                    json_list.append(json_obj)
+                    # json_obj = {
+                    #     "method": "binary",
+                    #     "op": op.__name__,
+                    #     "lhs": "json_list_" + str(lhs_json_index),
+                    #     "rhs": "json_list_" + str(const_json_index),
+                    #     "output": len(json_list)
+                    # }
+                    # json_list.append(json_obj)
                     block_json_index = len(json_list) - 1
 
                 binary_sparse_tensor_dom1.update_total_time(time.perf_counter()-start_time)
@@ -1349,7 +1354,10 @@ Blocks Types: "
                 
                 binary_sparse_tensor_overlap_expenses.update_total_time(time.perf_counter()-start_time)
                 # Index Dependant
-                block = block_1.binary(block_2, op)
+                block = block_1.binary(block_2, op, 
+                lhs_index = lhs_json_index,
+                rhs_index = rhs_json_index,
+                json_list = json_list)
                 binary_sparse_tensor_overlap.update_total_time(time.perf_counter()-start_time)
 
 
@@ -1377,14 +1385,14 @@ Blocks Types: "
 
                 # json_list.append(json_obj_2)
 
-                json_obj = {
-                    "method": "binary",
-                    "op": op.__name__,
-                    "lhs": "json_list_" + str(lhs_json_index),
-                    "rhs": "json_list_" + str(rhs_json_index),
-                    "output": len(json_list)
-                }
-                json_list.append(json_obj)
+                # json_obj = {
+                #     "method": "binary",
+                #     "op": op.__name__,
+                #     "lhs": "json_list_" + str(lhs_json_index),
+                #     "rhs": "json_list_" + str(rhs_json_index),
+                #     "output": len(json_list)
+                # }
+                # json_list.append(json_obj)
                 block_json_index = len(json_list) - 1
             
             start = time.perf_counter()
