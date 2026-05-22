@@ -35,7 +35,9 @@ def used_vars(statement: IrStatement) -> set[IrVar]:
         if node_id in visited:
             continue
         visited.add(node_id)
-        for metadata in node.irMetadata:
+        for metadata in node.irMetadata or []:
+            if metadata is None:
+                continue
             for item in metadata.shape:
                 if isinstance(item, IrAst):
                     stack.append(item)
@@ -78,7 +80,9 @@ def replace_var_uses(var_name: str, replacement: IrExpression,
             continue
         if not isinstance(node, IrAst):
             continue
-        for metadata in node.irMetadata:
+        for metadata in node.irMetadata or []:
+            if metadata is None:
+                continue
             shape = metadata.shape
             for i in range(len(shape)):
                 item = shape[i]
@@ -113,6 +117,9 @@ def inline_subexp_block(block: IrBlock) -> None:
             this_def = instructions[i].children[0]
             assert isinstance(this_def, IrVar)
             this_def_name: str = this_def.name
+            print(f'this_def_name: {this_def_name}')
+            # with open('z_name.txt', 'a') as f:
+            #     f.write(this_def_name + '\n')
             for j in range(i + 1, len(instructions)):
                 # Until next re-definition of the same variable.
                 if (isinstance(instructions[j], IrAssignment)
@@ -128,6 +135,10 @@ def inline_subexp_block(block: IrBlock) -> None:
             elif len(instrs_using_def_i) == 1:
                 def_of_instr_i = instructions[i].children[1]
                 assert isinstance(def_of_instr_i, IrExpression)
+                # print(f'this_def_name: {this_def_name}')
+                # if isinstance(instructions[instrs_using_def_i[0]], IrAssignment):
+                #     print(f'used by assignment to {instructions[instrs_using_def_i[0]].children[0].name}')
+                #     afsjudli
                 replace_var_uses(
                     this_def_name, def_of_instr_i,
                     instructions[instrs_using_def_i[0]])
@@ -146,7 +157,9 @@ def inline_subexp_cfg(cfg: Graph) -> None:
     This is ineed the case in the current lowered-to-block IR.
     This function should be amenable to future extension to control flow.
     """
-    assert len(cfg.nodes) == 1
+    # assert len(cfg.nodes) == 1
+    if len(cfg.nodes) != 1:
+        return
     block = cfg.ir[cfg.nodes[0]]
     inline_subexp_block(block)
 
@@ -161,5 +174,10 @@ def inline_subexp(ir: IrProgram) -> None:
     """
     for transformer in ir.tstore.keys():
         for i in range(len(ir.tstore[transformer])):
-            cfg: Graph = ir.tstore[transformer][i].cfg
-            inline_subexp_cfg(cfg)
+            transformer_ir = ir.tstore[transformer][i]
+            if transformer_ir.layerwise_cfgs is not None:
+                for cfg in transformer_ir.layerwise_cfgs.values():
+                    inline_subexp_cfg(cfg)
+            else:
+                cfg: Graph = transformer_ir.cfg
+                inline_subexp_cfg(cfg)

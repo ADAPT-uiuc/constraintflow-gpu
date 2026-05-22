@@ -239,9 +239,10 @@ class CodeGen(irVisitor.IRVisitor):
 
     # For the del statements
     def visitIrDel(self, node):
-        self.write('del ' + ', '.join(node.var_names))
-        self.write('gc.collect()')
-        self.write('torch.cuda.empty_cache()')
+        # self.write('del ' + ', '.join(node.var_names))
+        # self.write('gc.collect()')
+        # self.write('torch.cuda.empty_cache()')
+        pass
 
     def visitIrBreak(self, node):
         self.write('break')
