@@ -95,6 +95,7 @@ class CodeGen(irVisitor.IRVisitor):
         # GENERATE TRANSFORMERS
         self.open(self.transformers_file)
         self.indent = 0
+        self.write('import gc')
         self.write('import json')
         self.write('import os')
         self.write('import torch')
@@ -239,6 +240,8 @@ class CodeGen(irVisitor.IRVisitor):
     # For the del statements
     def visitIrDel(self, node):
         self.write('del ' + ', '.join(node.var_names))
+        self.write('gc.collect()')
+        self.write('torch.cuda.empty_cache()')
 
     def visitIrBreak(self, node):
         self.write('break')
