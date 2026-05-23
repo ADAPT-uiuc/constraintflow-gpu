@@ -1500,6 +1500,11 @@ class DummyBlock():
         elif block_type == 'Diag':
             self.diag_index = kwargs['diag_index']
             self.batch_size = total_shape[0]
+            if self.diag_index >= len(self.total_shape):
+                block_shape = self.total_shape[:-1]
+            else:
+                block_shape = torch.concat([self.total_shape[:self.diag_index], self.total_shape[self.diag_index + 1:]])
+            self.block = torch.empty(tuple(block_shape.tolist()), device='meta')
         elif block_type == 'R':
             self.repeat_dims = total_shape / torch.tensor(self.block.shape)
             self.only_one_repeat = (self.repeat_dims != 1).sum() == 1
@@ -2489,7 +2494,14 @@ class DummyBlock():
 
     def _replace_block_with_meta(self, res):
         if res.block_type != 'C':
-            res.block = torch.empty(tuple(res.total_shape.tolist()), device='meta')
+            if res.block_type == 'Diag':
+                if res.diag_index >= len(res.total_shape):
+                    shape = res.total_shape[:-1]
+                else:
+                    shape = torch.concat([res.total_shape[:res.diag_index], res.total_shape[res.diag_index + 1:]])
+            else:
+                shape = res.total_shape
+            res.block = torch.empty(tuple(shape.tolist()), device='meta')
 
     def matmul_equal_dims(self, sp_block):
         if self.block_type == 'C':
