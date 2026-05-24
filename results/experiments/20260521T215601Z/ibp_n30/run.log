@@ -1,0 +1,56 @@
+dummy_mode in cli: flag: False
+reuse_mode in cli: flag: False
+Compilation successful ✅
+Network loaded
+Lower bounds: tensor([[-23.8180, -20.7242, -27.0927, -26.2216, -21.2633, -18.2286, -18.2347,
+         -12.7154, -17.9445],
+        [-46.7612, -50.4775, -31.6204, -35.5946, -34.6006, -27.3848, -32.3490,
+         -53.7470, -43.5349],
+        [-44.3061, -42.5431, -34.0347, -38.0058, -43.5710, -25.1459, -38.3728,
+         -49.2883, -40.8427],
+        [-38.0446, -29.7116, -29.1476, -27.6389, -16.1124, -13.1857, -29.1102,
+         -33.1734, -22.8221],
+        [-15.4939, -21.3838, -34.7365, -33.6957, -29.2531, -32.8063, -17.3375,
+         -21.4597, -18.0810],
+        [-26.5174, -24.7935, -39.6044, -35.9206, -34.1961, -38.6543, -29.6331,
+         -22.4060, -25.0155],
+        [-28.7028, -39.2653, -40.7512, -27.0286, -34.0439, -31.0382, -28.1167,
+         -26.7246, -31.4703],
+        [-25.7727, -18.8628, -38.7983, -24.3289, -25.2881, -28.2951, -20.4408,
+         -16.3292, -23.8383],
+        [-16.4205, -13.7505, -22.3823, -21.1596, -19.2626, -16.3963, -20.8297,
+         -10.2999, -10.1804],
+        [-30.9942, -44.6572, -30.9229, -32.8299, -32.9986, -37.3378, -28.9808,
+         -45.1591, -45.8429]], dtype=torch.float64)
+Upper bounds: tensor([[41.1617, 42.4073, 41.1061, 45.8334, 47.6748, 53.7593, 47.8538, 48.6003,
+         45.5213],
+        [ 8.7188,  5.2942, 31.8875, 27.7720, 30.4158, 33.6336, 25.9939, -0.8433,
+         10.5193],
+        [15.1001, 16.4485, 35.2845, 33.9633, 27.0883, 42.7734, 24.4561,  8.9144,
+         16.9506],
+        [10.8119, 20.3427, 27.6317, 30.2749, 44.1971, 40.5067, 28.3840, 16.7656,
+         26.7634],
+        [52.2323, 40.8736, 35.2736, 35.6948, 39.0459, 29.7849, 47.9834, 39.4472,
+         47.2657],
+        [45.7226, 44.2899, 38.2283, 41.7776, 42.0433, 31.6084, 40.2073, 44.1867,
+         44.4063],
+        [30.6903, 16.7382, 22.3738, 39.2302, 24.0507, 31.8344, 28.3267, 29.5626,
+         27.4088],
+        [35.1868, 37.7746, 24.8606, 42.3795, 37.4377, 30.7392, 41.0039, 41.0177,
+         36.4580],
+        [41.2369, 42.3257, 39.4829, 41.3067, 38.5309, 43.4886, 35.1327, 42.3521,
+         47.3015],
+        [27.3525, 13.2514, 32.7829, 32.0618, 32.0093, 27.6737, 33.7301,  9.4646,
+          9.7882]], dtype=torch.float64)
+Total time: 95.88 seconds
+Matmul timing (vs block sparse):
+  block sparse (SparseTensor.matmul): 0.04290 s (16 calls) [baseline]
+  CSR multiply: 0.63042 s (160 calls) — 14.7x slower than block sparse
+  COO multiply: 1.03525 s (160 calls) — 24.1x slower than block sparse
+  BSR multiply (8x8, via COO): 14.89451 s (160 calls) — 347.2x slower than block sparse
+  BSR multiply (derived, via COO): 35.34702 s (160 calls) — 824.0x slower than block sparse
+CONSTRAINTFLOW_TIMING_JSON={"wall_time_s": 95.87616941800115, "block_sparse": {"seconds": 0.042896929999187705, "calls": 16}, "csr": {"encode": {"seconds": 6.567851374993552, "calls": 160}, "mul": {"seconds": 0.6304238620086835, "calls": 160}}, "coo": {"encode": {"seconds": 6.315858957985256, "calls": 160}, "mul": {"seconds": 1.0352538590123004, "calls": 160}}, "bsr_fixed": {"encode": {"seconds": 11.598779021993323, "calls": 160}, "mul": {"seconds": 14.89450890500666, "calls": 160}}, "bsr_dynamic": {"encode": {"seconds": 12.366661439995369, "calls": 160}, "mul": {"seconds": 35.34702400199967, "calls": 160}}, "verify": {"seconds": 5.3332936390143, "calls": 16}, "inner_prod_total": {"seconds": 95.82158793599956, "calls": 16}}
+
+--- stderr ---
+/home/aval/constraintflow-gpu/constraintflow/gbcsr/sparse_tensor.py:540: UserWarning: Sparse CSR tensor support is in beta state. If you miss a functionality in the sparse tensor support, please submit a feature request to https://github.com/pytorch/pytorch/issues. (Triggered internally at /pytorch/aten/src/ATen/SparseCsrTensorImpl.cpp:53.)
+  return coo.to_sparse_csr()

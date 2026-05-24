@@ -1,0 +1,7 @@
+dummy_mode in cli: flag: False
+reuse_mode in cli: flag: False
+Compilation successful ✅
+
+--- stderr ---
+/home/aval/constraintflow-gpu/constraintflow/gbcsr/sparse_tensor.py:540: UserWarning: Sparse CSR tensor support is in beta state. If you miss a functionality in the sparse tensor support, please submit a feature request to https://github.com/pytorch/pytorch/issues. (Triggered internally at /pytorch/aten/src/ATen/SparseCsrTensorImpl.cpp:53.)
+  return coo.to_sparse_csr()
