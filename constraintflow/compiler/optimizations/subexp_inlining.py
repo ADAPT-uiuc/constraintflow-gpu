@@ -10,143 +10,104 @@ from __future__ import annotations
 from constraintflow.compiler.ir import *
 from constraintflow.compiler.optimizations import uses
 from constraintflow.compiler.representations import Graph
+from constraintflow.compiler.optimizations.tensor_to_block import \
+    replace_all_occurrences_expr
+from constraintflow.compiler.optimizations.loopInvariantCodeMotion import \
+    get_vars_expr
 
 
-def used_vars(statement: IrStatement) -> set[IrVar]:
-    """private"""
-    if isinstance(statement, IrDel):
-        return set()
-    if isinstance(statement, IrAssignment):
-        stack = [statement.children[1]]
+def replace_var_with_expr(
+        instructions: list[IrStatement], use_instr_index: int,
+        def_instr_index: int, var_name: str) -> None:
+    if isinstance(instructions[use_instr_index], IrAssignment):
+        new_expr = replace_all_occurrences_expr(
+            instructions[use_instr_index].children[1],
+            {var_name: instructions[def_instr_index].children[1]})
+        new_children = [instructions[def_instr_index].children[0], new_expr]
+        instructions[use_instr_index].update_parent_child(new_children)
+    elif isinstance(
+        instructions[use_instr_index], IrTransRetBasic):
+        new_children = []
+        for j in range(len(instructions[use_instr_index].children)):
+            new_expr = replace_all_occurrences_expr(
+            instructions[use_instr_index].children[j],
+            {var_name: instructions[def_instr_index].children[1]})
+            new_children.append(new_expr)
+        instructions[use_instr_index].update_parent_child(new_children)
     else:
-        stack = list(statement.children)
-    vars = set()
-    visited = set()
-    while stack:
-        node = stack.pop()
-        if isinstance(node, int):
-            continue
-        if isinstance(node, (list, tuple)):
-            stack.extend(node)
-            continue
-        if not isinstance(node, IrAst):
-            continue
-        node_id = id(node)
-        if node_id in visited:
-            continue
-        visited.add(node_id)
-        for metadata in node.irMetadata or []:
-            if metadata is None:
-                continue
-            for item in metadata.shape:
-                if isinstance(item, IrAst):
-                    stack.append(item)
-            for item in metadata.broadcast:
-                if isinstance(item, IrAst):
-                    stack.append(item)
-        if isinstance(node, IrVar):
-            vars.add(node)
-        else:
-            stack.extend(node.children)
-    return vars
+        assert False
 
 
-def replace_var_uses(var_name: str, replacement: IrExpression,
-                     statement: IrStatement ) -> None:
-    """private"""
-    children = statement.children
-    start = 1 if isinstance(statement, IrAssignment) else 0
-    stack = []
-    for i in range(start, len(children)):
-        child = children[i]
-        if isinstance(child, IrVar) and child.name == var_name:
-            children[i] = replacement
+def indices_to_delete_and_replace_single_use(block: IrBlock):
+    instructions: list[IrStatement] = block.children
+    current_vars_def_index: dict[str, int] = {}
+    uses_instr_count: dict[str, list[int]] = {}
+    to_delete_indices: list[int] = []
+    for i in range(len(instructions)):
+        if isinstance(instructions[i], IrDel):
+            continue
+        if isinstance(instructions[i], IrAssignment):
+            defined_var = instructions[i].children[0]
+            assert isinstance(defined_var, IrVar)
+            if defined_var.name in current_vars_def_index.keys():
+                if len(uses_instr_count[defined_var.name]) == 1:
+                    use_instr_index = uses_instr_count[defined_var.name][0]
+                    replace_var_with_expr(
+                        instructions, use_instr_index,
+                        current_vars_def_index[defined_var.name],
+                        defined_var.name)
+                    to_delete_indices.append(
+                        current_vars_def_index[defined_var.name])
+                    
+                elif len(uses_instr_count[defined_var.name]) == 0:
+                    to_delete_indices.append(
+                        current_vars_def_index[defined_var.name])
+                else:
+                    current_vars_def_index[defined_var.name] = i
+                    uses_instr_count[defined_var.name] = []
+            current_vars_def_index[defined_var.name] = i
+            uses_instr_count[defined_var.name] = []
+        used_vars: set[str]
+        temp: set[IrVar]
+        if isinstance(instructions[i], IrAssignment):
+            temp = get_vars_expr(instructions[i].children[1])
+        elif isinstance(instructions[i], IrTransRetBasic):
+            temp = set()
+            for j in range(len(instructions[i].children)):
+                temp = temp.union(
+                    get_vars_expr(instructions[i].children[j]))
         else:
-            stack.append(child)
-    while stack:
-        node = stack.pop()
-        if isinstance(node, int):
-            continue
-        if isinstance(node, list):
-            for i in range(len(node)):
-                child = node[i]
-                if isinstance(child, IrVar) and child.name == var_name:
-                    node[i] = replacement
-                else:
-                    stack.append(child)
-            continue
-        if isinstance(node, tuple):
-            stack.extend(node)
-            continue
-        if not isinstance(node, IrAst):
-            continue
-        for metadata in node.irMetadata or []:
-            if metadata is None:
+            assert False, f'Unexpected instruction type: {type(instructions[i])}'
+        used_vars = set(var.name for var in temp)
+        for var in used_vars:
+            if var not in current_vars_def_index.keys():
                 continue
-            shape = metadata.shape
-            for i in range(len(shape)):
-                item = shape[i]
-                if isinstance(item, IrVar) and item.name == var_name:
-                    shape[i] = replacement
-                else:
-                    stack.append(item)
-            broadcast = metadata.broadcast
-            for i in range(len(broadcast)):
-                item = broadcast[i]
-                if isinstance(item, IrVar) and item.name == var_name:
-                    broadcast[i] = replacement
-                else:
-                    stack.append(item)
-        children = node.children
-        for i in range(len(children)):
-            child = children[i]
-            if isinstance(child, IrVar) and child.name == var_name:
-                children[i] = replacement
+            if var not in uses_instr_count.keys():
+                uses_instr_count[var] = [i]
             else:
-                stack.append(child)
+                uses_instr_count[var].append(i)
+    
+    for var in current_vars_def_index.keys():
+        if var in uses_instr_count.keys() and len(uses_instr_count[var]) == 1:
+            use_instr_index = uses_instr_count[var][0]
+            replace_var_with_expr(
+                instructions, use_instr_index,
+                current_vars_def_index[var], var)
+            to_delete_indices.append(current_vars_def_index[var])
+        elif (var not in uses_instr_count.keys()
+              or len(uses_instr_count[var]) == 0):
+            to_delete_indices.append(current_vars_def_index[var])
+    
+    return to_delete_indices
+                
 
 
 def inline_subexp_block(block: IrBlock) -> None:
     """private"""
-    instructions: list[IrStatement] = block.children
-    assert all(isinstance(instr, IrStatement) for instr in instructions)
-    i = 0
-    while i < len(instructions):
-        if isinstance(instructions[i], IrAssignment):
-            instrs_using_def_i: list[int] = []
-            this_def = instructions[i].children[0]
-            assert isinstance(this_def, IrVar)
-            this_def_name: str = this_def.name
-            print(f'this_def_name: {this_def_name}')
-            # with open('z_name.txt', 'a') as f:
-            #     f.write(this_def_name + '\n')
-            for j in range(i + 1, len(instructions)):
-                # Until next re-definition of the same variable.
-                if (isinstance(instructions[j], IrAssignment)
-                    and instructions[j].children[0].name == this_def_name):
-                    break
-                instr_j_uses = used_vars(instructions[j])
-                instr_j_uses_names: set[str] = \
-                    set(var.name for var in instr_j_uses)
-                if this_def_name in instr_j_uses_names:
-                    instrs_using_def_i.append(j)
-            if len(instrs_using_def_i) == 0:
-                del instructions[i]
-            elif len(instrs_using_def_i) == 1:
-                def_of_instr_i = instructions[i].children[1]
-                assert isinstance(def_of_instr_i, IrExpression)
-                # print(f'this_def_name: {this_def_name}')
-                # if isinstance(instructions[instrs_using_def_i[0]], IrAssignment):
-                #     print(f'used by assignment to {instructions[instrs_using_def_i[0]].children[0].name}')
-                #     afsjudli
-                replace_var_uses(
-                    this_def_name, def_of_instr_i,
-                    instructions[instrs_using_def_i[0]])
-                del instructions[i]
-            else:
-                i += 1
-        else:
-            i += 1
+    to_delete_indices = indices_to_delete_and_replace_single_use(block)
+    print('to delete indices: ', to_delete_indices)
+    for i in range(len(to_delete_indices) - 1, -1, -1):
+        del block.children[to_delete_indices[i]]
 
 
 def inline_subexp_cfg(cfg: Graph) -> None:
