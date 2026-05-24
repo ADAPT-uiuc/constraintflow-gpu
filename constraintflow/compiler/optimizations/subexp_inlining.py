@@ -16,14 +16,37 @@ from constraintflow.compiler.optimizations.loopInvariantCodeMotion import \
     get_vars_expr
 
 
-def replace_var_with_expr(
+# def replace_var_with_expr(             
+#         instructions: list[IrStatement], use_instr_index: int,
+#         def_instr_index: int, var_name: str) -> None:
+#     if isinstance(instructions[use_instr_index], IrAssignment):
+#         new_expr = replace_all_occurrences_expr(
+#             instructions[use_instr_index].children[1],
+#             {var_name: instructions[def_instr_index].children[1]})
+#         new_children = [instructions[def_instr_index].children[0], new_expr]
+#         instructions[use_instr_index].update_parent_child(new_children)
+#     elif isinstance(
+#         instructions[use_instr_index], IrTransRetBasic):
+#         new_children = []
+#         for j in range(len(instructions[use_instr_index].children)):
+#             new_expr = replace_all_occurrences_expr(
+#             instructions[use_instr_index].children[j],
+#             {var_name: instructions[def_instr_index].children[1]})
+#             new_children.append(new_expr)
+#         instructions[use_instr_index].update_parent_child(new_children)
+#     else:
+#         assert False
+
+
+def replace_var_with_expr(             
         instructions: list[IrStatement], use_instr_index: int,
-        def_instr_index: int, var_name: str) -> None:
+        replace_expr: IrExpression, var: IrVar) -> None:
+    var_name = var.name
     if isinstance(instructions[use_instr_index], IrAssignment):
         new_expr = replace_all_occurrences_expr(
             instructions[use_instr_index].children[1],
-            {var_name: instructions[def_instr_index].children[1]})
-        new_children = [instructions[def_instr_index].children[0], new_expr]
+            {var_name: replace_expr})
+        new_children = [var, new_expr]
         instructions[use_instr_index].update_parent_child(new_children)
     elif isinstance(
         instructions[use_instr_index], IrTransRetBasic):
@@ -31,11 +54,27 @@ def replace_var_with_expr(
         for j in range(len(instructions[use_instr_index].children)):
             new_expr = replace_all_occurrences_expr(
             instructions[use_instr_index].children[j],
-            {var_name: instructions[def_instr_index].children[1]})
+            {var_name: replace_expr})
             new_children.append(new_expr)
         instructions[use_instr_index].update_parent_child(new_children)
     else:
         assert False
+
+
+def recursively_find_def_expr(
+        instructions: list[IrStatement], var: IrVar,
+        current_vars_def_index: dict[str, int]) -> IrExpression:
+    var_name = var.name
+    if var_name not in current_vars_def_index.keys():
+        return var
+    immediate_def_index = current_vars_def_index[var_name]
+    assert isinstance(instructions[immediate_def_index], IrAssignment)
+    immediate_def_expr = instructions[immediate_def_index].children[1]
+    if not isinstance(immediate_def_expr, IrVar):
+        return immediate_def_expr
+    else:
+        return recursively_find_def_expr(
+            instructions, immediate_def_expr, current_vars_def_index)
 
 
 def indices_to_delete_and_replace_single_use(block: IrBlock):
@@ -43,19 +82,28 @@ def indices_to_delete_and_replace_single_use(block: IrBlock):
     current_vars_def_index: dict[str, int] = {}
     uses_instr_count: dict[str, list[int]] = {}
     to_delete_indices: list[int] = []
+    name_to_var: dict[str, IrVar] = {}
     for i in range(len(instructions)):
         if isinstance(instructions[i], IrDel):
             continue
         if isinstance(instructions[i], IrAssignment):
             defined_var = instructions[i].children[0]
+            name_to_var[defined_var.name] = defined_var
+            print('instruction: ', i)
+            print(f'currently defined variable: {defined_var.name}')
+            print(f'current_vars_def_index: {current_vars_def_index}')
+            print(f'uses_instr_count: {uses_instr_count}')
+            print(f'to_delete_indices: {to_delete_indices}')
             assert isinstance(defined_var, IrVar)
             if defined_var.name in current_vars_def_index.keys():
                 if len(uses_instr_count[defined_var.name]) == 1:
                     use_instr_index = uses_instr_count[defined_var.name][0]
+                    bottom_def = recursively_find_def_expr(
+                        instructions, defined_var, current_vars_def_index)
                     replace_var_with_expr(
                         instructions, use_instr_index,
-                        current_vars_def_index[defined_var.name],
-                        defined_var.name)
+                        bottom_def,
+                        defined_var)
                     to_delete_indices.append(
                         current_vars_def_index[defined_var.name])
                     
@@ -90,9 +138,11 @@ def indices_to_delete_and_replace_single_use(block: IrBlock):
     for var in current_vars_def_index.keys():
         if var in uses_instr_count.keys() and len(uses_instr_count[var]) == 1:
             use_instr_index = uses_instr_count[var][0]
+            bottom_def = recursively_find_def_expr(
+                        instructions, name_to_var[var], current_vars_def_index)
             replace_var_with_expr(
                 instructions, use_instr_index,
-                current_vars_def_index[var], var)
+                bottom_def, name_to_var[var])
             to_delete_indices.append(current_vars_def_index[var])
         elif (var not in uses_instr_count.keys()
               or len(uses_instr_count[var]) == 0):
