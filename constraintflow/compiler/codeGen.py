@@ -370,7 +370,7 @@ class CodeGen(irVisitor.IRVisitor):
     
 
     def visitIrListExtract(self, node):
-        return self.visit(node.children[0]) + '[' + self.visit(node.children[1]) + ']'
+        return '(' + self.visit(node.children[0]) + ')[' + self.visit(node.children[1]) + ']'
     
     def visitIrBlockExtract(self, node):
         return self.visit(node.children[0]) + '.blocks[' + self.visit(node.children[1]) + ']'
