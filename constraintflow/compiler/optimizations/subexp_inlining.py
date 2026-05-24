@@ -77,6 +77,17 @@ def recursively_find_def_expr(
             instructions, immediate_def_expr, current_vars_def_index)
 
 
+def get_vars_expr_occurrences(expr) -> list[IrVar]:
+    if isinstance(expr, (int, float, list)):
+        return []
+    if isinstance(expr, IrVar):
+        return [expr]
+    vars: list[IrVar] = []
+    for child in expr.children:
+        vars.extend(get_vars_expr_occurrences(child))
+    return vars
+
+
 def indices_to_delete_and_replace_single_use(block: IrBlock):
     instructions: list[IrStatement] = block.children
     current_vars_def_index: dict[str, int] = {}
@@ -86,18 +97,18 @@ def indices_to_delete_and_replace_single_use(block: IrBlock):
     for i in range(len(instructions)):
         if isinstance(instructions[i], IrDel):
             continue
-        used_vars: set[str]
-        temp: set[IrVar]
+        used_vars: list[str]
+        temp: list[IrVar]
         if isinstance(instructions[i], IrAssignment):
-            temp = get_vars_expr(instructions[i].children[1])
+            temp = get_vars_expr_occurrences(instructions[i].children[1])
         elif isinstance(instructions[i], IrTransRetBasic):
-            temp = set()
+            temp = []
             for j in range(len(instructions[i].children)):
-                temp = temp.union(
-                    get_vars_expr(instructions[i].children[j]))
+                temp.extend(
+                    get_vars_expr_occurrences(instructions[i].children[j]))
         else:
             assert False, f'Unexpected instruction type: {type(instructions[i])}'
-        used_vars = set(var.name for var in temp)
+        used_vars = [var.name for var in temp]
         for var in used_vars:
             if var not in current_vars_def_index.keys():
                 continue
@@ -108,6 +119,7 @@ def indices_to_delete_and_replace_single_use(block: IrBlock):
         if isinstance(instructions[i], IrAssignment):
             defined_var = instructions[i].children[0]
             name_to_var[defined_var.name] = defined_var
+            print(f'Def of {defined_var.name}')
             assert isinstance(defined_var, IrVar)
             if defined_var.name in current_vars_def_index.keys():
                 if len(uses_instr_count[defined_var.name]) == 1:
