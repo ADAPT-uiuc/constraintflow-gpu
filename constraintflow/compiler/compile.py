@@ -7,7 +7,7 @@ from constraintflow.ast_cflow import astTC
 from constraintflow.compiler import convertToIr as c2r
 from constraintflow.compiler import representations
 from constraintflow.compiler import codeGen
-from constraintflow.compiler.optimizations import tensor_to_block
+# from constraintflow.compiler.optimizations import tensor_to_block
 from constraintflow.compiler.optimizations import polyOpt
 from constraintflow.compiler.optimizations import symexpCount
 from constraintflow.compiler.optimizations import loopInvariantCodeMotion

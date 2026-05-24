@@ -1,0 +1,32 @@
+[
+    {
+      "program": "reuse.cf",
+      "network": "n10",
+      "dataset": "mnist",
+      "eps": 0.005,
+      "batch_size": 100,
+      "status": "ok",
+      "output_dir": "/home/avaljot2/constraintflow-gpu/results/experiments/20260522T000131Z/reuse_n10",
+      "error": "",
+      "wall_time_s": 2378.7534573040903,
+      "block_sparse_s": 1.4484772384166718,
+      "block_sparse_calls": 80,
+      "csr_encode_s": 204.43654849752784,
+      "csr_mul_s": 15.142382821068168,
+      "csr_mul_calls": 8000,
+      "coo_encode_s": 211.88969259150326,
+      "coo_mul_s": 68.44961421750486,
+      "coo_mul_calls": 8000,
+      "bsr_fixed_encode_s": 165.61711001768708,
+      "bsr_fixed_mul_s": 813.2359747886658,
+      "bsr_fixed_mul_calls": 8000,
+      "bsr_dynamic_encode_s": 157.11803056299686,
+      "bsr_dynamic_mul_s": 595.0054201669991,
+      "bsr_dynamic_mul_calls": 8000,
+      "verify_s": 68.74652604199946,
+      "csr_mul_vs_block": 10.454001222428792,
+      "coo_mul_vs_block": 47.256258090963875,
+      "bsr_fixed_mul_vs_block": 561.442011803798,
+      "bsr_dynamic_mul_vs_block": 410.77995869469004
+    }
+  ]

@@ -1,0 +1,32 @@
+[
+    {
+      "program": "zid.cf",
+      "network": "n10",
+      "dataset": "mnist",
+      "eps": 0.005,
+      "batch_size": 100,
+      "status": "ok",
+      "output_dir": "/home/avaljot2/constraintflow-gpu/results/experiments/20260521T223928Z/zid_n10",
+      "error": "",
+      "wall_time_s": 3445.5730576645583,
+      "block_sparse_s": 0.4248475134372711,
+      "block_sparse_calls": 128,
+      "csr_encode_s": 442.76158682256937,
+      "csr_mul_s": 7.629231845960021,
+      "csr_mul_calls": 12800,
+      "coo_encode_s": 556.0551388468593,
+      "coo_mul_s": 15.018582798540592,
+      "coo_mul_calls": 12800,
+      "bsr_fixed_encode_s": 769.7710103373975,
+      "bsr_fixed_mul_s": 466.4473549500108,
+      "bsr_fixed_mul_calls": 12800,
+      "bsr_dynamic_encode_s": 516.3779773768038,
+      "bsr_dynamic_mul_s": 89.9006297942251,
+      "bsr_dynamic_mul_calls": 12800,
+      "verify_s": 255.692971104756,
+      "csr_mul_vs_block": 17.957576788516334,
+      "coo_mul_vs_block": 35.35052536151442,
+      "bsr_fixed_mul_vs_block": 1097.9171118978006,
+      "bsr_dynamic_mul_vs_block": 211.60681644780053
+    }
+  ]

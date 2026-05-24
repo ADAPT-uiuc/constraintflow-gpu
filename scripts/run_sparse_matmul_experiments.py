@@ -65,7 +65,7 @@ NETWORKS: dict[str, dict[str, Any]] = {
     "n14": {"eps": 0.1, "batch_size": 100, "dataset": "mnist"},
     "n22": {"eps": 4e-5, "batch_size": 100, "dataset": "cifar"},
     "n30": {"eps": 5e-4, "batch_size": 10, "dataset": "cifar"},
-    "n32": {"eps": 0.002, "batch_size": 10, "dataset": "cifar"},
+    # "n32": {"eps": 0.002, "batch_size": 10, "dataset": "cifar"},
 }
 
 TIMING_PREFIX = "CONSTRAINTFLOW_TIMING_JSON="
