@@ -46,7 +46,7 @@ def replace_var_with_expr(
         new_expr = replace_all_occurrences_expr(
             instructions[use_instr_index].children[1],
             {var_name: replace_expr})
-        new_children = [var, new_expr]
+        new_children = [instructions[use_instr_index].children[0], new_expr]
         instructions[use_instr_index].update_parent_child(new_children)
     elif isinstance(
         instructions[use_instr_index], IrTransRetBasic):
@@ -86,35 +86,6 @@ def indices_to_delete_and_replace_single_use(block: IrBlock):
     for i in range(len(instructions)):
         if isinstance(instructions[i], IrDel):
             continue
-        if isinstance(instructions[i], IrAssignment):
-            defined_var = instructions[i].children[0]
-            name_to_var[defined_var.name] = defined_var
-            print('instruction: ', i)
-            print(f'currently defined variable: {defined_var.name}')
-            print(f'current_vars_def_index: {current_vars_def_index}')
-            print(f'uses_instr_count: {uses_instr_count}')
-            print(f'to_delete_indices: {to_delete_indices}')
-            assert isinstance(defined_var, IrVar)
-            if defined_var.name in current_vars_def_index.keys():
-                if len(uses_instr_count[defined_var.name]) == 1:
-                    use_instr_index = uses_instr_count[defined_var.name][0]
-                    bottom_def = recursively_find_def_expr(
-                        instructions, defined_var, current_vars_def_index)
-                    replace_var_with_expr(
-                        instructions, use_instr_index,
-                        bottom_def,
-                        defined_var)
-                    to_delete_indices.append(
-                        current_vars_def_index[defined_var.name])
-                    
-                elif len(uses_instr_count[defined_var.name]) == 0:
-                    to_delete_indices.append(
-                        current_vars_def_index[defined_var.name])
-                else:
-                    current_vars_def_index[defined_var.name] = i
-                    uses_instr_count[defined_var.name] = []
-            current_vars_def_index[defined_var.name] = i
-            uses_instr_count[defined_var.name] = []
         used_vars: set[str]
         temp: set[IrVar]
         if isinstance(instructions[i], IrAssignment):
@@ -134,6 +105,27 @@ def indices_to_delete_and_replace_single_use(block: IrBlock):
                 uses_instr_count[var] = [i]
             else:
                 uses_instr_count[var].append(i)
+        if isinstance(instructions[i], IrAssignment):
+            defined_var = instructions[i].children[0]
+            name_to_var[defined_var.name] = defined_var
+            assert isinstance(defined_var, IrVar)
+            if defined_var.name in current_vars_def_index.keys():
+                if len(uses_instr_count[defined_var.name]) == 1:
+                    use_instr_index = uses_instr_count[defined_var.name][0]
+                    bottom_def = recursively_find_def_expr(
+                        instructions, defined_var, current_vars_def_index)
+                    replace_var_with_expr(
+                        instructions, use_instr_index,
+                        bottom_def,
+                        defined_var)
+                    to_delete_indices.append(
+                        current_vars_def_index[defined_var.name])
+                    
+                elif len(uses_instr_count[defined_var.name]) == 0:
+                    to_delete_indices.append(
+                        current_vars_def_index[defined_var.name])
+            current_vars_def_index[defined_var.name] = i
+            uses_instr_count[defined_var.name] = []
     
     for var in current_vars_def_index.keys():
         if var in uses_instr_count.keys() and len(uses_instr_count[var]) == 1:
@@ -154,10 +146,12 @@ def indices_to_delete_and_replace_single_use(block: IrBlock):
 
 def inline_subexp_block(block: IrBlock) -> None:
     """private"""
-    to_delete_indices = indices_to_delete_and_replace_single_use(block)
-    print('to delete indices: ', to_delete_indices)
-    for i in range(len(to_delete_indices) - 1, -1, -1):
-        del block.children[to_delete_indices[i]]
+    while True:
+        to_delete_indices = indices_to_delete_and_replace_single_use(block)
+        if len(to_delete_indices) == 0:
+            break
+        for i in sorted(set(to_delete_indices), reverse=True):
+            del block.children[i]
 
 
 def inline_subexp_cfg(cfg: Graph) -> None:

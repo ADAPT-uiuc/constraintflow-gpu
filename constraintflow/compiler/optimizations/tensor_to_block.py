@@ -681,7 +681,7 @@ def tensor_to_block_block(block, layer_index, ir_list = None, while_iteration=No
 def replace_all_occurrences_expr(expr, var_map):
     if isinstance(expr, IrVar) and expr.name in var_map.keys(): 
         return var_map[expr.name]
-    if isinstance(expr, int):
+    if isinstance(expr, (int, float, list)):
         return expr
     for i in range(len(expr.children)):
         new_child = replace_all_occurrences_expr(expr.children[i], var_map)
