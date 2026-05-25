@@ -31,6 +31,7 @@ class CodeGen(irVisitor.IRVisitor):
         self.write("from constraintflow.lib.symexp import *")
         self.write("from transformers import *")
         self.write("\n")
+        self.write("torch.cuda.reset_peak_memory_stats()")
         self.write("def run(network_file, batch_size, eps, dataset_X, dataset_y, dataset, train, print_intermediate_results, no_sparsity):")
         
         self.indent += 1
@@ -217,7 +218,7 @@ class CodeGen(irVisitor.IRVisitor):
                     self.write('while(' + str(cond) + '):')
                     self.indent += 1
                     self.write('while_iteration += 1')
-                    self.write('print(\'while_iteration\', while_iteration)')
+                    # self.write('print(\'while_iteration\', while_iteration)')
                     self.visit(node.inner_jump[1])
                     self.indent -= 1
                     self.write('json_obj = {"num_iterations": while_iteration}')
@@ -863,7 +864,9 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrFlow(self, node):
         self.indent += 1
         self.write('flow = Flow(abs_elem, ' + str(node.transformer) + '(), network, print_intermediate_results, no_sparsity)')
-        self.write('return flow.flow()')
+        self.write('res = flow.flow()')
+        self.write('print("Peak memory usage:", torch.cuda.max_memory_allocated() / 1024**2, "MB")')
+        self.write('return res')
         self.indent -= 1
 
     def visitIrObjectLookup(self, node):
