@@ -119,7 +119,6 @@ def indices_to_delete_and_replace_single_use(block: IrBlock):
         if isinstance(instructions[i], IrAssignment):
             defined_var = instructions[i].children[0]
             name_to_var[defined_var.name] = defined_var
-            print(f'Def of {defined_var.name}')
             assert isinstance(defined_var, IrVar)
             if defined_var.name in current_vars_def_index.keys():
                 if len(uses_instr_count[defined_var.name]) == 1:

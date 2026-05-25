@@ -109,13 +109,10 @@ def get_live_nodes(cfg, layer_index):
 
 
 def convert_to_ir_ttb(expr, layer_index, while_iteration):
-    # targets = ()
     targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop, IrAddDimension, IrRemoveDimension)
     if not isinstance(expr, targets):
         return expr, []
 
-    # if isinstance(expr, IrBinaryOp) and expr.op in ('max', 'min'):
-    #     return expr, []
     if isinstance(expr, IrUnaryOp) and expr.op in ('get_shape_1', 'get_shape_0'):
         return expr, []
     binary_instance = expr.ttb_counter
@@ -132,7 +129,6 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         else:
             filename = f"jit_unary/unary_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrMult) or isinstance(expr, IrBinaryOp):
-        # print(expr)
         filename = f"jit_binary/binary_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrInnerProduct):
         filename = f"jit_matmul/matmul_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
@@ -163,7 +159,6 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
     
     with open(filename, 'r') as f:
         json_list = json.load(f)
-    print(binary_instance)
     if isinstance(expr, IrTernary):
         cond = expr.children[0]
         lhs = expr.children[1]
@@ -768,7 +763,6 @@ def unroll_while(cfg, layer_index):
             exit_node = cfg.get_block_id(block.jump[1])
             while_number = first_while_block.while_number
             filename = f"jit_while/while_iterations_layer_{layer_index}_while_{while_number}.json"
-            print(f"Reading while iteration count from {filename}")
             with open(filename, 'r') as f:
                 json_obj = json.load(f)
                 num_iterations = json_obj["num_iterations"]
@@ -804,7 +798,6 @@ def tensor_to_block(ir):
             for j, layer_index in enumerate(layer_indices):
                 cfg = deepcopy_cfg_with_fresh_identifiers(transformerIr.cfg)
                 unroll_while(cfg, layer_index)
-                print(layer_index, 'after unroll while')
                 new_cfgs[layer_index] = cfg
             
             transformerIr.layerwise_cfgs = new_cfgs
