@@ -14,7 +14,7 @@ class Llist:
         # Is this understanding correct:
         # initial_shape is the prefixing dimensions for structural/shape
         # convenience, like batching dimensions?
-        self.initial_shape = initial_shape
+        self.initial_shape: list[int] = initial_shape
         self.start = start
         self.end = end
         # llist type: list[int]
@@ -236,9 +236,9 @@ class Llist:
         self.llist_flag = True
         return True
                 
-    def dot(self, mats, total_size):
+    def dot(self, mats: SparseTensor, total_size: int):
         if not isinstance(mats, list):
-            mats = [mats]
+            mats: list[SparseTensor] = [mats]
         else:
             assert(False)
         initial_shape = self.initial_shape
