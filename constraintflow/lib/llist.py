@@ -1,11 +1,13 @@
 import torch 
 import math
-
+from typing import Any
 from constraintflow.lib.polyexp import *
 from constraintflow.lib.network import LayerType
 from constraintflow.gbcsr.sparse_block import DenseBlock, KernelBlock, ConstBlock, DiagonalBlock
 from constraintflow.gbcsr.sparse_tensor import SparseTensor
 from constraintflow.lib.globals import dummy_mode
+
+
 class Llist:
     """List of layers."""
     def __init__(self, network, initial_shape, start=None, end=None, llist=None):
@@ -126,6 +128,7 @@ class Llist:
         self.coalesce()
         # print(self.start, self.end)
         if not self.llist_flag:
+            json_list: list[dict[str, Any]] = []
             # type of ret: list[gbscr.sparse_block.SparseBlock]
             ret = []
             start_indices = []
@@ -134,14 +137,37 @@ class Llist:
                 if elem == 'weight' or elem == 'w':
                     if self.network[k].type == LayerType.Linear:
                         block = DummyBlock(None, torch.tensor(self.network[k].weight.shape))
+                        dense_idx: int = len(json_list)
+                        json_obj: dict[str, Any] = {
+                            'method': 'dense_block_from_kth_layer_weight',
+                            'input': k, # use the weight of the k-th layer
+                            'output': dense_idx
+                        }
+                        json_list.append(json_obj)
                         if not self.network[k].last_layer:
+                            unsquees_idcs: list[int] = []
                             for i in range(len(self.initial_shape)):
                                 block = block.unsqueeze(0)
+                                unsquees_idcs.append(len(json_list))
+                                json_obj: dict[str, Any] = {
+                                    'method': 'block_squeeze',
+                                    'input': 'json_list_' + str(dense_idx),
+                                    'index': 0,
+                                    'output': unsquees_idcs[-1]
+                                }
+                                json_list.append(json_obj)
                             repeat_dims = [batch_size]
                             for i in range(len(block.total_shape)-1):
                                 repeat_dims.append(1)
                             repeat_dims = torch.tensor(repeat_dims)
                             block = block.repeat(repeat_dims)
+                            json_obj: dict[str, Any] = {
+                                'method': 'repeat',
+                                'input': 'json_list_' + str(unsquees_idcs[-1]),
+                                'repeat_dims': repeat_dims.tolist(),
+                                'output': len(json_list)
+                            }
+                            json_list.append(json_obj)
                         ret.append(block)
                         start_index = torch.tensor([0]*len(self.initial_shape) + [temp, 0])
                         start_indices.append(start_index)

@@ -975,6 +975,19 @@ class IrGetSubBlockCustomRange(IrExpression):
         self.tensor = tensor
         self.update_parent_child([inputIr])
 
+
+class IrDenseBlockFromKthLayerWeight(IrExpression):
+    """
+    IR node for JIT json_obj: dense_block_from_kth_layer_weight
+    Represents: Construction of a `DenseBlock` from the weight of the k-th
+        layer of the currently verified neural network.
+    """
+    def __init__(self, inputIr: IrExpression, k: int):
+        super().__init__()
+        self.k = k
+        self.update_parent_child([inputIr])
+
+
 class IrMult(IrExpression):
     def __init__(self, lhsIr, rhsIr, op):
         super().__init__()
