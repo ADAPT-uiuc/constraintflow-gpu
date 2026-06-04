@@ -851,6 +851,7 @@ Blocks Types: "
                 block_list_in_json_idx = len(json_list)
                 json_list.append(json_obj)
             elif block_overlap([self.start_indices[i], self.end_indices[i]], new_index):
+                raise NotImplementedError
                 intersection_start_indices, intersection_end_indices = intersection_block([self.start_indices[i], self.end_indices[i]], new_index)
                 res_start_indices.append(intersection_start_indices)
                 res_end_indices.append(intersection_end_indices)
@@ -877,11 +878,29 @@ Blocks Types: "
         end_time = time.perf_counter()
         get_sparse_range_time.update_total_time(end_time-start_time)
         ret_st = SparseTensor(res_start_indices, blocks, self.dims, self.total_size, res_end_indices, type=self.type, dense_const=self.dense_const)
-        return ret_st
+        json_obj: dict[str, Any] = {
+            'method': 'SparseTensor',
+            'start_indices': [tensor_to_list(x) for x in res_start_indices],
+            'blocks': 'json_list_' + str(block_list_in_json_idx),
+            'dims': self.dims,
+            'total_size': self.total_size.tolist(),
+            'end_indices': [tensor_to_list(x) for x in res_end_indices],
+            'type': self.type.__name__,
+            'dense_const': self.dense_const,
+            'output': len(json_list)
+        }
+        json_list.append(json_obj)
+        return ret_st if not dummy_mode else (ret_st, len(json_list)-1)
     
 
 
-    def reduce_size(self, start_index, end_index, total_size):
+    def reduce_size(self, start_index, end_index, total_size, json_list=None, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None, lhs_index=-1):
+        owns_capture = json_list is None and dummy_mode
+        if json_list is None:
+            json_list = []
+        if dummy_mode:
+            assert lhs_index != -1
+            assert not owns_capture
         start_time = time.perf_counter()
         start_indices = []
         end_indices = []
@@ -891,7 +910,26 @@ Blocks Types: "
             end_indices.append((self.end_indices[i]-start_index))
         end_time = time.perf_counter()
         reduce_size_time.update_total_time(end_time-start_time)
-        return SparseTensor(start_indices, self.blocks, self.dims, total_size, end_indices, type=self.type, dense_const=self.dense_const) 
+        ret_st = SparseTensor(start_indices, self.blocks, self.dims, total_size, end_indices, type=self.type, dense_const=self.dense_const)
+        json_obj: dict[str, Any] = {
+            'method': 'get_sparse_tensor_blocks',
+            'input': 'json_list_' + str(lhs_index),
+            'output': len(json_list)
+        }
+        json_list.append(json_obj)
+        json_obj: dict[str, Any] = {
+            'method': 'SparseTensor',
+            'start_indices': [tensor_to_list(x) for x in start_indices],
+            'blocks': 'json_list_' + str(len(json_list) - 1),
+            'dims': self.dims,
+            'total_size': total_size.tolist(),
+            'end_indices': [tensor_to_list(x) for x in end_indices],
+            'type': self.type.__name__,
+            'dense_const': self.dense_const,
+            'output': len(json_list)
+        }
+        json_list.append(json_obj)
+        return ret_st if not dummy_mode else (ret_st, len(json_list) - 1)
 
     def increase_size(self, start_index, new_total_size):
         assert((self.total_size + start_index <= new_total_size).all())
