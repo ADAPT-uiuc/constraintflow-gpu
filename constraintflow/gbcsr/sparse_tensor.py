@@ -1,5 +1,5 @@
 import builtins
-
+from typing import Any
 import torch
 import math
 import copy
@@ -257,7 +257,7 @@ def intersection_block(block_1, block_2):
     block_2_end = block_2[1]
     res_start = torch.max(block_1_start, block_2_start)
     res_end = torch.min(block_1_end, block_2_end)
-
+    # print(res_start, res_end)
     
     return res_start, res_end
 
@@ -808,18 +808,48 @@ Blocks Types: "
         #     raise Exception('No Block Found')
         return res, res_start_indices, res_end_indices
     
-    def get_sparse_custom_range(self, start_index, end_index):
+    def get_sparse_custom_range(self, start_index, end_index, json_list=None, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None, lhs_index=-1):
+        owns_capture = json_list is None and dummy_mode
+        if json_list is None:
+            json_list = []
+        if dummy_mode:
+            assert lhs_index != -1
+
         start_time = time.perf_counter()
         new_index = [start_index, end_index]
         blocks = []
         res_start_indices = []
         res_end_indices = []
+        block_list_in_json_idx: int = len(json_list)
+        json_obj: dict[str, Any] = {
+            'method': 'initialize',
+            'name': 'ret_blocks',
+            'value': '[]',
+            'output': block_list_in_json_idx
+        }
+        json_list.append(json_obj)
         for i in range(self.num_blocks):
             if contained([self.start_indices[i], self.end_indices[i]], new_index):
                 intersection_start_indices, intersection_end_indices = intersection_block([self.start_indices[i], self.end_indices[i]], new_index)
                 res_start_indices.append(intersection_start_indices)
                 res_end_indices.append(intersection_end_indices)
                 blocks.append(self.blocks[i])
+                block_i_idx = len(json_list)
+                json_obj: dict[str, Any] = {
+                    'method': 'extract_block',
+                    'input': 'json_list_' + str(lhs_index),
+                    'index': i,
+                    'output': block_i_idx
+                }
+                json_list.append(json_obj)
+                json_obj: dict[str, Any] = {
+                    'method': 'append_list',
+                    'list': 'json_list_' + str(block_list_in_json_idx),
+                    'value': 'json_list_' + str(block_i_idx),
+                    'output': len(json_list)
+                }
+                block_list_in_json_idx = len(json_list)
+                json_list.append(json_obj)
             elif block_overlap([self.start_indices[i], self.end_indices[i]], new_index):
                 intersection_start_indices, intersection_end_indices = intersection_block([self.start_indices[i], self.end_indices[i]], new_index)
                 res_start_indices.append(intersection_start_indices)
@@ -827,10 +857,27 @@ Blocks Types: "
                 src_start_indices = intersection_start_indices - self.start_indices[i]
                 src_end_indices = intersection_end_indices - self.start_indices[i]
                 src_block = self.blocks[i].get_dense()[tuple(get_slice(src_start_indices, src_end_indices))]
+                block_i_idx = len(json_list)
+                json_obj: dict[str, Any] = {
+                    'method': 'extract_block',
+                    'input': 'json_list_' + str(lhs_index),
+                    'index': i,
+                    'output': block_i_idx
+                }
+                json_list.append(json_obj)
+                dense_idx = len(json_list)
+                json_obj: dict[str, Any] = {
+                    'method': 'block_get_dense',
+                    'input': 'json_list_' + str(block_i_idx),
+                    'output': dense_idx
+                }
+                json_list.append(json_obj)
+                src_block_idx = len(json_list)
                 blocks.append(DenseBlock(src_block))
         end_time = time.perf_counter()
         get_sparse_range_time.update_total_time(end_time-start_time)
-        return SparseTensor(res_start_indices, blocks, self.dims, self.total_size, res_end_indices, type=self.type, dense_const=self.dense_const)
+        ret_st = SparseTensor(res_start_indices, blocks, self.dims, self.total_size, res_end_indices, type=self.type, dense_const=self.dense_const)
+        return ret_st
     
 
 

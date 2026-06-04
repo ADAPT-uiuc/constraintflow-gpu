@@ -1,3 +1,5 @@
+from typing import Any
+
 import torch
 import copy
 from constraintflow.lib.polyexp import *
@@ -49,16 +51,31 @@ class Abs_elem_sparse:
         return self.network[l].end
         
 
-    def get_elem(self, key, llist):
-        """Gives certifier-specific information about the live neurons."""
+    def get_elem(self, key, llist, d_field_jit_idx_map: dict[str, Any]={}, json_list=None, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None):
+        """
+        Gives certifier-specific information about the live neurons.
+
+        `d_field_jit_idx_map`: This is to provide a way to refer to the
+        elements in self.d in the JIT json. It should be constructed and
+        passed in by `Flow.flow`. It is structured like this:
+        - str (name of `self.d` field):
+            + 'llist' |-> the identifier for the corresponding torch.Tensor
+                or bool in the JIT json.
+            + 'l', 'u', ... |->  the identifier in jit json corresponding to
+                the block list in `self.d[key]: SparseTensor`.
+        """
         start_time = time.time()
         llist = self.filter_non_live(llist)
         llist_compressed = torch.nonzero(self.d['llist']).flatten().tolist()
+        owns_capture = json_list is None and dummy_mode
+        if json_list is None:
+            json_list = []
         if llist.llist_flag:
             if self.types[key] in ['int', 'float', 'Int', 'Float', 'bool', 'Bool']:
                 start_indices = []
                 end_indices = []
                 blocks = []
+                val_const_idx: int = -1
                 if llist_compressed == llist.llist:
                     start_indices = self.d[key].start_indices
                     end_indices = self.d[key].end_indices
@@ -66,11 +83,31 @@ class Abs_elem_sparse:
                     if 0 in llist.llist:
                         total_size = torch.tensor([self.batch_size, self.network[max(llist.llist)].end])
                         val_const = SparseTensor(start_indices, blocks, self.d[key].dims, total_size, end_indices, self.d[key].type, self.d[key].dense_const)
+                        print(type(self.d[key].dims))
+                        val_const_idx = len(json_list)
+                        json_obj: dict[str, Any] = {
+                            'method': 'SparseTensor',
+                            'start_indices': [start_idx.tolist() for start_idx in start_indices],
+                            'blocks': 'json_list_' + str(
+                                d_field_jit_idx_map[key]
+                                if key in d_field_jit_idx_map else None),
+                            'dims': self.d[key].dims,
+                            'end_indices': [end_idx.tolist() for end_idx in end_indices],
+                            'type': self.d[key].type.__name__,
+                            'dense_const': self.d[key].dense_const,
+                            'output': val_const_idx
+                        }
+                        json_list.append(json_obj)
                 else:
                     for l in llist.llist:
                         start_index = torch.tensor([0, llist.network[l].start])
                         end_index = torch.tensor([self.batch_size, llist.network[l].end])
-                        res = self.d[key].get_sparse_custom_range(start_index, end_index)
+                        res = self.d[key].get_sparse_custom_range(
+                            start_index, end_index,
+                            json_list=json_list, layer_index=layer_index,
+                            counter=counter, inside_while=inside_while, while_number=while_number,
+                            while_iteration=while_iteration,
+                            lhs_index=d_field_jit_idx_map[key] if key in d_field_jit_idx_map else -1)
                         start_indices += res.start_indices
                         end_indices += res.end_indices
                         blocks += res.blocks
