@@ -129,7 +129,7 @@ class Llist:
         # print(self.start, self.end)
         owns_capture = (json_list is None) and dummy_mode
         if not self.llist_flag:
-            if json_list is None:
+            if owns_capture:
                 json_list = []
             # type of ret: list[gbscr.sparse_block.SparseBlock]
             json_obj_representing_ret_list: dict[str, Any] = {
@@ -223,7 +223,7 @@ class Llist:
                         if self.network.no_sparsity:
                             dense_idx: int = len(json_list)
                             json_obj: dict[str, Any] = {
-                                'method': 'kernel_get_dense',
+                                'method': 'block_get_dense',
                                 'block': 'json_list_' + str(kernel_idx),
                                 'output': dense_idx
                             }
