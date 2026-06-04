@@ -106,7 +106,7 @@ class SparseBlock:
         if isinstance(new_block, torch.Tensor):
             new_block = new_block.clone()
         return self.create_similar(new_block)
-    
+
     def get_dense(self):
         raise Exception(f'Not implemented for {type(self)}')
     
@@ -269,7 +269,7 @@ class SparseBlock:
         res = self.create_similar(block=new_block)
         clamp_sparse_block_expense.update_total_time(time.perf_counter() - start_time)
         return res
-    
+
     def type(self):
         if isinstance(self, DiagonalBlock):
             return 'Diagonal'
@@ -553,7 +553,7 @@ class KernelBlock(SparseBlock):
             ky = self.ky
             num_kernels = self.num_kernels
             num_channels = self.num_channels
-            batch_size = sp_block.batch_size
+            batch_size = int(sp_block.batch_size)
             
             start_op_time = time.perf_counter()
             x = sp_block.block.view(batch_size, num_channels, ix, iy)
@@ -641,7 +641,7 @@ class KernelBlock(SparseBlock):
             ix = self.ix
             iy = self.iy
             num_channels = self.num_channels
-            batch_size = sp_block.batch_size
+            batch_size = int(sp_block.batch_size)
             
             start_op_time = time.perf_counter()
             input_tensor = sp_block.block.reshape(batch_size, num_channels, ix, iy)
@@ -983,7 +983,7 @@ class PatchesBlock(SparseBlock):
             ky = self.ky
             num_kernels = self.num_kernels
             num_channels = self.num_channels
-            batch_size = sp_block.batch_size
+            batch_size = int(sp_block.batch_size)
             start_op_time = time.perf_counter()
             x = sp_block.block.view(batch_size, num_channels, ix, iy)
             # if baseline_gpu_mode:
@@ -1022,7 +1022,7 @@ class PatchesBlock(SparseBlock):
             ky = self.ky
             num_channels = self.num_channels
             num_kernels = self.num_kernels
-            batch_size = sp_block.batch_size
+            batch_size = int(sp_block.batch_size)
 
             start_op_time = time.perf_counter()
             x = sp_block.block.view(batch_size, num_channels, ix, iy)
@@ -1512,13 +1512,27 @@ class DummyBlock():
             raise ValueError(f'Unknown DummyBlock block_type {block_type!r}')
 
     def _is_const_operand(self, sp_block):
-        return isinstance(sp_block, ConstBlock)
+        return sp_block.block_type == 'C'
 
     def binary_sparse_block(self, sp_block, op, json_list=None, lhs_index=None, rhs_index=None):
         if self._is_const_operand(sp_block):
             if sp_block.block == identity_element(op):
+                if json_list is not None and lhs_index is not None:
+                    json_obj = {
+                        "method": "noop",
+                        "input": "json_list_" + str(lhs_index),
+                        "output": len(json_list),
+                    }
+                    json_list.append(json_obj)
                 return self
             elif sp_block.block == annihilator_element(op):
+                if json_list is not None and rhs_index is not None:
+                    json_obj = {
+                        "method": "noop",
+                        "input": "json_list_" + str(rhs_index),
+                        "output": len(json_list),
+                    }
+                    json_list.append(json_obj)
                 return sp_block
             if op(0, sp_block.block) in [0, False]:
                 json_obj = {
@@ -1911,6 +1925,7 @@ class DummyBlock():
                     "shape": list(self.block.shape),
                     "output": len(json_list),
                 })
+                rhs_index = len(json_list) - 1
                 json_list.append({
                     "method": "torch_binary",
                     "lhs": "json_list_" + str(lhs_index),
@@ -1945,10 +1960,28 @@ class DummyBlock():
                 block = unary_operation(sp_block.block, binary_to_identity_unary(op))
                 res = sp_block.create_similar(block, json_list=json_list, template_index=len(json_list) - 1)
                 return res
+            if json_list is not None and rhs_index is not None:
+                json_list.append({
+                    "method": "noop",
+                    "input": "json_list_" + str(rhs_index),
+                    "output": len(json_list),
+                })
             return sp_block
         if self.block == annihilator_element(op):
+            if json_list is not None and lhs_index is not None:
+                json_list.append({
+                    "method": "noop",
+                    "input": "json_list_" + str(lhs_index),
+                    "output": len(json_list),
+                })
             return self
         if self.block == 0 and op == operator.truediv:
+            if json_list is not None and lhs_index is not None:
+                json_list.append({
+                    "method": "noop",
+                    "input": "json_list_" + str(lhs_index),
+                    "output": len(json_list),
+                })
             return self
         if op != operator.truediv and op(self.block, 0) in [0, False]:
 
@@ -1994,6 +2027,11 @@ class DummyBlock():
         json_list.append(json_obj)
         return self.block, len(json_list) - 1
 
+
+
+    def get_dense(self):
+        # DUSH: On block
+        return self.block.expand(*self.total_shape)
     def get_dense_repeat_block(self, json_list=None, index=None):
         json_obj = {
             "method": "sparse_block_extract",
@@ -2001,7 +2039,14 @@ class DummyBlock():
             "output": len(json_list),
         }
         json_list.append(json_obj)
-        return self.block, len(json_list) - 1
+        json_obj = {
+            "method": "torch_expand",
+            "input": "json_list_" + str(len(json_list) - 1),
+            "shape": self.total_shape.tolist(),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        return self.block.expand(*self.total_shape), len(json_list) - 1
 
     def get_dense_const_block(self, json_list=None, index=None):
         json_obj = {
@@ -2123,9 +2168,29 @@ class DummyBlock():
         curr_size = num_kernels*ox*oy
         eye = torch.eye(num_kernels*ox*oy).unsqueeze(0).reshape(curr_size, num_kernels, ox, oy)
         json_obj = {
+            "method": "torch_eye",
+            "size": num_kernels*ox*oy,
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        json_obj = {
+            "method": "torch_unsqueeze",
+            "input": "json_list_" + str(len(json_list) - 1),
+            "index": 0,
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        json_obj = {
+            "method": "torch_reshape",
+            "input": "json_list_" + str(len(json_list) - 1),
+            "shape": (curr_size, num_kernels, ox, oy),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        json_obj = {
             "method": "F.conv_transpose2d",
-            "input": eye,
-            "weight": "json_list_" + str(len(json_list) - 1),
+            "input": "json_list_" + str(len(json_list) - 1),
+            "weight": "json_list_" + str(len(json_list) - 4),
             "stride": (sx, sy),
             "padding": (px, py),
             "output_padding": (new_px, new_py),
@@ -2143,7 +2208,7 @@ class DummyBlock():
         return res, len(json_list) - 1
     
     def get_dense_patches_block(self, json_list=None, index=None):
-        batch_size = self.total_shape[0]
+        batch_size = int(self.total_shape[0])
         output_channel, output_x, output_y = self.num_kernels, self.ox, self.oy
         input_channel, kernel_x, kernel_y = self.num_channels, self.kx, self.ky
         input_x, input_y = self.ix, self.iy
@@ -2179,33 +2244,35 @@ class DummyBlock():
             json_list.append(json_obj)
             pieces = pieces.expand(batch_size, *pieces.shape[1:])
         
+        pieces_current_index = len(json_list) - 1
         json_obj = {
             "method": "torch_zeros",
             "size": (batch_size, output_channel, output_x, output_y, input_channel, (input_x + padding[2] + padding[3]) * (input_y + padding[0] + padding[1])),
-            "device": pieces.device,
-            "dtype": pieces.dtype,
+            "device": "json_list_" + str(pieces_current_index) + ".device",
+            "dtype": "json_list_" + str(pieces_current_index) + ".dtype",
             "output": len(json_list),
         }
         json_list.append(json_obj)
+        A_matrix_base_index = len(json_list) - 1
         A_matrix = torch.zeros(batch_size, output_channel, output_x, output_y, input_channel, (input_x + padding[2] + padding[3]) * (input_y + padding[0] + padding[1]), device=pieces.device, dtype=pieces.dtype)
         json_obj = {
             "method": "torch_stride",
-            "input": "json_list_" + str(len(json_list) - 1),
+            "input": "json_list_" + str(A_matrix_base_index),
             "output": len(json_list),
         }
         json_list.append(json_obj)
-        A_matrix_index = len(json_list) - 1
 
         
         orig_stride = A_matrix.stride()
         json_obj = {
             "method": "torch_as_strided",
-            "input": "json_list_" + str(len(json_list) - 1),
+            "input": "json_list_" + str(A_matrix_base_index),
             "size": [batch_size, output_channel, output_x, output_y, output_x, output_y, input_channel, kernel_x, kernel_y],
             "stride": [orig_stride[0], orig_stride[1], orig_stride[2], orig_stride[3], (input_x + padding[2] + padding[3]) * stride, stride, orig_stride[4], input_y + padding[0] + padding[1], 1],
             "output": len(json_list),
         }
         json_list.append(json_obj)
+        matrix_strided_index = len(json_list) - 1
         matrix_strided = torch.as_strided(A_matrix, [batch_size, output_channel, output_x, output_y, output_x, output_y, input_channel, kernel_x, kernel_y], [orig_stride[0], orig_stride[1], orig_stride[2], orig_stride[3], (input_x + padding[2] + padding[3]) * stride, stride, orig_stride[4], input_y + padding[0] + padding[1], 1])
         first_indices = torch.arange(output_x * output_y, device=pieces.device)
         second_indices = torch.div(first_indices, output_y, rounding_mode="trunc")
@@ -2220,10 +2287,13 @@ class DummyBlock():
         json_list.append(json_obj)
 
         matrix_strided[:,:,second_indices,third_indices,second_indices,third_indices,:,:,:] = pieces.reshape(*pieces.shape[:2], -1, *pieces.shape[4:])
+        second_indices_expr = "torch.div(torch.arange(" + str(output_x * output_y) + ", device=json_list_" + str(pieces_current_index) + ".device), " + str(output_y) + ', rounding_mode="trunc")'
+        third_indices_expr = "torch.fmod(torch.arange(" + str(output_x * output_y) + ", device=json_list_" + str(pieces_current_index) + ".device), " + str(output_y) + ")"
         json_obj = {
             "method": "assign_to_view",
-            "input": "json_list_" + str(len(json_list) - 2),
-            "index": [0, 0, second_indices, third_indices, second_indices, third_indices, 0, 0, 0],
+            "input": "json_list_" + str(matrix_strided_index),
+            "base": "json_list_" + str(A_matrix_base_index),
+            "index": [0, 0, second_indices_expr, third_indices_expr, second_indices_expr, third_indices_expr, 0, 0, 0],
             "value": "json_list_" + str(len(json_list) - 1),
             "output": len(json_list),
         }
@@ -2503,7 +2573,1102 @@ class DummyBlock():
                 shape = res.total_shape
             res.block = torch.empty(tuple(shape.tolist()), device='meta')
 
-    def matmul_equal_dims(self, sp_block):
+    def matmul_equal_dims_dense_block(self, sp_block, json_list=None, lhs_index=None, rhs_index=None):
+        trace = True
+        if sp_block.block_type == 'D':
+            if trace:
+                lhs_block_index = len(json_list)
+                json_obj = {
+                    "method": "sparse_block_extract",
+                    "input": "json_list_" + str(lhs_index),
+                    "output": lhs_block_index,
+                }
+                json_list.append(json_obj)
+                rhs_block_index = len(json_list)
+                json_obj = {
+                    "method": "sparse_block_extract",
+                    "input": "json_list_" + str(rhs_index),
+                    "output": rhs_block_index,
+                }
+                json_list.append(json_obj)
+                matmul_index = len(json_list)
+                json_obj = {
+                    "method": "torch_matmul",
+                    "lhs": "json_list_" + str(lhs_block_index),
+                    "rhs": "json_list_" + str(rhs_block_index),
+                    "output": matmul_index,
+                }
+                json_list.append(json_obj)
+                json_obj = {
+                    "method": "DenseBlock",
+                    "block": "json_list_" + str(matmul_index),
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+            a = self.block
+            b = sp_block.block
+            c = a @ b
+            res = DenseBlock(c)
+        elif sp_block.block_type == 'Diag':
+            if trace:
+                rhs_block_index = len(json_list)
+                json_obj = {
+                    "method": "sparse_block_extract",
+                    "input": "json_list_" + str(rhs_index),
+                    "output": rhs_block_index,
+                }
+                json_list.append(json_obj)
+                unsqueeze_index = len(json_list)
+                json_obj = {
+                    "method": "torch_unsqueeze",
+                    "input": "json_list_" + str(rhs_block_index),
+                    "output": unsqueeze_index,
+                    "index": sp_block.diag_index - 1,
+                }
+                json_list.append(json_obj)
+                lhs_block_index = len(json_list)
+                json_obj = {
+                    "method": "sparse_block_extract",
+                    "input": "json_list_" + str(lhs_index),
+                    "output": lhs_block_index,
+                }
+                json_list.append(json_obj)
+                mul_index = len(json_list)
+                json_obj = {
+                    "method": "torch_mul",
+                    "lhs": "json_list_" + str(lhs_block_index),
+                    "rhs": "json_list_" + str(unsqueeze_index),
+                    "output": mul_index,
+                }
+                json_list.append(json_obj)
+                json_obj = {
+                    "method": "DenseBlock",
+                    "block": "json_list_" + str(mul_index),
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+            block_2 = sp_block.block.unsqueeze(sp_block.diag_index-1)
+            res = DenseBlock(self.block * block_2)
+        elif sp_block.block_type == 'K':
+            if trace:
+                json_obj = {
+                    "method": "sparse_block_extract",
+                    "input": "json_list_" + str(rhs_index),
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                kernel_index = len(json_list) - 1
+            kernel = sp_block.block
+            kx = sp_block.kx
+            ky = sp_block.ky
+            sx = sp_block.sx
+            sy = sp_block.sy
+            px = sp_block.px
+            py = sp_block.py
+            ox = sp_block.ox
+            oy = sp_block.oy
+            ix = sp_block.ix
+            iy = sp_block.iy
+            num_kernels = sp_block.num_kernels
+            batch_size = int(self.batch_size)
+            curr_size = int(self.block.shape[-2])
+            new_px = (ix + 2*px - kx) % sx
+            new_py = (iy + 2*py - ky) % sy
+            if trace:
+                lhs_block_index = len(json_list)
+                json_obj = {
+                    "method": "sparse_block_extract",
+                    "input": "json_list_" + str(lhs_index),
+                    "output": lhs_block_index,
+                }
+                json_list.append(json_obj)
+                input_tensor_index = len(json_list)
+                json_obj = {
+                    "method": "torch_reshape",
+                    "input": "json_list_" + str(lhs_block_index),
+                    "shape": (batch_size*curr_size, num_kernels, ox, oy),
+                    "output": input_tensor_index,
+                }
+                json_list.append(json_obj)
+                conv_index = len(json_list)
+                json_obj = {
+                    "method": "F.conv_transpose2d",
+                    "input": "json_list_" + str(input_tensor_index),
+                    "weight": "json_list_" + str(kernel_index),
+                    "stride": (sx, sy),
+                    "padding": (px, py),
+                    "output_padding": (new_px, new_py),
+                    "output": conv_index,
+                }
+                json_list.append(json_obj)
+                reshape_index = len(json_list)
+                json_obj = {
+                    "method": "torch_reshape",
+                    "input": "json_list_" + str(conv_index),
+                    "shape": (batch_size, curr_size, -1),
+                    "output": reshape_index,
+                }
+                json_list.append(json_obj)
+                json_obj = {
+                    "method": "DenseBlock",
+                    "block": "json_list_" + str(reshape_index),
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+            input_tensor = self.block.reshape(batch_size*curr_size, num_kernels, ox, oy)
+            output_tensor = F.conv_transpose2d(input_tensor, kernel, stride=(sx, sy), padding=(px, py), output_padding=(new_px, new_py))
+            res = DenseBlock(output_tensor.reshape(batch_size, curr_size, -1))
+        elif sp_block.block_type == 'C':
+            if sp_block.block == 0:
+                new_total_shape = self.total_shape.clone()
+                new_total_shape[-1] = sp_block.total_shape[-1]
+                if trace:
+                    json_obj = {
+                        "method": "ConstBlock",
+                        "block": 0,
+                        "total_shape": new_total_shape.tolist(),
+                        "output": len(json_list),
+                    }
+                    json_list.append(json_obj)
+                res = ConstBlock(0, new_total_shape)
+            else:
+                raise NotImplementedError
+        else:
+            if trace:
+                block_2, rhs_index = sp_block.get_dense(json_list=json_list, index=rhs_index)
+            else:
+                block_2 = torch.empty(tuple(sp_block.total_shape.tolist()), device='meta')
+            if trace:
+                lhs_block_index = len(json_list)
+                json_obj = {
+                    "method": "sparse_block_extract",
+                    "input": "json_list_" + str(lhs_index),
+                    "output": lhs_block_index,
+                }
+                json_list.append(json_obj)
+                matmul_index = len(json_list)
+                json_obj = {
+                    "method": "torch_matmul",
+                    "lhs": "json_list_" + str(lhs_block_index),
+                    "rhs": "json_list_" + str(rhs_index),
+                    "output": matmul_index,
+                }
+                json_list.append(json_obj)
+                json_obj = {
+                    "method": "DenseBlock",
+                    "block": "json_list_" + str(matmul_index),
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+            c = self.block @ block_2
+            res = DenseBlock(c)
+        return res
+
+    def matmul_unequal_dims_dense_block(self, sp_block, json_list=None, lhs_index=None, rhs_index=None):
+        if sp_block.block_type in ('D', 'R'):
+            if sp_block.block_type == 'R':
+                block_2, rhs_block_index = sp_block.get_dense(json_list=json_list, index=rhs_index)
+            else:
+                block_2 = sp_block.block
+                rhs_block_index = len(json_list)
+                json_obj = {
+                    "method": "sparse_block_extract",
+                    "input": "json_list_" + str(rhs_index),
+                    "output": rhs_block_index,
+                }
+                json_list.append(json_obj)
+            rhs_unsqueeze_index = len(json_list)
+            json_obj = {
+                "method": "torch_unsqueeze",
+                "input": "json_list_" + str(rhs_block_index),
+                "index": -1,
+                "output": rhs_unsqueeze_index,
+            }
+            json_list.append(json_obj)
+            lhs_block_index = len(json_list)
+            json_obj = {
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(lhs_index),
+                "output": lhs_block_index,
+            }
+            json_list.append(json_obj)
+            matmul_index = len(json_list)
+            json_obj = {
+                "method": "torch_matmul",
+                "lhs": "json_list_" + str(lhs_block_index),
+                "rhs": "json_list_" + str(rhs_unsqueeze_index),
+                "output": matmul_index,
+            }
+            json_list.append(json_obj)
+            squeeze_index = len(json_list)
+            json_obj = {
+                "method": "torch_squeeze",
+                "input": "json_list_" + str(matmul_index),
+                "index": -1,
+                "output": squeeze_index,
+            }
+            json_list.append(json_obj)
+            json_obj = {
+                "method": "DenseBlock",
+                "block": "json_list_" + str(squeeze_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            a = self.block
+            b = block_2.unsqueeze(-1)
+            # if baseline_gpu_mode:
+            #     torch.cuda.synchronize()
+            start_op_time = time.perf_counter()
+            c = a @ b
+            res = (c).squeeze(-1)
+            # if baseline_gpu_mode:
+            #     torch.cuda.synchronize()
+            res = DenseBlock(res)
+        elif sp_block.block_type == 'Diag':
+            raise NotImplementedError
+        elif sp_block.block_type == 'K':
+            raise NotImplementedError
+        elif sp_block.block_type == 'C':
+            if sp_block.block == 0:
+                new_total_shape = self.total_shape.clone()[:-1]
+                json_obj = {
+                    "method": "ConstBlock",
+                    "block": 0,
+                    "total_shape": new_total_shape.tolist(),
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                res = ConstBlock(0, new_total_shape)
+            else:
+                raise NotImplementedError
+        else:
+            raise Exception(f'Unrecognized sparse block type: {type(sp_block)}')
+        return res
+
+    def matmul_equal_dims_kernel_block(self, sp_block, json_list=None, lhs_index=None, rhs_index=None):
+        if sp_block.block_type == 'Diag':
+            kernel = self.block
+            px = self.px
+            py = self.py
+            sx = self.sx
+            sy = self.sy
+            ix = self.ix
+            iy = self.iy
+            kx = self.kx
+            ky = self.ky
+            num_kernels = self.num_kernels
+            num_channels = self.num_channels
+            batch_size = int(sp_block.batch_size)
+
+            rhs_block_index = len(json_list)
+            json_obj = {
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(rhs_index),
+                "output": rhs_block_index,
+            }
+            json_list.append(json_obj)
+            view_index = len(json_list)
+            json_obj = {
+                "method": "torch_view",
+                "input": "json_list_" + str(rhs_block_index),
+                "shape": (batch_size, num_channels, ix, iy),
+                "output": view_index,
+            }
+            json_list.append(json_obj)
+            unfold_index = len(json_list)
+            json_obj = {
+                "method": "F.unfold",
+                "input": "json_list_" + str(view_index),
+                "kernel_size": (kx, ky),
+                "padding": (px, py),
+                "stride": (sx, sy),
+                "output": unfold_index,
+            }
+            json_list.append(json_obj)
+            permute_index = len(json_list)
+            json_obj = {
+                "method": "torch_permute",
+                "input": "json_list_" + str(unfold_index),
+                "permutation": (0, 2, 1),
+                "output": permute_index,
+            }
+            json_list.append(json_obj)
+            repeat_index = len(json_list)
+            json_obj = {
+                "method": "torch_repeat",
+                "input": "json_list_" + str(permute_index),
+                "repeats": (1, num_kernels, 1),
+                "output": repeat_index,
+            }
+            json_list.append(json_obj)
+            k_new, lhs_patches_index = self.convert_to_patches(json_list=json_list, index=lhs_index)
+            lhs_patches_block_index = len(json_list)
+            json_obj = {
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(lhs_patches_index),
+                "output": lhs_patches_block_index,
+            }
+            json_list.append(json_obj)
+            mul_index = len(json_list)
+            json_obj = {
+                "method": "torch_mul",
+                "lhs": "json_list_" + str(repeat_index),
+                "rhs": "json_list_" + str(lhs_patches_block_index),
+                "output": mul_index,
+            }
+            json_list.append(json_obj)
+
+            x = sp_block.block.view(batch_size, num_channels, ix, iy)
+            x_unf = F.unfold(x, kernel_size=(kx, ky), padding=(px, py), stride=(sx, sy))
+            x_unf = x_unf.permute(0,2,1).repeat(1, num_kernels, 1)
+            patches = x_unf * k_new.block
+            json_obj = {
+                "method": "PatchesBlock",
+                "block": "json_list_" + str(mul_index),
+                "total_shape": self.total_shape.tolist(),
+                "ix": self.ix,
+                "iy": self.iy,
+                "ox": self.ox,
+                "oy": self.oy,
+                "sx": self.sx,
+                "sy": self.sy,
+                "px": self.px,
+                "py": self.py,
+                "kx": self.kx,
+                "ky": self.ky,
+                "num_channels": self.num_channels,
+                "num_kernels": self.num_kernels,
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            res = PatchesBlock(patches, self.total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels)
+        elif sp_block.block_type == 'C':
+            if sp_block.block == 0:
+                new_total_shape = self.total_shape.clone()
+                new_total_shape[-1] = sp_block.total_shape[-1]
+                json_obj = {
+                    "method": "ConstBlock",
+                    "block": 0,
+                    "total_shape": new_total_shape.tolist(),
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                res = ConstBlock(0, new_total_shape)
+            else:
+                raise NotImplementedError
+        elif sp_block.block_type == 'D':
+            rhs_block_index = len(json_list)
+            json_obj = {
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(rhs_index),
+                "output": rhs_block_index,
+            }
+            json_list.append(json_obj)
+            b = sp_block.block
+            batch_size = b.shape[0]
+            sym_size = b.shape[2]
+            permute_index = len(json_list)
+            json_obj = {
+                "method": "torch_permute",
+                "input": "json_list_" + str(rhs_block_index),
+                "permutation": (0, 2, 1),
+                "output": permute_index,
+            }
+            json_list.append(json_obj)
+            reshape_input_index = len(json_list)
+            json_obj = {
+                "method": "torch_reshape",
+                "input": "json_list_" + str(permute_index),
+                "shape": (batch_size*sym_size, self.num_channels, self.ix, self.iy),
+                "output": reshape_input_index,
+            }
+            json_list.append(json_obj)
+            lhs_block_index = len(json_list)
+            json_obj = {
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(lhs_index),
+                "output": lhs_block_index,
+            }
+            json_list.append(json_obj)
+            conv_index = len(json_list)
+            json_obj = {
+                "method": "F.conv2d",
+                "input": "json_list_" + str(reshape_input_index),
+                "weight": "json_list_" + str(lhs_block_index),
+                "stride": (self.sx, self.sy),
+                "padding": (self.px, self.py),
+                "output": conv_index,
+            }
+            json_list.append(json_obj)
+            reshape_output_index = len(json_list)
+            json_obj = {
+                "method": "torch_reshape",
+                "input": "json_list_" + str(conv_index),
+                "shape": (batch_size, sym_size, -1),
+                "output": reshape_output_index,
+            }
+            json_list.append(json_obj)
+            final_permute_index = len(json_list)
+            json_obj = {
+                "method": "torch_permute",
+                "input": "json_list_" + str(reshape_output_index),
+                "permutation": (0, 2, 1),
+                "output": final_permute_index,
+            }
+            json_list.append(json_obj)
+            json_obj = {
+                "method": "DenseBlock",
+                "block": "json_list_" + str(final_permute_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+
+            b = b.transpose(1,2)
+            b = b.reshape(b.shape[0]*b.shape[1], self.num_channels, self.ix, self.iy)
+            block = F.conv2d(b, self.block, stride=(self.sx, self.sy), padding=(self.px, self.py))
+            block = block.reshape(batch_size, sym_size, -1)
+            block = block.transpose(1,2)
+            res = DenseBlock(block)
+        elif sp_block.block_type == 'P':
+            block_2, rhs_block_index = sp_block.get_dense(json_list=json_list, index=rhs_index)
+            dense_block_index = len(json_list)
+            json_obj = {
+                "method": "DenseBlock",
+                "block": "json_list_" + str(rhs_block_index),
+                "output": dense_block_index,
+            }
+            json_list.append(json_obj)
+            sp_block = DenseBlock(block_2)
+            res = self.matmul_equal_dims(sp_block, json_list=json_list, lhs_index=lhs_index, rhs_index=dense_block_index)
+            return res
+        else:
+            block_1, lhs_patches_index = self.convert_to_patches(json_list=json_list, index=lhs_index)
+            res = block_1.matmul_equal_dims(sp_block, json_list=json_list, lhs_index=lhs_patches_index, rhs_index=rhs_index)
+            return res
+        return res
+
+    def matmul_unequal_dims_kernel_block(self, sp_block, json_list=None, lhs_index=None, rhs_index=None):
+        if sp_block.block_type == 'D':
+            kernel = self.block
+            sx = self.sx
+            sy = self.sy
+            px = self.px
+            py = self.py
+            ix = self.ix
+            iy = self.iy
+            num_channels = self.num_channels
+            batch_size = int(sp_block.batch_size)
+
+            rhs_block_index = len(json_list)
+            json_obj = {
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(rhs_index),
+                "output": rhs_block_index,
+            }
+            json_list.append(json_obj)
+            reshape_input_index = len(json_list)
+            json_obj = {
+                "method": "torch_reshape",
+                "input": "json_list_" + str(rhs_block_index),
+                "shape": (batch_size, num_channels, ix, iy),
+                "output": reshape_input_index,
+            }
+            json_list.append(json_obj)
+            lhs_block_index = len(json_list)
+            json_obj = {
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(lhs_index),
+                "output": lhs_block_index,
+            }
+            json_list.append(json_obj)
+            conv_index = len(json_list)
+            json_obj = {
+                "method": "F.conv2d",
+                "input": "json_list_" + str(reshape_input_index),
+                "weight": "json_list_" + str(lhs_block_index),
+                "stride": (sx, sy),
+                "padding": (px, py),
+                "output": conv_index,
+            }
+            json_list.append(json_obj)
+            reshape_output_index = len(json_list)
+            json_obj = {
+                "method": "torch_reshape",
+                "input": "json_list_" + str(conv_index),
+                "shape": (batch_size, -1),
+                "output": reshape_output_index,
+            }
+            json_list.append(json_obj)
+            json_obj = {
+                "method": "DenseBlock",
+                "block": "json_list_" + str(reshape_output_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+
+            input_tensor = sp_block.block.reshape(batch_size, num_channels, ix, iy)
+            block = F.conv2d(input_tensor, kernel, stride=(sx, sy), padding=(px, py))
+            block = block.reshape(batch_size, -1)
+            res = DenseBlock(block)
+        elif sp_block.block_type == 'Diag':
+            raise NotImplementedError
+        elif sp_block.block_type == 'K':
+            raise NotImplementedError
+        elif sp_block.block_type == 'C':
+            if sp_block.block == 0:
+                new_total_shape = self.total_shape.clone()[:-1]
+                json_obj = {
+                    "method": "ConstBlock",
+                    "block": 0,
+                    "total_shape": new_total_shape.tolist(),
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                res = ConstBlock(0, new_total_shape)
+            else:
+                raise NotImplementedError
+        else:
+            raise Exception(f'Unrecognized sparse block type: {type(sp_block)}')
+        return res
+
+    def matmul_equal_dims_diagonal_block(self, sp_block, json_list=None, lhs_index=None, rhs_index=None):
+        if sp_block.block_type == 'D':
+            lhs_block_index = len(json_list)
+            json_obj = {
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(lhs_index),
+                "output": lhs_block_index,
+            }
+            json_list.append(json_obj)
+            lhs_unsqueeze_index = len(json_list)
+            json_obj = {
+                "method": "torch_unsqueeze",
+                "input": "json_list_" + str(lhs_block_index),
+                "index": self.diag_index,
+                "output": lhs_unsqueeze_index,
+            }
+            json_list.append(json_obj)
+            rhs_block_index = len(json_list)
+            json_obj = {
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(rhs_index),
+                "output": rhs_block_index,
+            }
+            json_list.append(json_obj)
+            mul_index = len(json_list)
+            json_obj = {
+                "method": "torch_mul",
+                "lhs": "json_list_" + str(lhs_unsqueeze_index),
+                "rhs": "json_list_" + str(rhs_block_index),
+                "output": mul_index,
+            }
+            json_list.append(json_obj)
+            json_obj = {
+                "method": "DenseBlock",
+                "block": "json_list_" + str(mul_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            a = self.block.unsqueeze(self.diag_index)
+            b = sp_block.block
+            c = a * b
+            res = DenseBlock(c)
+        elif sp_block.block_type == 'Diag':
+            raise NotImplementedError
+        elif sp_block.block_type == 'K':
+            block_2, rhs_patches_index = sp_block.convert_to_patches(json_list=json_list, index=rhs_index)
+            lhs_block_index = len(json_list)
+            json_obj = {
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(lhs_index),
+                "output": lhs_block_index,
+            }
+            json_list.append(json_obj)
+            lhs_unsqueeze_index = len(json_list)
+            json_obj = {
+                "method": "torch_unsqueeze",
+                "input": "json_list_" + str(lhs_block_index),
+                "index": self.diag_index,
+                "output": lhs_unsqueeze_index,
+            }
+            json_list.append(json_obj)
+            rhs_block_index = len(json_list)
+            json_obj = {
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(rhs_patches_index),
+                "output": rhs_block_index,
+            }
+            json_list.append(json_obj)
+            mul_index = len(json_list)
+            json_obj = {
+                "method": "torch_mul",
+                "lhs": "json_list_" + str(lhs_unsqueeze_index),
+                "rhs": "json_list_" + str(rhs_block_index),
+                "output": mul_index,
+            }
+            json_list.append(json_obj)
+            json_obj = {
+                "method": "PatchesBlock",
+                "block": "json_list_" + str(mul_index),
+                "total_shape": sp_block.total_shape.tolist(),
+                "ix": sp_block.ix,
+                "iy": sp_block.iy,
+                "ox": sp_block.ox,
+                "oy": sp_block.oy,
+                "sx": sp_block.sx,
+                "sy": sp_block.sy,
+                "px": sp_block.px,
+                "py": sp_block.py,
+                "kx": sp_block.kx,
+                "ky": sp_block.ky,
+                "num_channels": sp_block.num_channels,
+                "num_kernels": sp_block.num_kernels,
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            block_1 = self.block.unsqueeze(self.diag_index)
+            block = block_1 * block_2.block
+            res = PatchesBlock(block, sp_block.total_shape, sp_block.ix, sp_block.iy, sp_block.ox, sp_block.oy, sp_block.sx, sp_block.sy, sp_block.px, sp_block.py, sp_block.kx, sp_block.ky, sp_block.num_channels, sp_block.num_kernels)
+        elif sp_block.block_type == 'R' and (sp_block.repeat_dims == 1).all():
+            block_2, rhs_block_index = sp_block.get_dense(json_list=json_list, index=rhs_index)
+            dense_block_index = len(json_list)
+            json_obj = {
+                "method": "DenseBlock",
+                "block": "json_list_" + str(rhs_block_index),
+                "output": dense_block_index,
+            }
+            json_list.append(json_obj)
+            sp_block = DenseBlock(block_2)
+            res = self.matmul_equal_dims(sp_block, json_list=json_list, lhs_index=lhs_index, rhs_index=dense_block_index)
+            return res
+        else:
+            raise Exception(f'Unrecognized sparse block type: {type(sp_block)}')
+        return res
+
+    def matmul_unequal_dims_diagonal_block(self, sp_block, json_list=None, lhs_index=None, rhs_index=None):
+        if sp_block.block_type == 'D':
+            lhs_block_index = len(json_list)
+            json_obj = {
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(lhs_index),
+                "output": lhs_block_index,
+            }
+            json_list.append(json_obj)
+            lhs_unsqueeze_index = len(json_list)
+            json_obj = {
+                "method": "torch_unsqueeze",
+                "input": "json_list_" + str(lhs_block_index),
+                "index": self.diag_index,
+                "output": lhs_unsqueeze_index,
+            }
+            json_list.append(json_obj)
+            rhs_block_index = len(json_list)
+            json_obj = {
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(rhs_index),
+                "output": rhs_block_index,
+            }
+            json_list.append(json_obj)
+            rhs_unsqueeze_index = len(json_list)
+            json_obj = {
+                "method": "torch_unsqueeze",
+                "input": "json_list_" + str(rhs_block_index),
+                "index": -1,
+                "output": rhs_unsqueeze_index,
+            }
+            json_list.append(json_obj)
+            mul_index = len(json_list)
+            json_obj = {
+                "method": "torch_mul",
+                "lhs": "json_list_" + str(lhs_unsqueeze_index),
+                "rhs": "json_list_" + str(rhs_unsqueeze_index),
+                "output": mul_index,
+            }
+            json_list.append(json_obj)
+            squeeze_index = len(json_list)
+            json_obj = {
+                "method": "torch_squeeze",
+                "input": "json_list_" + str(mul_index),
+                "index": -1,
+                "output": squeeze_index,
+            }
+            json_list.append(json_obj)
+            json_obj = {
+                "method": "DenseBlock",
+                "block": "json_list_" + str(squeeze_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            a = self.block.unsqueeze(self.diag_index)
+            b = sp_block.block.unsqueeze(-1)
+            res = a * b
+            res = res.squeeze(-1)
+            res = DenseBlock(res)
+        elif sp_block.block_type == 'R' and (sp_block.repeat_dims == 1).all():
+            block_2, rhs_block_index = sp_block.get_dense(json_list=json_list, index=rhs_index)
+            dense_block_index = len(json_list)
+            json_obj = {
+                "method": "DenseBlock",
+                "block": "json_list_" + str(rhs_block_index),
+                "output": dense_block_index,
+            }
+            json_list.append(json_obj)
+            sp_block = DenseBlock(block_2)
+            res = self.matmul_unequal_dims(sp_block, json_list=json_list, lhs_index=lhs_index, rhs_index=dense_block_index)
+            return res
+        else:
+            raise Exception(f'Unrecognized sparse block type: {type(sp_block)}')
+        return res
+
+    def matmul_equal_dims_patches_block(self, sp_block, json_list=None, lhs_index=None, rhs_index=None):
+        if sp_block.block_type == 'K':
+            lhs_block_index = len(json_list)
+            json_obj = {
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(lhs_index),
+                "output": lhs_block_index,
+            }
+            json_list.append(json_obj)
+            flattened_index = len(json_list)
+            json_obj = {
+                "method": "torch_reshape",
+                "input": "json_list_" + str(lhs_block_index),
+                "shape": (self.batch_size*self.num_kernels*self.ox*self.oy, self.num_channels, self.kx, self.ky),
+                "output": flattened_index,
+            }
+            json_list.append(json_obj)
+            rhs_block_index = len(json_list)
+            json_obj = {
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(rhs_index),
+                "output": rhs_block_index,
+            }
+            json_list.append(json_obj)
+            conv_index = len(json_list)
+            json_obj = {
+                "method": "F.conv_transpose2d",
+                "input": "json_list_" + str(flattened_index),
+                "weight": "json_list_" + str(rhs_block_index),
+                "stride": (sp_block.sx, sp_block.sy),
+                "output": conv_index,
+            }
+            json_list.append(json_obj)
+
+            flattened_patches = self.block.reshape(self.batch_size*self.num_kernels*self.ox*self.oy, self.num_channels, self.kx, self.ky)
+            patches = F.conv_transpose2d(flattened_patches, sp_block.block, stride=(sp_block.sx, sp_block.sy))
+            kx = patches.shape[-2]
+            ky = patches.shape[-1]
+            reshape_index = len(json_list)
+            json_obj = {
+                "method": "torch_reshape",
+                "input": "json_list_" + str(conv_index),
+                "shape": (self.batch_size, self.num_kernels*self.ox*self.oy, -1),
+                "output": reshape_index,
+            }
+            json_list.append(json_obj)
+            patches = patches.reshape(self.batch_size, self.num_kernels*self.ox*self.oy, -1)
+
+            full_patch_padding, full_op_padding, full_patch_stride, full_op_stride = [
+                (p, p) if isinstance(p, int) else p
+                for p in [(self.px, self.py), (sp_block.px, sp_block.py), (self.sx, self.sy), (sp_block.sx, sp_block.sy)]
+            ]
+            full_patch_padding, full_op_padding, full_patch_stride, full_op_stride = [
+                (p[1], p[1], p[0], p[0]) if len(p) == 2 else p
+                for p in [full_patch_padding, full_op_padding, full_patch_stride, full_op_stride]
+            ]
+            new_padding = tuple(pp * os + op for pp, op, os in zip(full_patch_padding, full_op_padding, full_op_stride))
+            new_stride = tuple(ps * os for ps, os in zip(full_patch_stride, full_op_stride))
+            new_total_shape = torch.concat([torch.max(self.total_shape[:-2], sp_block.total_shape[:-2]), self.total_shape[-2:-1], sp_block.total_shape[-1:]])
+
+            json_obj = {
+                "method": "PatchesBlock",
+                "block": "json_list_" + str(reshape_index),
+                "total_shape": new_total_shape.tolist(),
+                "ix": sp_block.ix,
+                "iy": sp_block.iy,
+                "ox": self.ox,
+                "oy": self.oy,
+                "sx": new_stride[0],
+                "sy": new_stride[1],
+                "px": new_padding[0],
+                "py": new_padding[1],
+                "kx": kx,
+                "ky": ky,
+                "num_channels": sp_block.num_channels,
+                "num_kernels": self.num_kernels,
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            res = PatchesBlock(patches, new_total_shape, sp_block.ix, sp_block.iy, self.ox, self.oy, new_stride[0], new_stride[1], new_padding[0], new_padding[1], kx, ky, sp_block.num_channels, self.num_kernels)
+        elif sp_block.block_type == 'Diag':
+            patches = self.block
+            px = self.px
+            py = self.py
+            sx = self.sx
+            sy = self.sy
+            ix = self.ix
+            iy = self.iy
+            kx = self.kx
+            ky = self.ky
+            num_kernels = self.num_kernels
+            num_channels = self.num_channels
+            batch_size = int(sp_block.batch_size)
+
+            rhs_block_index = len(json_list)
+            json_obj = {
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(rhs_index),
+                "output": rhs_block_index,
+            }
+            json_list.append(json_obj)
+            view_index = len(json_list)
+            json_obj = {
+                "method": "torch_view",
+                "input": "json_list_" + str(rhs_block_index),
+                "shape": (batch_size, num_channels, ix, iy),
+                "output": view_index,
+            }
+            json_list.append(json_obj)
+            unfold_index = len(json_list)
+            json_obj = {
+                "method": "F.unfold",
+                "input": "json_list_" + str(view_index),
+                "kernel_size": (kx, ky),
+                "padding": (px, py),
+                "stride": (sx, sy),
+                "output": unfold_index,
+            }
+            json_list.append(json_obj)
+            transpose_index = len(json_list)
+            json_obj = {
+                "method": "torch_permute",
+                "input": "json_list_" + str(unfold_index),
+                "permutation": (0, 2, 1),
+                "output": transpose_index,
+            }
+            json_list.append(json_obj)
+            repeat_index = len(json_list)
+            json_obj = {
+                "method": "torch_repeat",
+                "input": "json_list_" + str(transpose_index),
+                "repeats": (1, num_kernels, 1),
+                "output": repeat_index,
+            }
+            json_list.append(json_obj)
+            lhs_block_index = len(json_list)
+            json_obj = {
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(lhs_index),
+                "output": lhs_block_index,
+            }
+            json_list.append(json_obj)
+
+            x = sp_block.block.view(batch_size, num_channels, ix, iy)
+            x_unf = F.unfold(x, kernel_size=(kx, ky), padding=(px, py), stride=(sx, sy))
+            x_unf = x_unf.transpose(1,2).repeat(1, num_kernels, 1)
+            if patches.shape[0] != batch_size:
+                expand_index = len(json_list)
+                json_obj = {
+                    "method": "torch_expand",
+                    "input": "json_list_" + str(lhs_block_index),
+                    "shape": (batch_size, patches.size(1), patches.size(2)),
+                    "output": expand_index,
+                }
+                json_list.append(json_obj)
+                lhs_block_index = expand_index
+                patches = patches.expand(batch_size, patches.size(1), patches.size(2))
+
+            mul_index = len(json_list)
+            json_obj = {
+                "method": "torch_mul",
+                "lhs": "json_list_" + str(repeat_index),
+                "rhs": "json_list_" + str(lhs_block_index),
+                "output": mul_index,
+            }
+            json_list.append(json_obj)
+            patches = x_unf * patches
+            json_obj = {
+                "method": "PatchesBlock",
+                "block": "json_list_" + str(mul_index),
+                "total_shape": self.total_shape.tolist(),
+                "ix": self.ix,
+                "iy": self.iy,
+                "ox": self.ox,
+                "oy": self.oy,
+                "sx": self.sx,
+                "sy": self.sy,
+                "px": self.px,
+                "py": self.py,
+                "kx": self.kx,
+                "ky": self.ky,
+                "num_channels": self.num_channels,
+                "num_kernels": self.num_kernels,
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            res = PatchesBlock(patches, self.total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels)
+        else:
+            raise NotImplementedError
+        return res
+
+    def matmul_unequal_dims_patches_block(self, sp_block, json_list=None, lhs_index=None, rhs_index=None):
+        if sp_block.block_type == 'D':
+            patches = self.block
+            sx = self.sx
+            sy = self.sy
+            px = self.px
+            py = self.py
+            ix = self.ix
+            iy = self.iy
+            kx = self.kx
+            ky = self.ky
+            num_channels = self.num_channels
+            num_kernels = self.num_kernels
+            batch_size = int(sp_block.batch_size)
+
+            rhs_block_index = len(json_list)
+            json_obj = {
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(rhs_index),
+                "output": rhs_block_index,
+            }
+            json_list.append(json_obj)
+            view_index = len(json_list)
+            json_obj = {
+                "method": "torch_view",
+                "input": "json_list_" + str(rhs_block_index),
+                "shape": (batch_size, num_channels, ix, iy),
+                "output": view_index,
+            }
+            json_list.append(json_obj)
+            unfold_index = len(json_list)
+            json_obj = {
+                "method": "F.unfold",
+                "input": "json_list_" + str(view_index),
+                "kernel_size": (kx, ky),
+                "padding": (px, py),
+                "stride": (sx, sy),
+                "output": unfold_index,
+            }
+            json_list.append(json_obj)
+            transpose_index = len(json_list)
+            json_obj = {
+                "method": "torch_permute",
+                "input": "json_list_" + str(unfold_index),
+                "permutation": (0, 2, 1),
+                "output": transpose_index,
+            }
+            json_list.append(json_obj)
+            repeat_index = len(json_list)
+            json_obj = {
+                "method": "torch_repeat",
+                "input": "json_list_" + str(transpose_index),
+                "repeats": (1, num_kernels, 1),
+                "output": repeat_index,
+            }
+            json_list.append(json_obj)
+            lhs_block_index = len(json_list)
+            json_obj = {
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(lhs_index),
+                "output": lhs_block_index,
+            }
+            json_list.append(json_obj)
+
+            x = sp_block.block.view(batch_size, num_channels, ix, iy)
+            x_unf = F.unfold(x, kernel_size=(kx, ky), padding=(px, py), stride=(sx, sy))
+            x_unf = x_unf.transpose(1,2).repeat(1, num_kernels, 1)
+            if patches.shape[0] != batch_size:
+                expand_index = len(json_list)
+                json_obj = {
+                    "method": "torch_expand",
+                    "input": "json_list_" + str(lhs_block_index),
+                    "shape": (batch_size, patches.size(1), patches.size(2)),
+                    "output": expand_index,
+                }
+                json_list.append(json_obj)
+                lhs_block_index = expand_index
+                patches = patches.expand(batch_size, patches.size(1), patches.size(2))
+
+            mul_index = len(json_list)
+            json_obj = {
+                "method": "torch_mul",
+                "lhs": "json_list_" + str(repeat_index),
+                "rhs": "json_list_" + str(lhs_block_index),
+                "output": mul_index,
+            }
+            json_list.append(json_obj)
+            patches = x_unf * patches
+            sum_index = len(json_list)
+            json_obj = {
+                "method": "torch_sum",
+                "input": "json_list_" + str(mul_index),
+                "dim": -1,
+                "output": sum_index,
+            }
+            json_list.append(json_obj)
+            ret = patches.sum(dim=-1)
+            json_obj = {
+                "method": "DenseBlock",
+                "block": "json_list_" + str(sum_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            res = DenseBlock(ret)
+        elif sp_block.block_type == 'C' and sp_block.block == 0:
+            json_obj = {
+                "method": "ConstBlock",
+                "block": 0,
+                "total_shape": self.total_shape[:-1].tolist(),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            res = ConstBlock(0, self.total_shape[:-1])
+        elif sp_block.block_type == 'R':
+            block_2, rhs_block_index = sp_block.get_dense(json_list=json_list, index=rhs_index)
+            dense_block_index = len(json_list)
+            json_obj = {
+                "method": "DenseBlock",
+                "block": "json_list_" + str(rhs_block_index),
+                "output": dense_block_index,
+            }
+            json_list.append(json_obj)
+            sp_block = DenseBlock(block_2)
+            res = self.matmul_unequal_dims(sp_block, json_list=json_list, lhs_index=lhs_index, rhs_index=dense_block_index)
+            return res
+        else:
+            raise NotImplementedError
+        return res
+
+    def matmul_equal_dims(self, sp_block, json_list=None, lhs_index=None, rhs_index=None):
+        if self.block_type == 'D':
+            return self.matmul_equal_dims_dense_block(
+                sp_block,
+                json_list=json_list,
+                lhs_index=lhs_index,
+                rhs_index=rhs_index,
+            )
+        if self.block_type == 'K':
+            return self.matmul_equal_dims_kernel_block(
+                sp_block,
+                json_list=json_list,
+                lhs_index=lhs_index,
+                rhs_index=rhs_index,
+            )
+        if self.block_type == 'Diag':
+            return self.matmul_equal_dims_diagonal_block(
+                sp_block,
+                json_list=json_list,
+                lhs_index=lhs_index,
+                rhs_index=rhs_index,
+            )
+        if self.block_type == 'P':
+            return self.matmul_equal_dims_patches_block(
+                sp_block,
+                json_list=json_list,
+                lhs_index=lhs_index,
+                rhs_index=rhs_index,
+            )
         if self.block_type == 'C':
             if self.block == 0:
                 new_total_shape = self.total_shape.clone()
@@ -2518,8 +3683,36 @@ class DummyBlock():
         res.total_shape[-1] = sp_block.total_shape[-1]
         self._replace_block_with_meta(res)
         return res
-    
-    def matmul_unequal_dims(self, sp_block):
+
+    def matmul_unequal_dims(self, sp_block, json_list=None, lhs_index=None, rhs_index=None):
+        if self.block_type == 'D':
+            return self.matmul_unequal_dims_dense_block(
+                sp_block,
+                json_list=json_list,
+                lhs_index=lhs_index,
+                rhs_index=rhs_index,
+            )
+        if self.block_type == 'K':
+            return self.matmul_unequal_dims_kernel_block(
+                sp_block,
+                json_list=json_list,
+                lhs_index=lhs_index,
+                rhs_index=rhs_index,
+            )
+        if self.block_type == 'Diag':
+            return self.matmul_unequal_dims_diagonal_block(
+                sp_block,
+                json_list=json_list,
+                lhs_index=lhs_index,
+                rhs_index=rhs_index,
+            )
+        if self.block_type == 'P':
+            return self.matmul_unequal_dims_patches_block(
+                sp_block,
+                json_list=json_list,
+                lhs_index=lhs_index,
+                rhs_index=rhs_index,
+            )
         if self.block_type == 'C':
             # Mirror ConstBlock.matmul_unequal_dims: only block==0 is supported.
             if self.block == 0:
