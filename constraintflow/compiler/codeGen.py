@@ -102,9 +102,10 @@ class CodeGen(irVisitor.IRVisitor):
         self.write('from constraintflow.lib.symexp import *')
         if reuse_mode.get_flag():
             self.write('import operator')
+            self.write('import torch.nn.functional as F')
             self.write('from constraintflow.gbcsr.sparse_tensor import SparseTensor')
             self.write('from constraintflow.gbcsr.tensor_ops import *')
-            self.write('from constraintflow.gbcsr.sparse_block import SparseBlock, DenseBlock, DiagonalBlock, ConstBlock, sp_where_block')
+            self.write('from constraintflow.gbcsr.sparse_block import SparseBlock, DenseBlock, DiagonalBlock, PatchesBlock, KernelBlock, RepeatBlock, ConstBlock, sp_where_block')
         else:
             self.write('from constraintflow.gbcsr.sparse_tensor import SparseTensor')
         self.write('from constraintflow.lib.llist import Llist')
@@ -331,6 +332,22 @@ class CodeGen(irVisitor.IRVisitor):
         res += ']'
         return res
 
+    def renderTraceIndex(self, index):
+        parts = []
+        for item in index:
+            if isinstance(item, list):
+                if len(item) == 2:
+                    parts.append(self.visit(item[0]) + ':' + self.visit(item[1]))
+                else:
+                    parts.append(self.visit(item))
+            elif isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, int) and item == 0:
+                parts.append(':')
+            else:
+                parts.append(self.visit(item))
+        return ', '.join(parts)
+
     def visitIrSparseTensor(self, node):
         args = [
             self.visit(node.start_indices),
@@ -355,6 +372,31 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrDenseBlock(self, node):
         return 'DenseBlock(' + self.visit(node.children[0]) + ')'
 
+    def visitIrPatchesBlock(self, node):
+        return (
+            'PatchesBlock(' + self.visit(node.children[0]) + ', '
+            + self.visit(node.total_shape) + ', '
+            + str(node.ix) + ', ' + str(node.iy) + ', '
+            + str(node.ox) + ', ' + str(node.oy) + ', '
+            + str(node.sx) + ', ' + str(node.sy) + ', '
+            + str(node.px) + ', ' + str(node.py) + ', '
+            + str(node.kx) + ', ' + str(node.ky) + ', '
+            + str(node.num_channels) + ', ' + str(node.num_kernels) + ')'
+        )
+
+    def visitIrKernelBlock(self, node):
+        return (
+            'KernelBlock(' + self.visit(node.children[0]) + ', '
+            + self.visit(node.total_shape) + ', '
+            + str(node.ix) + ', ' + str(node.iy) + ', '
+            + str(node.ox) + ', ' + str(node.oy) + ', '
+            + str(node.sx) + ', ' + str(node.sy) + ', '
+            + str(node.px) + ', ' + str(node.py) + ')'
+        )
+
+    def visitIrRepeatBlock(self, node):
+        return 'RepeatBlock(' + self.visit(node.children[0]) + ', ' + self.visit(node.total_shape) + ')'
+
     def visitIrDiagonalBlock(self, node):
         return (
             'DiagonalBlock(' + self.visit(node.children[0]) + ', '
@@ -374,6 +416,100 @@ class CodeGen(irVisitor.IRVisitor):
         input_expr = self.visit(node.children[0])
         perm_args = ', '.join(str(i) for i in node.permutation)
         return input_expr + '.permute(' + perm_args + ')'
+
+    def visitIrTorchMatmul(self, node):
+        return 'torch.matmul(' + self.visit(node.children[0]) + ', ' + self.visit(node.children[1]) + ')'
+
+    def visitIrTorchUnsqueeze(self, node):
+        return self.visit(node.children[0]) + '.unsqueeze(' + str(node.index) + ')'
+
+    def visitIrTorchSqueeze(self, node):
+        return self.visit(node.children[0]) + '.squeeze(' + str(node.index) + ')'
+
+    def visitIrTorchReshape(self, node):
+        return self.visit(node.children[0]) + '.reshape(' + self.visit(node.shape) + ')'
+
+    def visitIrTorchView(self, node):
+        return self.visit(node.children[0]) + '.view(' + self.visit(node.shape) + ')'
+
+    def visitIrTorchRepeat(self, node):
+        return self.visit(node.children[0]) + '.repeat(' + self.visit(node.repeats) + ')'
+
+    def visitIrTorchExpand(self, node):
+        return self.visit(node.children[0]) + '.expand(' + self.visit(node.shape) + ')'
+
+    def visitIrTorchSum(self, node):
+        return self.visit(node.children[0]) + '.sum(dim=' + str(node.dim) + ')'
+
+    def visitIrTorchZeros(self, node):
+        kwargs = []
+        if node.device is not None:
+            kwargs.append('device=' + self.visit(node.device))
+        if node.dtype is not None:
+            kwargs.append('dtype=' + self.visit(node.dtype))
+        args = [self.visit(node.size)] + kwargs
+        return 'torch.zeros(' + ', '.join(args) + ')'
+
+    def visitIrTorchEye(self, node):
+        kwargs = []
+        if node.device is not None:
+            kwargs.append('device=' + self.visit(node.device))
+        if node.dtype is not None:
+            kwargs.append('dtype=' + self.visit(node.dtype))
+        args = [self.visit(node.size)] + kwargs
+        return 'torch.eye(' + ', '.join(args) + ')'
+
+    def visitIrTorchFloat(self, node):
+        return self.visit(node.children[0]) + '.float()'
+
+    def visitIrTorchDiagEmbed(self, node):
+        return 'torch.diag_embed(' + self.visit(node.children[0]) + ')'
+
+    def visitIrTorchStride(self, node):
+        return self.visit(node.children[0]) + '.stride()'
+
+    def visitIrTorchAsStrided(self, node):
+        return (
+            'torch.as_strided(' + self.visit(node.children[0]) + ', '
+            + self.visit(node.size) + ', ' + self.visit(node.stride) + ')'
+        )
+
+    def visitIrTorchSlice(self, node):
+        return self.visit(node.children[0]) + '[' + self.renderTraceIndex(node.index) + ']'
+
+    def visitIrFConv2d(self, node):
+        return (
+            'F.conv2d(' + self.visit(node.children[0]) + ', '
+            + self.visit(node.children[1]) + ', stride='
+            + self.visit(node.stride) + ', padding=' + self.visit(node.padding) + ')'
+        )
+
+    def visitIrFConvTranspose2d(self, node):
+        kwargs = []
+        if node.stride is not None:
+            kwargs.append('stride=' + self.visit(node.stride))
+        if node.padding is not None:
+            kwargs.append('padding=' + self.visit(node.padding))
+        if node.output_padding is not None:
+            kwargs.append('output_padding=' + self.visit(node.output_padding))
+        return (
+            'F.conv_transpose2d(' + self.visit(node.children[0]) + ', '
+            + self.visit(node.children[1])
+            + (', ' + ', '.join(kwargs) if kwargs else '') + ')'
+        )
+
+    def visitIrFUnfold(self, node):
+        return (
+            'F.unfold(' + self.visit(node.children[0]) + ', kernel_size='
+            + self.visit(node.kernel_size) + ', padding=' + self.visit(node.padding)
+            + ', stride=' + self.visit(node.stride) + ')'
+        )
+
+    def visitIrAssignToView(self, node):
+        self.write(
+            self.visit(node.children[0]) + '[' + self.renderTraceIndex(node.index) + '] = '
+            + self.visit(node.children[1])
+        )
     
     def visitIrEmptyList(self, node):
         return '[]'
@@ -649,6 +785,8 @@ class CodeGen(irVisitor.IRVisitor):
         return self.get_operator_func(node.op) + '(' + lhs + ', ' + rhs + ')'
     
     def visitIrTensorOnes(self, node):
+        if isinstance(node.total_size, str):
+            return 'torch.ones(*' + node.total_size + ')'
         return 'torch.ones(*' + str(node.total_size.tolist()) + ')'
 
     def visitTensorRepeat(self, node):
@@ -893,6 +1031,9 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrObjectLookup(self, node):
         if node.object_name == "block":
             return self.visit(node.children[0]) + ".block"
+        if node.object_name == "block_dense_const":
+            input_expr = self.visit(node.children[0])
+            return "(" + input_expr + ".get_dense() if isinstance(" + input_expr + ", ConstBlock) else " + input_expr + ".block)"
         raise Exception("NOT IMPLEMENTED")
 
     def visitIrBlockCreateSimilar(self, node):

@@ -194,6 +194,7 @@ def binary(x, y, op, layer_index = None, counter = None, inside_while = False, w
 
         start_time = time.perf_counter()
         temp = convert_dense_to_sparse(x, y.total_size, json_list=json_list, x_index=lhs_idx)
+        lhs_idx = len(json_list)-1
         binary_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
         res = temp.binary(y, op, json_list = json_list, lhs_index=lhs_idx, rhs_index=rhs_idx)
         binary_tensor_ops_y_sparsity.update_total_time(time.perf_counter() - start_time)

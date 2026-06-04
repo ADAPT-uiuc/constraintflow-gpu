@@ -486,6 +486,44 @@ class IrDenseBlock(IrExpression):
         super().__init__()
         self.update_parent_child([blockIr])
 
+class IrPatchesBlock(IrExpression):
+    def __init__(self, blockIr, total_shape, ix, iy, ox, oy, sx, sy, px, py, kx, ky, num_channels, num_kernels):
+        super().__init__()
+        self.total_shape = total_shape
+        self.ix = ix
+        self.iy = iy
+        self.ox = ox
+        self.oy = oy
+        self.sx = sx
+        self.sy = sy
+        self.px = px
+        self.py = py
+        self.kx = kx
+        self.ky = ky
+        self.num_channels = num_channels
+        self.num_kernels = num_kernels
+        self.update_parent_child([blockIr])
+
+class IrKernelBlock(IrExpression):
+    def __init__(self, blockIr, total_shape, ix, iy, ox, oy, sx, sy, px, py):
+        super().__init__()
+        self.total_shape = total_shape
+        self.ix = ix
+        self.iy = iy
+        self.ox = ox
+        self.oy = oy
+        self.sx = sx
+        self.sy = sy
+        self.px = px
+        self.py = py
+        self.update_parent_child([blockIr])
+
+class IrRepeatBlock(IrExpression):
+    def __init__(self, blockIr, total_shape):
+        super().__init__()
+        self.total_shape = total_shape
+        self.update_parent_child([blockIr])
+
 
 # sparse_block.get_diagonal simulacrum trace — step 1: torch.diagonal on block tensor payload.
 class IrTorchDiagonal(IrExpression):
@@ -502,6 +540,124 @@ class IrTorchPermute(IrExpression):
         super().__init__()
         self.permutation = permutation
         self.update_parent_child([inputIr])
+
+class IrTorchMatmul(IrExpression):
+    def __init__(self, lhsIr, rhsIr):
+        super().__init__()
+        self.update_parent_child([lhsIr, rhsIr])
+
+class IrTorchUnsqueeze(IrExpression):
+    def __init__(self, inputIr, index):
+        super().__init__()
+        self.index = index
+        self.update_parent_child([inputIr])
+
+class IrTorchSqueeze(IrExpression):
+    def __init__(self, inputIr, index):
+        super().__init__()
+        self.index = index
+        self.update_parent_child([inputIr])
+
+class IrTorchReshape(IrExpression):
+    def __init__(self, inputIr, shape):
+        super().__init__()
+        self.shape = shape
+        self.update_parent_child([inputIr])
+
+class IrTorchView(IrExpression):
+    def __init__(self, inputIr, shape):
+        super().__init__()
+        self.shape = shape
+        self.update_parent_child([inputIr])
+
+class IrTorchRepeat(IrExpression):
+    def __init__(self, inputIr, repeats):
+        super().__init__()
+        self.repeats = repeats
+        self.update_parent_child([inputIr])
+
+class IrTorchExpand(IrExpression):
+    def __init__(self, inputIr, shape):
+        super().__init__()
+        self.shape = shape
+        self.update_parent_child([inputIr])
+
+class IrTorchSum(IrExpression):
+    def __init__(self, inputIr, dim):
+        super().__init__()
+        self.dim = dim
+        self.update_parent_child([inputIr])
+
+class IrTorchZeros(IrExpression):
+    def __init__(self, size, device=None, dtype=None):
+        super().__init__()
+        self.size = size
+        self.device = device
+        self.dtype = dtype
+
+class IrTorchEye(IrExpression):
+    def __init__(self, size, device=None, dtype=None):
+        super().__init__()
+        self.size = size
+        self.device = device
+        self.dtype = dtype
+
+class IrTorchFloat(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.update_parent_child([inputIr])
+
+class IrTorchDiagEmbed(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.update_parent_child([inputIr])
+
+class IrTorchStride(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.update_parent_child([inputIr])
+
+class IrTorchAsStrided(IrExpression):
+    def __init__(self, inputIr, size, stride):
+        super().__init__()
+        self.size = size
+        self.stride = stride
+        self.update_parent_child([inputIr])
+
+class IrTorchSlice(IrExpression):
+    def __init__(self, inputIr, index):
+        super().__init__()
+        self.index = index
+        self.update_parent_child([inputIr])
+
+class IrFConv2d(IrExpression):
+    def __init__(self, inputIr, weightIr, stride, padding):
+        super().__init__()
+        self.stride = stride
+        self.padding = padding
+        self.update_parent_child([inputIr, weightIr])
+
+class IrFConvTranspose2d(IrExpression):
+    def __init__(self, inputIr, weightIr, stride=None, padding=None, output_padding=None):
+        super().__init__()
+        self.stride = stride
+        self.padding = padding
+        self.output_padding = output_padding
+        self.update_parent_child([inputIr, weightIr])
+
+class IrFUnfold(IrExpression):
+    def __init__(self, inputIr, kernel_size, padding, stride):
+        super().__init__()
+        self.kernel_size = kernel_size
+        self.padding = padding
+        self.stride = stride
+        self.update_parent_child([inputIr])
+
+class IrAssignToView(IrStatement):
+    def __init__(self, inputIr, index, valueIr):
+        super().__init__()
+        self.index = index
+        self.update_parent_child([inputIr, valueIr])
 
 
 # create_similar_diagonal trace: wrap tensor payload as DiagonalBlock.
@@ -1656,5 +1812,4 @@ class IrProgram(IrAst):
         self.fstore = fstore
         self.irNodes = irNodes
         
-
 
