@@ -812,7 +812,7 @@ Blocks Types: "
         owns_capture = json_list is None and dummy_mode
         if json_list is None:
             json_list = []
-        if dummy_mode:
+        if dummy_mode and not owns_capture:
             assert lhs_index != -1
 
         start_time = time.perf_counter()
@@ -890,7 +890,18 @@ Blocks Types: "
             'output': len(json_list)
         }
         json_list.append(json_obj)
-        return ret_st if not dummy_mode else (ret_st, len(json_list)-1)
+        if owns_capture:
+            write_jit_capture_file(
+                'jit_SparseTensor_get_sparse_custom_range',
+                'SparseTensor_get_sparse_custom_range',
+                layer_index,
+                counter,
+                inside_while,
+                while_number,
+                while_iteration,
+                json_list
+            )
+        return ret_st if (not dummy_mode) or owns_capture else (ret_st, len(json_list)-1)
     
 
 
