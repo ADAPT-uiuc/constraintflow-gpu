@@ -51,24 +51,13 @@ class Abs_elem_sparse:
         return self.network[l].end
         
 
-    def get_elem(self, key, llist, d_field_jit_idx_map: dict[str, Any]={}, json_list=None, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None, lhs_index=-1):
+    def get_elem(self, key, llist, json_list=None, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None, lhs_index=-1):
         """
         Gives certifier-specific information about the live neurons.
-
-        `d_field_jit_idx_map`: This is to provide a way to refer to the
-        elements in self.d in the JIT json. It should be constructed and
-        passed in by `Flow.flow`. It is structured like this:
-        - str (name of `self.d` field):
-            + 'llist' |-> the identifier for the corresponding torch.Tensor
-                or bool in the JIT json.
-            + 'l', 'u' |->  the identifier in jit json corresponding to the
-                block list in `self.d[key]: SparseTensor`.
-            + 'L', 'U' |-> the identifier in jit json corresponding to the
         
-        TODO: remove d_field_jit_idx_map and use a new
-            `get_Abs_elem_sparse_d_key` json method instead to get self.d[key]
-        
-        `lhs_index`: The index of `self` in `json_list`.
+        `lhs_index`: The index of `self` in `json_list`. Currently,
+            `Abs_elem_sparse` objects exist in transformers, so they can be
+            first-class objects in the JIT json.
         """
         start_time = time.time()
         llist = self.filter_non_live(llist)
@@ -89,13 +78,25 @@ class Abs_elem_sparse:
                     if 0 in llist.llist:
                         total_size = torch.tensor([self.batch_size, self.network[max(llist.llist)].end])
                         val_const = SparseTensor(start_indices, blocks, self.d[key].dims, total_size, end_indices, self.d[key].type, self.d[key].dense_const)
+                        d_key_idx = len(json_list)
+                        json_obj: dict[str, Any] = {
+                            'method': 'get_Abs_elem_sparse_d_key',
+                            'input': 'json_list_' + str(lhs_index),
+                            'key': key,
+                            'output': d_key_idx
+                        }
+                        json_list.append(json_obj)
+                        blocks_idx = len(json_list)
+                        json_obj: dict[str, Any] = {
+                            'method': 'get_sparse_tensor_blocks',
+                            'input': 'json_list_' + str(d_key_idx),
+                            'output': blocks_idx
+                        }
                         val_const_idx = len(json_list)
                         json_obj: dict[str, Any] = {
                             'method': 'SparseTensor',
                             'start_indices': [start_idx.tolist() for start_idx in start_indices],
-                            'blocks': 'json_list_' + str(
-                                d_field_jit_idx_map[key]
-                                if key in d_field_jit_idx_map else None),
+                            'blocks': 'json_list_' + str(blocks_idx),
                             'dims': self.d[key].dims,
                             'end_indices': [end_idx.tolist() for end_idx in end_indices],
                             'type': self.d[key].type.__name__,
@@ -108,12 +109,21 @@ class Abs_elem_sparse:
                     for l in llist.llist:
                         start_index = torch.tensor([0, llist.network[l].start])
                         end_index = torch.tensor([self.batch_size, llist.network[l].end])
+                        d_key_idx = len(json_list)
+                        json_obj: dict[str, Any] = {
+                            'method': 'get_abs_elem_sparse_d_key',
+                            'input': 'json_list_' + str(lhs_index),
+                            'key': key,
+                            'output': d_key_idx
+                        }
+                        json_list.append(json_obj)
                         res = self.d[key].get_sparse_custom_range(
                             start_index, end_index,
                             json_list=json_list, layer_index=layer_index,
                             counter=counter, inside_while=inside_while, while_number=while_number,
                             while_iteration=while_iteration,
-                            lhs_index=d_field_jit_idx_map[key] if key in d_field_jit_idx_map else -1)
+                            lhs_index=d_key_idx
+                        )
                         gscr_st_idx = -1
                         if dummy_mode:
                             res, gscr_st_idx = res
@@ -151,7 +161,8 @@ class Abs_elem_sparse:
                         start_index, end_index, total_size,
                         json_list=json_list, layer_index=layer_index, counter=counter,
                         inside_while=inside_while, while_number=while_number,
-                        while_iteration=while_iteration, lhs_index=val_const_idx)
+                        while_iteration=while_iteration, lhs_index=val_const_idx
+                    )
                     val_const_idx = -1
                     if dummy_mode:
                         val_const, val_const_idx = val_const
@@ -162,9 +173,9 @@ class Abs_elem_sparse:
                         1, json_list=json_list, layer_index=layer_index,
                         counter=counter, inside_while=inside_while,
                         while_number=while_number, while_iteration=while_iteration,
-                        lhs_index=val_const_idx)
-                    if dummy_mode:
-                        val_const, val_const_idx = val_const
+                        lhs_index=val_const_idx
+                    )
+                    val_const_idx = len(json_list) - 1
 
                 repeat_shape = torch.tensor(llist.initial_shape + [1])
                 if not (repeat_shape==1).all():
@@ -196,31 +207,134 @@ class Abs_elem_sparse:
                     if 0 in llist.llist:
                         total_size = torch.tensor([self.batch_size, self.network[max(llist.llist)].end])
                         val_const = SparseTensor(start_indices, blocks, self.d[key].const.dims, total_size, end_indices, self.d[key].const.type, self.d[key].const.dense_const)
+                        d_key_idx = len(json_list)
+                        json_obj: dict[str, Any] = {
+                            'method': 'get_abs_elem_sparse_d_key',
+                            'input': 'json_list_' + str(lhs_index),
+                            'key': key,
+                            'output': d_key_idx
+                        }
+                        json_list.append(json_obj)
+                        const_idx = len(json_list)
+                        json_obj: dict[str, Any] = {
+                            'method': 'get_poly_exp_sparse_const',
+                            'input': 'json_list_' + str(d_key_idx),
+                            'output': const_idx
+                        }
+                        json_list.append(json_obj)
+                        blocks_idx = len(json_list)
+                        json_obj: dict[str, Any] = {
+                            'method': 'get_sparse_tensor_blocks',
+                            'input': 'json_list_' + str(const_idx),
+                            'output': blocks_idx
+                        }
+                        json_list.append(json_obj)
                         val_const_idx = len(json_list)
+                        json_obj: dict[str, Any] = {
+                            'method': 'SparseTensor',
+                            'start_indices': [start_idx.tolist() for start_idx in start_indices],
+                            'blocks': 'json_list_' + str(blocks_idx),
+                            'dims': self.d[key].const.dims,
+                            'total_size': total_size.tolist(),
+                            'end_indices': [end_idx.tolist() for end_idx in end_indices],
+                            'type': self.d[key].const.type.__name__,
+                            'dense_const': self.d[key].const.dense_const,
+                            'output': val_const_idx
+                        }
+                        json_list.append(json_obj)
                     assert val_const_idx != -1
                 else:
+                    blocks_idx = len(json_list)
+                    blocks_idx_original = blocks_idx
+                    json_obj: dict[str, Any] = {
+                        'method': 'initialize',
+                        'name': 'res_blocks',
+                        'value': [],
+                        'output': blocks_idx
+                    }
                     for l in llist.llist:
                         start_index = torch.tensor([0, llist.network[l].start])
                         end_index = torch.tensor([self.batch_size, llist.network[l].end])
-                        res = self.d[key].const.get_sparse_custom_range(start_index, end_index)
+                        d_key_idx = len(json_list)
+                        json_obj: dict[str, Any] = {
+                            'method': 'get_abs_elem_sparse_d_key',
+                            'input': 'json_list_' + str(lhs_index),
+                            'key': key,
+                            'output': d_key_idx
+                        }
+                        json_list.append(json_obj)
+                        const_idx = len(json_list)
+                        json_obj: dict[str, Any] = {
+                            'method': 'get_poly_exp_sparse_const',
+                            'input': 'json_list_' + str(d_key_idx),
+                            'output': const_idx
+                        }
+                        json_list.append(json_obj)
+                        res = self.d[key].const.get_sparse_custom_range(
+                            start_index, end_index, json_list=json_list,
+                            layer_index=layer_index, counter=counter,
+                            inside_while=inside_while, while_number=while_number,
+                            while_iteration=while_iteration, lhs_index=const_idx
+                        )
+                        res_idx = -1
+                        if dummy_mode:
+                            res, res_idx = res
                         start_indices += res.start_indices
                         end_indices += res.end_indices
                         blocks += res.blocks
+                        new_blocks_idx = len(json_list)
+                        json_obj: dict[str, Any] = {
+                            'method': 'append_list',
+                            'list': 'json_list_' + str(blocks_idx),
+                            'value': 'json_list_' + str(res_idx),
+                            'output': new_blocks_idx
+                        }
+                        blocks_idx = new_blocks_idx
+                        json_list.append(json_obj)
                     val_const = SparseTensor(start_indices, blocks, res.dims, res.total_size, end_indices, res.type, res.dense_const)
-                    
+                    assert blocks_idx != blocks_idx_original
+                    val_const_idx = len(json_list)
+                    json_obj: dict[str, Any] = {
+                        'method': 'SparseTensor',
+                        'start_indices': [start_idx.tolist() for start_idx in start_indices],
+                        'blocks': 'json_list_' + str(blocks_idx),
+                        'dims': res.dims,
+                        'total_size': res.total_size.tolist(),
+                        'end_indices': [end_idx.tolist() for end_idx in end_indices],
+                        'type': res.type.__name__,
+                        'dense_const': res.dense_const,
+                        'output': val_const_idx
+                    }
+                    json_list.append(json_obj)
 
                     start_index = torch.tensor([0, self.network[min(llist.llist)].start])
                     end_index = torch.tensor([self.batch_size, self.network[max(llist.llist)].end])
                     total_size = end_index - start_index
-                    val_const = val_const.reduce_size(start_index, end_index, total_size)
+                    val_const = val_const.reduce_size(
+                        start_index, end_index, total_size,
+                        json_list=json_list, layer_index=layer_index, counter=counter,
+                        inside_while=inside_while, while_number=while_number,
+                        while_iteration=while_iteration, lhs_index=val_const_idx
+                    )
+                    if dummy_mode:
+                        val_const, val_const_idx = val_const
                 extra_dims = len(llist.initial_shape)-1
                 
                 for i in range(extra_dims):
-                    val_const = val_const.unsqueeze(1)
+                    val_const = val_const.unsqueeze(
+                        1, json_list=json_list, layer_index=layer_index,
+                        counter=counter, inside_while=inside_while,
+                        while_number=while_number, while_iteration=while_iteration,
+                    )
+                    val_const_idx = len(json_list) - 1
+
 
                 repeat_shape = torch.tensor(llist.initial_shape + [1])
                 if not (repeat_shape==1).all():
-                    val_const = val_const.repeat(repeat_shape)
+                    val_const = val_const.repeat(
+                        repeat_shape, json_list=json_list, lhs_index=val_const_idx
+                    )
+                    val_const_idx = len(json_list) - 1
 
 
                 
@@ -229,43 +343,170 @@ class Abs_elem_sparse:
                     start_indices = self.d[key].mat.start_indices
                     end_indices = self.d[key].mat.end_indices
                     blocks = self.d[key].mat.blocks
+                    d_key_idx = len(json_list)
+                    json_obj: dict[str, Any] = {
+                        'method': 'get_abs_elem_sparse_d_key',
+                        'input': 'json_list_' + str(lhs_index),
+                        'key': key,
+                        'output': d_key_idx
+                    }
+                    json_list.append(json_obj)
+                    mat_idx = len(json_list)
+                    json_obj: dict[str, Any] = {
+                        'method': 'get_poly_exp_sparse_mat',
+                        'input': 'json_list_' + str(d_key_idx),
+                        'output': mat_idx
+                    }
+                    json_list.append(json_obj)
+                    blocks_idx = len(json_list)
+                    json_obj: dict[str, Any] = {
+                        'method': 'get_sparse_tensor_blocks',
+                        'input': 'json_list_' + str(mat_idx),
+                        'output': blocks_idx
+                    }
+                    json_list.append(json_obj)
                     if 0 in llist.llist:
                         total_size = torch.tensor([self.batch_size, self.network[max(llist.llist)].end, self.d[key].mat.total_size[-1]])
                         val_mat = SparseTensor(start_indices, blocks, self.d[key].mat.dims, total_size, end_indices, self.d[key].mat.type, self.d[key].mat.dense_const)
+                        val_mat_idx = len(json_list)
+                        json_obj: dict[str, Any] = {
+                            'method': 'SparseTensor',
+                            'start_indices': [start_idx.tolist() for start_idx in start_indices],
+                            'blocks': 'json_list_' + str(blocks_idx),
+                            'dims': self.d[key].mat.dims,
+                            'total_size': total_size.tolist(),
+                            'end_indices': [end_idx.tolist() for end_idx in end_indices],
+                            'type': self.d[key].mat.type.__name__,
+                            'dense_const': self.d[key].mat.dense_const,
+                            'output': val_mat_idx
+                        }
+                        json_list.append(json_obj)
                 else:
+                    hkljlj
                     start_indices = []
                     end_indices = []
                     blocks = []
+                    blocks_idx = len(json_list)
+                    json_obj: dict[str, Any] = {
+                        'method': 'initialize',
+                        'name': 'mat_blocks',
+                        'value': [],
+                        'output': blocks_idx
+                    }
+                    json_list.append(json_obj)
                     for l in llist.llist:
                         start_index = torch.tensor([0, llist.network[l].start, self.network[min(llist_compressed)].start])
                         end_index = torch.tensor([self.batch_size, llist.network[l].end, self.network[max(llist_compressed)].end])
                         blocks_ids, block_start_indices, block_end_indices = self.d[key].mat.get_block_id(start_index, end_index)
                         for i in range(len(blocks_ids)):
                             block = self.d[key].mat.blocks[blocks_ids[i]]
+                            d_key_idx = len(json_list)
+                            json_obj: dict[str, Any] = {
+                                'method': 'get_abs_elem_sparse_d_key',
+                                'input': 'json_list_' + str(lhs_index),
+                                'key': key,
+                                'output': d_key_idx
+                            }
+                            json_list.append(json_obj)
+                            mat_idx = len(json_list)
+                            json_obj: dict[str, Any] = {
+                                'method': 'get_poly_exp_sparse_mat',
+                                'input': 'json_list_' + str(d_key_idx),
+                                'output': mat_idx
+                            }
+                            json_list.append(json_obj)
+                            blk_idx = len(json_list)
+                            json_obj: dict[str, Any] = {
+                                'method': 'extract_block',
+                                'input': 'json_list_' + str(mat_idx),
+                                'block_id': blocks_ids[i],
+                                'output': blk_idx
+                            }
+                            json_list.append(json_obj)
                             start_indices.append(torch.tensor([0, llist.network[l].start, block_start_indices[i][2]]))
                             end_indices.append(torch.tensor([self.batch_size, llist.network[l].end, block_end_indices[i][2]]))
                             blocks.append(block)
+                            new_blocks_idx = len(json_list)
+                            json_obj: dict[str, Any] = {
+                                'method': 'append_list',
+                                'list': 'json_list_' + str(blocks_idx),
+                                'value': 'json_list_' + str(blk_idx),
+                                'output': new_blocks_idx
+                            }
+                            blocks_idx = new_blocks_idx
+                            json_list.append(json_obj)
                     
                     val_mat = SparseTensor(start_indices, blocks, len(start_indices[0]), torch.tensor([self.batch_size, self.network[llist.llist[0]].size, self.d[key].mat.total_size[-1]]), end_indices, self.d[key].mat.type, self.d[key].mat.dense_const)
+                    val_mat_idx = len(json_list)
+                    json_obj: dict[str, Any] = {
+                        'method': 'SparseTensor',
+                        'start_indices': [start_idx.tolist() for start_idx in start_indices],
+                        'blocks': 'json_list_' + str(blocks_idx),
+                        'dims': len(start_indices[0]),
+                        'total_size': [self.batch_size,
+                                       self.network[llist.llist[0]].size,
+                                       self.d[key].mat.total_size[-1]],
+                        'end_indices': [end_idx.tolist() for end_idx in end_indices],
+                        'type': self.d[key].mat.type.__name__,
+                        'dense_const': self.d[key].mat.dense_const,
+                        'output': val_mat_idx
+                    }
+                    json_list.append(json_obj)
                     
                     start_index = torch.tensor([0, self.network[min(llist.llist)].start, 0])
                     end_index = torch.tensor([self.batch_size, self.network[max(llist.llist)].end, val_mat.total_size[-1]])
                     total_size = end_index - start_index
-                    val_mat = val_mat.reduce_size(start_index, end_index, total_size)
+                    val_mat = val_mat.reduce_size(
+                        start_index, end_index, total_size,
+                        json_list=json_list, layer_index=layer_index, counter=counter,
+                        inside_while=inside_while, while_number=while_number,
+                        while_iteration=while_iteration, lhs_index=val_mat_idx)
+                    if dummy_mode:
+                        val_mat, val_mat_idx = val_mat
                 extra_dims = len(llist.initial_shape)-1
                 for i in range(extra_dims):
-                    val_mat = val_mat.unsqueeze(1)
+                    val_mat = val_mat.unsqueeze(
+                        1, json_list=json_list, layer_index=layer_index, counter=counter,
+                        inside_while=inside_while, while_number=while_number,
+                        while_iteration=while_iteration)
+                    val_mat_idx = len(json_list) - 1
                 
                 repeat_shape = torch.tensor(llist.initial_shape + [1,1])
                 if not (repeat_shape==1).all():
-                    val_mat = val_mat.repeat(repeat_shape)
+                    val_mat = val_mat.repeat(
+                        repeat_shape, json_list=json_list, lhs_index=val_mat_idx)
+                    val_mat_idx = len(json_list) - 1
                 
                 end_time = time.time()
                 
                 get_elem_time.update_total_time(end_time-start_time)
-                return PolyExpSparse(self.network, val_mat, val_const)
+                ret_pes = PolyExpSparse(self.network, val_mat, val_const)
+                pes_idx = len(json_list)
+                # The network is statically known and fixed in a
+                #   simulacrum-reuse procedure, and is not a first-class object.
+                # Therefore, we do not encode the `network` parameter to
+                #   `PolyExpSparse` in the JIT json.
+                json_obj: dict[str, Any] = {
+                    'method': 'PolyExpSparse',
+                    'mat': 'json_list_' + str(val_mat_idx),
+                    'const': 'json_list_' + str(val_const_idx),
+                }
+                json_list.append(json_obj)
+                if owns_capture:
+                    write_jit_capture_file(
+                        'jit_Abs_elem_sparse_get_elem',
+                        'Abs_elem_sparse_get_elem',
+                        layer_index,
+                        counter,
+                        inside_while,
+                        while_number,
+                        while_iteration,
+                        json_list
+                    )
+                return ret_pes
             
             elif self.types[key] == 'SymExp':
+                raise NotImplementedError
                 start_indices = []
                 end_indices = []
                 blocks = []
