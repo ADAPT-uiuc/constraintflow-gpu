@@ -80,7 +80,7 @@ class Abs_elem_sparse:
                         val_const = SparseTensor(start_indices, blocks, self.d[key].dims, total_size, end_indices, self.d[key].type, self.d[key].dense_const)
                         d_key_idx = len(json_list)
                         json_obj: dict[str, Any] = {
-                            'method': 'get_Abs_elem_sparse_d_key',
+                            'method': 'get_abs_elem_sparse_d_key',
                             'input': 'json_list_' + str(lhs_index),
                             'key': key,
                             'output': d_key_idx

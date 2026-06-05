@@ -584,6 +584,41 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 torch.tensor(json_obj["end_index"], dtype=torch.int64),
                 torch.tensor(json_obj["block_start_index"], dtype=torch.int64),
             )
+        elif json_obj["method"] == "PolyExpSparse":
+            if "json_list_" in json_obj["mat"]:
+                mat_ir = output_vars[int(json_obj["mat"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            if "json_list_" in json_obj["const"]:
+                const_ir = output_vars[int(json_obj["const"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrCombineToPoly(mat_ir, const_ir)
+        elif json_obj["method"] == "get_sparse_tensor_blocks":
+            if "json_list_" in json_obj["input"]:
+                input_ir = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrGetSparseTensorBlocks(input_ir)
+        elif json_obj["method"] == "get_abs_elem_sparse_d_key":
+            if "json_list_" in json_obj["input"]:
+                input_ir = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            key = json_obj["key"]
+            output = IrGetAbsElemSparseDKey(input_ir, key)
+        elif json_obj["method"] == "get_poly_exp_sparse_const":
+            if "json_list_" in json_obj["input"]:
+                input_ir = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrGetPolyExpSparseConst(input_ir)
+        elif json_obj["method"] == "get_poly_exp_sparse_mat":
+            if "json_list_" in json_obj["input"]:
+                input_ir = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrGetPolyExpSparseMat(input_ir)
         else:
             raise Exception(f"Unknown method {json_obj['method']} in replay")
         

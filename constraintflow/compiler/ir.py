@@ -504,6 +504,27 @@ class IrBlockExtract(IrExpression):
         super().__init__()
         self.update_parent_child([inputIr, indexIr])
 
+class IrGetSparseTensorBlocks(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.update_parent_child([inputIr])
+
+class IrGetAbsElemSparseDKey(IrExpression):
+    def __init__(self, inputIr, key: str):
+        super().__init__()
+        self.key = key
+        self.update_parent_child([inputIr])
+
+class IrGetPolyExpSparseConst(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.update_parent_child([inputIr])
+
+class IrGetPolyExpSparseMat(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.update_parent_child([inputIr])
+
 class IrEpsilon(IrExpression):
     def __init__(self, num=None):
         super().__init__()
