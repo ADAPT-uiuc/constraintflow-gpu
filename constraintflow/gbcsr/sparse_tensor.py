@@ -641,6 +641,7 @@ Blocks Types: "
 
     # NOTE: Use at your own risk. It does not create a copy.
     def get_sub_block_custom_range(self, start_index, end_index, block_id, tensor=True, return_extraction_mode=False, json_list=None, lhs_index=-1):
+        assert json_list != None
         start_time = time.perf_counter()
         trace = json_list is not None
         if not trace:
