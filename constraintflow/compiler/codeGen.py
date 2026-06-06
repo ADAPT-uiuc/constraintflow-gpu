@@ -375,8 +375,24 @@ class CodeGen(irVisitor.IRVisitor):
     
     def visitIrBlockExtract(self, node):
         return self.visit(node.children[0]) + '.blocks[' + self.visit(node.children[1]) + ']'
-
     
+    def visitIrGetSparseTensorBlocks(self, node):
+        the_sparse_tensor = self.visit(node.children[0])
+        return the_sparse_tensor + '.blocks'
+
+    def visitIrGetAbsElemSparseDKey(self, node):
+        the_abs_elem_sparse = self.visit(node.children[0])
+        key = node.key
+        return the_abs_elem_sparse + f'.d[{key}]'
+    
+    def visitIrGetPolyExpSparseConst(self, node):
+        the_pes = self.visit(node.children[0])
+        return the_pes + '.const'
+    
+    def visitIrGetPolyExpSparseMat(self, node):
+        the_pes = self.visit(node.children[0])
+        return the_pes + '.mat'
+
     def get_operator_func(self, name: str):
         if not isinstance(name, str):
             name = name.__name__

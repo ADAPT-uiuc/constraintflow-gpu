@@ -208,6 +208,18 @@ class IRVisitor:
         elif isinstance(node, IR.IrBlockExtract):
             return self.visitIrBlockExtract(node)
         
+        elif isinstance(node, IR.IrGetSparseTensorBlocks):
+            return self.visitIrGetSparseTensorBlocks(node)
+        
+        elif isinstance(node, IR.IrGetAbsElemSparseDKey):
+            return self.visitIrGetAbsElemSparseDKey(node)
+        
+        elif isinstance(node, IR.IrGetPolyExpSparseConst):
+            return self.visitIrGetPolyExpSparseConst(node)
+        
+        elif isinstance(node, IR.IrGetPolyExpSparseMat):
+            return self.visitIrGetPolyExpSparseMat(node)
+        
         elif isinstance(node, IR.IrSimpleBinary):
             return self.visitIrSimpleBinary(node)
         
