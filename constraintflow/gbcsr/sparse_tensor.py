@@ -1,4 +1,5 @@
 import builtins
+import inspect
 from typing import Any
 import torch
 import math
@@ -823,7 +824,7 @@ Blocks Types: "
         res_end_indices = []
         block_list_in_json_idx: int = len(json_list)
         json_obj: dict[str, Any] = {
-            'method': 'initialize',
+            'method': 'initialise',
             'name': 'ret_blocks',
             'value': '[]',
             'output': block_list_in_json_idx
@@ -888,7 +889,8 @@ Blocks Types: "
             'end_indices': [tensor_to_list(x) for x in res_end_indices],
             'type': self.type.__name__,
             'dense_const': self.dense_const,
-            'output': len(json_list)
+            'output': len(json_list),
+            'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
         }
         json_list.append(json_obj)
         if owns_capture:

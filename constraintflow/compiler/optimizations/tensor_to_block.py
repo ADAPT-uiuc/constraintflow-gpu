@@ -167,7 +167,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         filename = f'jit_Abs_elem_sparse_get_elem/Abs_elem_sparse_get_elem_None_None_False_None_None.json'
     elif isinstance(expr, IrAccess) and expr.isMetadata:
         filename = f'jit_llist_get_metadata/llist_get_metadata_None_None_False_None_None.json'
-        print(filename)
+        # print(filename)
     
     with open(filename, 'r') as f:
         json_list = json.load(f)
@@ -242,6 +242,9 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         
         elif json_obj["method"] == "SparseTensor":
             if "json_list_" in json_obj['blocks']:
+                print(len(output_vars), int(json_obj['blocks'].split("_")[-1]))
+                if 'debug_pos' in json_obj:
+                    print(json_obj['debug_pos'])
                 blocksIr = output_vars[int(json_obj['blocks'].split("_")[-1])]
             elif json_obj['blocks'] == []:
                 blocksIr = []
@@ -275,7 +278,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             elif isinstance(output, bool):
                 output = IrConst(output, 'Bool')
             else:
-                raise Exception("NOT IMPLEMENTED")
+                raise Exception(f"NOT IMPLEMENTED output: {output}")
 
         elif json_obj["method"] == "bool_value":
             output = IrConst(json_obj["value"], 'Bool')
@@ -622,11 +625,13 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             output = IrGetSparseTensorBlocks(input_ir)
         elif json_obj["method"] == "get_abs_elem_sparse_d_key":
             if "json_list_" in json_obj["input"]:
-                input_ir = output_vars[int(json_obj["input"].split("_")[-1])]
+                # print(len(output_vars), int(json_obj["input"].split("_")[-1]))
+                # input_ir = output_vars[int(json_obj["input"].split("_")[-1])]
+                pass
             else:
                 raise Exception("NOT IMPLEMENTED")
             key = json_obj["key"]
-            output = IrGetAbsElemSparseDKey(input_ir, key)
+            output = IrGetAbsElemSparseDKey(None, key)
         elif json_obj["method"] == "get_poly_exp_sparse_const":
             if "json_list_" in json_obj["input"]:
                 input_ir = output_vars[int(json_obj["input"].split("_")[-1])]

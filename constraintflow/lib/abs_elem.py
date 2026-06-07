@@ -1,4 +1,5 @@
 from typing import Any
+import inspect
 
 import torch
 import copy
@@ -92,16 +93,19 @@ class Abs_elem_sparse:
                             'input': 'json_list_' + str(d_key_idx),
                             'output': blocks_idx
                         }
+                        json_list.append(json_obj)
                         val_const_idx = len(json_list)
                         json_obj: dict[str, Any] = {
                             'method': 'SparseTensor',
                             'start_indices': [start_idx.tolist() for start_idx in start_indices],
                             'blocks': 'json_list_' + str(blocks_idx),
                             'dims': self.d[key].dims,
+                            'total_size': total_size.tolist(),
                             'end_indices': [end_idx.tolist() for end_idx in end_indices],
                             'type': self.d[key].type.__name__,
                             'dense_const': self.d[key].dense_const,
-                            'output': val_const_idx
+                            'output': val_const_idx,
+                            'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
                         }
                         json_list.append(json_obj)
                     assert val_const_idx != -1
@@ -150,7 +154,8 @@ class Abs_elem_sparse:
                         'end_indices': [end_idx.tolist() for end_idx in end_indices],
                         'type': res.type.__name__,
                         'dense_const': res.dense_const,
-                        'output': val_const_idx
+                        'output': val_const_idx,
+                        'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
                     }
                     json_list.append(json_obj)
 
@@ -239,7 +244,8 @@ class Abs_elem_sparse:
                             'end_indices': [end_idx.tolist() for end_idx in end_indices],
                             'type': self.d[key].const.type.__name__,
                             'dense_const': self.d[key].const.dense_const,
-                            'output': val_const_idx
+                            'output': val_const_idx,
+                            'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
                         }
                         json_list.append(json_obj)
                     assert val_const_idx != -1
@@ -247,9 +253,9 @@ class Abs_elem_sparse:
                     blocks_idx = len(json_list)
                     blocks_idx_original = blocks_idx
                     json_obj: dict[str, Any] = {
-                        'method': 'initialize',
+                        'method': 'initialise',
                         'name': 'res_blocks',
-                        'value': [],
+                        'value': '[]',
                         'output': blocks_idx
                     }
                     for l in llist.llist:
@@ -303,7 +309,8 @@ class Abs_elem_sparse:
                         'end_indices': [end_idx.tolist() for end_idx in end_indices],
                         'type': res.type.__name__,
                         'dense_const': res.dense_const,
-                        'output': val_const_idx
+                        'output': val_const_idx,
+                        'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
                     }
                     json_list.append(json_obj)
 
@@ -378,7 +385,8 @@ class Abs_elem_sparse:
                             'end_indices': [end_idx.tolist() for end_idx in end_indices],
                             'type': self.d[key].mat.type.__name__,
                             'dense_const': self.d[key].mat.dense_const,
-                            'output': val_mat_idx
+                            'output': val_mat_idx,
+                            'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
                         }
                         json_list.append(json_obj)
                 else:
@@ -388,9 +396,9 @@ class Abs_elem_sparse:
                     blocks = []
                     blocks_idx = len(json_list)
                     json_obj: dict[str, Any] = {
-                        'method': 'initialize',
+                        'method': 'initialise',
                         'name': 'mat_blocks',
-                        'value': [],
+                        'value': '[]',
                         'output': blocks_idx
                     }
                     json_list.append(json_obj)
@@ -449,7 +457,8 @@ class Abs_elem_sparse:
                         'end_indices': [end_idx.tolist() for end_idx in end_indices],
                         'type': self.d[key].mat.type.__name__,
                         'dense_const': self.d[key].mat.dense_const,
-                        'output': val_mat_idx
+                        'output': val_mat_idx,
+                        'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
                     }
                     json_list.append(json_obj)
                     
