@@ -182,7 +182,8 @@ class Llist:
                                 'method': 'repeat',
                                 'input': 'json_list_' + str(unsqueeze_idcs[-1]),
                                 'repeat_dims': repeat_dims.tolist(),
-                                'output': len(json_list)
+                                'output': len(json_list),
+                                'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
                             }
                             dense_idx = len(json_list)
                             json_list.append(json_obj)
@@ -267,7 +268,8 @@ class Llist:
                             'method': 'repeat',
                             'input': 'json_list_' + str(unsqueeze_idcs[-1]),
                             'repeat_dims': repeat_dims.tolist(),
-                            'output': repeat_idx
+                            'output': repeat_idx,
+                            'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
                         }
                         json_list.append(json_obj)
                         ret.append(block)

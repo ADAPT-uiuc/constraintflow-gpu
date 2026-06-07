@@ -184,6 +184,7 @@ class Abs_elem_sparse:
 
                 repeat_shape = torch.tensor(llist.initial_shape + [1])
                 if not (repeat_shape==1).all():
+                    assert val_const_idx != -1
                     val_const = val_const.repeat(
                         repeat_shape, json_list=json_list, lhs_index=val_const_idx)
                     if dummy_mode:
@@ -338,6 +339,7 @@ class Abs_elem_sparse:
 
                 repeat_shape = torch.tensor(llist.initial_shape + [1])
                 if not (repeat_shape==1).all():
+                    assert val_const_idx != -1
                     val_const = val_const.repeat(
                         repeat_shape, json_list=json_list, lhs_index=val_const_idx
                     )
@@ -482,6 +484,7 @@ class Abs_elem_sparse:
                 
                 repeat_shape = torch.tensor(llist.initial_shape + [1,1])
                 if not (repeat_shape==1).all():
+                    assert val_mat_idx != -1
                     val_mat = val_mat.repeat(
                         repeat_shape, json_list=json_list, lhs_index=val_mat_idx)
                     val_mat_idx = len(json_list) - 1

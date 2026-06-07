@@ -242,9 +242,9 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         
         elif json_obj["method"] == "SparseTensor":
             if "json_list_" in json_obj['blocks']:
-                print(len(output_vars), int(json_obj['blocks'].split("_")[-1]))
-                if 'debug_pos' in json_obj:
-                    print(json_obj['debug_pos'])
+                # print(len(output_vars), int(json_obj['blocks'].split("_")[-1]))
+                # if 'debug_pos' in json_obj:
+                #     print(json_obj['debug_pos'])
                 blocksIr = output_vars[int(json_obj['blocks'].split("_")[-1])]
             elif json_obj['blocks'] == []:
                 blocksIr = []
@@ -439,6 +439,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             else:
                 raise Exception("NOT IMPLEMENTED")
             repeat_dims = torch.tensor(json_obj["repeat_dims"], dtype=torch.int64)
+            print(f"filename: {filename}, Repeat dims: {repeat_dims}")
             output = IrBlockRepeat(inputIr, repeat_dims)
 
         elif json_obj["method"] == "block_clamp":

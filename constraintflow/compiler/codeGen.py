@@ -680,6 +680,9 @@ class CodeGen(irVisitor.IRVisitor):
         # repeat_dims = 'torch.tensor([' + repeat_dims + '])'
         temp = (node.repeat_dims)
         return self.visit(node.children[0]) + '.repeat(torch.tensor(' + str(node.repeat_dims.tolist()) + ', dtype=torch.int64))'
+        # ret = self.visit(node.children[0]) + '.repeat(torch.tensor(' + str(node.repeat_dims.tolist()) + ', dtype=torch.int64))'
+        # print(ret)
+        # return ret
 
     def visitIrGetDefaultStop(self, node):
         repeat_dims = ''
