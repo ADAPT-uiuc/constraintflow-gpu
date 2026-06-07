@@ -381,9 +381,10 @@ class CodeGen(irVisitor.IRVisitor):
         return the_sparse_tensor + '.blocks'
 
     def visitIrGetAbsElemSparseDKey(self, node):
-        the_abs_elem_sparse = self.visit(node.children[0])
+        # the_abs_elem_sparse = self.visit(node.children[0])
         key = node.key
-        return the_abs_elem_sparse + f'.d[{key}]'
+        # return the_abs_elem_sparse + f'.d[{key}]'
+        return f'abs_elem.d[{key}]'
     
     def visitIrGetPolyExpSparseConst(self, node):
         the_pes = self.visit(node.children[0])

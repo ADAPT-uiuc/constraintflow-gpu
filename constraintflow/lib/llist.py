@@ -1,5 +1,6 @@
 import torch 
 import math
+import inspect
 from typing import Any
 from constraintflow.lib.polyexp import *
 from constraintflow.lib.network import LayerType
@@ -133,9 +134,9 @@ class Llist:
                 json_list = []
             # type of ret: list[gbscr.sparse_block.SparseBlock]
             json_obj_representing_ret_list: dict[str, Any] = {
-                'method': 'initialize',
+                'method': 'initialise',
                 'name': 'ret',
-                'value': [],
+                'value': '[]',
                 'output': 0,
             }
             json_obj_representing_ret_list_idx = 0
@@ -331,7 +332,7 @@ class Llist:
                     block = ConstBlock(k, torch.tensor([self.network[k].size]), dummy_flag=False)
                     const_idx: int = len(json_list)
                     json_obj: dict[str, Any] = {
-                        'method': 'ConstBlock_shape_as_list',
+                        'method': 'ConstBlock',
                         'block': k,
                         'total_shape': [self.network[k].size],
                         'output': const_idx
@@ -343,7 +344,7 @@ class Llist:
                         json_obj: dict[str, Any] = {
                             'method': 'block_unsqueeze',
                             'input': 'json_list_' + str(const_idx),
-                            'dim': 0,
+                            'index': 0,
                             'output': len(json_list)
                         }
                         const_idx = len(json_list)
@@ -370,7 +371,7 @@ class Llist:
                     block = ConstBlock(int(mat), torch.tensor([self.network[k].size]), dummy_flag=False)
                     const_idx: int = len(json_list)
                     json_obj: dict[str, Any] = {
-                        'method': 'ConstBlock_shape_as_list',
+                        'method': 'ConstBlock',
                         'block': int(mat),
                         'total_shape': [self.network[k].size],
                         'output': const_idx
@@ -382,7 +383,7 @@ class Llist:
                         json_obj: dict[str, Any] = {
                             'method': 'block_unsqueeze',
                             'input': 'json_list_' + str(const_idx),
-                            'dim': 0,
+                            'index': 0,
                             'output': len(json_list)
                         }
                         const_idx = len(json_list)
@@ -410,9 +411,10 @@ class Llist:
                 'method': 'SparseTensor',
                 'start_indices': [idx.tolist() for idx in start_indices],
                 'blocks': 'json_list_' + str(json_obj_representing_ret_list_idx),
-                'dim': dim,
-                'total_shape': total_shape.tolist(),
-                'output': st_idx
+                'dims': dim,
+                'total_size': total_shape.tolist(),
+                'output': st_idx,
+                'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
             }
             json_list.append(json_obj)
             # print(f'ret_st: {ret_st}')
