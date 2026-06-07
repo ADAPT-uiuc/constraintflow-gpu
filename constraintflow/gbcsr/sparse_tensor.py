@@ -1,4 +1,5 @@
 import builtins
+from pprint import pprint
 import inspect
 from typing import Any
 import torch
@@ -2178,7 +2179,18 @@ Blocks Types: "
         return result
         
     
-    def repeat(self, repeat_dims, json_list=[], lhs_index=-1):
+    def repeat(self, repeat_dims, json_list=None, lhs_index=-1):
+        # if json_list is not None:
+        # print('repeat:')
+        # caller = inspect.stack()[1]
+        # fun = caller.function
+        # file = caller.filename
+        # line = caller.lineno
+        # print(f'repeat called as non-owner by {file}:{fun}:{line}')
+        # print('----------------------------------')
+        # pprint(inspect.stack())
+        if json_list is None:
+            json_list = []
         total_size = self.total_size * repeat_dims
         start_indices = []
         end_indices = []
@@ -2207,7 +2219,9 @@ Blocks Types: "
                 "method": "repeat",
                 "input": "json_list_" + str(len(json_list)-1),
                 "repeat_dims": repeat_dims.tolist(),
-                "output": len(json_list)
+                "output": len(json_list),
+                'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}',
+                'debug_caller': f'{inspect.stack()[1].filename}:{inspect.stack()[1].function}',
             }
             json_list.append(json_obj)
             blocks.append(self.blocks[i].repeat(repeat_dims))
