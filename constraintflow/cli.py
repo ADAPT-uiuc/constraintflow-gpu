@@ -11,6 +11,7 @@ print(f'reuse_mode in cli: {globals.reuse_mode}')
 
 
 import os
+import shutil
 import sys
 import torch
 import typer
@@ -30,6 +31,36 @@ from constraintflow.verifier.provesound import provesound as _provesound
 from constraintflow.lib.spec import get_network_and_input_spec
 
 app = typer.Typer(help="ConstraintFlow CLI for verification and compilation of DSL programs.")
+
+JIT_CAPTURE_DIRS = (
+    "jit_layers",
+    "jit_branch",
+    "jit_while",
+    "jit_unary",
+    "jit_any",
+    "jit_all",
+    "jit_binary",
+    "jit_where",
+    "jit_matmul",
+    "jit_defaultstop",
+    "jit_priority",
+    "jit_polyexp_stop",
+    "jit_polyexp_not_stop",
+    "jit_get_dims",
+    "jit_repeat",
+    "jit_clamp",
+    "jit_squeeze",
+    "jit_unsqueeze",
+    "jit_Abs_elem_sparse_get_elem",
+    "jit_llist_get_metadata",
+    "jit_SparseTensor_get_sparse_custom_range",
+)
+
+
+def clear_jit_captures():
+    for directory in JIT_CAPTURE_DIRS:
+        if os.path.isdir(directory):
+            shutil.rmtree(directory)
 
 
  
@@ -140,6 +171,7 @@ def compile_code(
         typer.echo(f"Error creating folder '{output_path}': {e}")
         raise typer.Exit(code=1)
 
+
     program = get_program(program_file)
     res = _compile(program, output_path)
     if res:
@@ -182,6 +214,9 @@ def run(
     except OSError as e:
         typer.echo(f"Error creating folder '{output_path}': {e}")
         raise typer.Exit(code=1)
+
+    if simulacrum:
+        clear_jit_captures()
     
     # if opt:
     #     sys.path.insert(0, os.path.abspath(output_path))

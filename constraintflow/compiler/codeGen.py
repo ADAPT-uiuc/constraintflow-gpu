@@ -361,6 +361,10 @@ class CodeGen(irVisitor.IRVisitor):
         return node.__name__
     
     def visitFloat(self, node):
+        if node == float('inf'):
+            return "float('inf')"
+        if node == float('-inf'):
+            return "float('-inf')"
         return str(node)
     
     def visitInt(self, node):
@@ -384,7 +388,7 @@ class CodeGen(irVisitor.IRVisitor):
         # the_abs_elem_sparse = self.visit(node.children[0])
         key = node.key
         # return the_abs_elem_sparse + f'.d[{key}]'
-        return f'abs_elem.d[{key}]'
+        return f'abs_elem.d[\'{key}\']'
     
     def visitIrGetPolyExpSparseConst(self, node):
         the_pes = self.visit(node.children[0])
