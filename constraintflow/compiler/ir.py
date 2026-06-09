@@ -513,6 +513,7 @@ class IrGetAbsElemSparseDKey(IrExpression):
     def __init__(self, inputIr, key: str):
         super().__init__()
         self.key = key
+        self.ttb_counter = -1
         self.update_parent_child([inputIr])
 
 class IrGetPolyExpSparseConst(IrExpression):
@@ -788,6 +789,7 @@ class IrAccess(IrExpression):
         super().__init__()
         self.isMetadata = isMetadata
         self.elem = elem
+        self.ttb_counter = -1
 
         lhsIrMetadata = lhsIr.irMetadata
 
