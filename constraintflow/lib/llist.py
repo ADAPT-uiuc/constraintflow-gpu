@@ -138,6 +138,7 @@ class Llist:
                 'name': 'ret',
                 'value': '[]',
                 'output': 0,
+                "debug": elem
             }
             json_obj_representing_ret_list_idx = 0
             json_list.append(json_obj_representing_ret_list)
@@ -214,7 +215,7 @@ class Llist:
                         json_list.append(json_obj)
                         kernel_idx: int = len(json_list)
                         json_obj: dict[str, Any] = {
-                            'method': 'KernelBlock_shape_as_list',
+                            'method': 'KernelBlock',
                             'block': None,
                             'total_shape': [self.network[k].size, self.network[self.network[k].parents[0]].size],
                             'ix': ix, 'iy': iy, 'ox': ox, 'oy': oy,

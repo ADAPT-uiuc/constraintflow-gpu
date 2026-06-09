@@ -861,9 +861,11 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrAccess(self, node):
         [lhsIr] = node.children
         if not node.isMetadata:
-            return 'abs_elem.get_elem(\'' + node.elem + '\', ' + self.visit(lhsIr) + ')'
+            return 'abs_elem.get_elem(\'' + node.elem + '\', ' + self.visit(lhsIr) \
+                + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=' + str(node.inside_while) + ', while_number=' + str(node.while_number) + ', while_iteration=None)'
         else:
-            return self.visit(lhsIr) + '.get_metadata(\'' + node.elem + '\', batch_size)'
+            return self.visit(lhsIr) + '.get_metadata(\'' + node.elem + '\', batch_size' \
+                + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=' + str(node.inside_while) + ', while_number=' + str(node.while_number) + ', while_iteration=None)'
         
     def visitIrReduce(self, node):
         [inputIr] = node.children

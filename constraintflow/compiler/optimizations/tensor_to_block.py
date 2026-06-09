@@ -114,7 +114,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop,
         IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop,
         IrAddDimension, IrRemoveDimension, IrAccess,
-        # IrGetAbsElemSparseDKey, IrGetPolyExpSparseConst,
+        # IrGetAbsElemSparseDKey, # IrGetPolyExpSparseConst,
         # IrGetPolyExpSparseMat
     )
     if not isinstance(expr, targets):
@@ -164,9 +164,9 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
     elif isinstance(expr, IrGetPolyexpNotStop):
         filename = f"jit_polyexp_not_stop/notstop_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrAccess) and (not expr.isMetadata):
-        filename = f'jit_Abs_elem_sparse_get_elem/Abs_elem_sparse_get_elem_None_None_False_None_None.json'
+        filename = f'jit_Abs_elem_sparse_get_elem/Abs_elem_sparse_get_elem_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
     elif isinstance(expr, IrAccess) and expr.isMetadata:
-        filename = f'jit_llist_get_metadata/llist_get_metadata_None_None_False_None_None.json'
+        filename = f'jit_llist_get_metadata/llist_get_metadata_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
         # print(filename)
     
     with open(filename, 'r') as f:
