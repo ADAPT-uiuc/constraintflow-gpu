@@ -52,6 +52,7 @@ class Layer:
         self.type= type
         # type of self.shape: list[int]
         self.shape = shape 
+        # type of self.size: int
         self.size = size 
         # start, end: All the *neurons* in the DNN are numbered using a unique
         #   integer identifier.

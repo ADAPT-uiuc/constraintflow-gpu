@@ -217,7 +217,7 @@ class Llist:
                         kernel_idx: int = len(json_list)
                         json_obj: dict[str, Any] = {
                             'method': 'KernelBlock',
-                            'block': None,
+                            'block': kth_weight,
                             'total_shape': [self.network[k].size, self.network[self.network[k].parents[0]].size],
                             'ix': ix, 'iy': iy, 'ox': ox, 'oy': oy,
                             'sx': sx, 'sy': sy, 'px': px, 'py': py,

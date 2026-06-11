@@ -404,6 +404,10 @@ class CodeGen(irVisitor.IRVisitor):
 
     def visitIrDenseBlock(self, node):
         return 'DenseBlock(' + self.visit(node.children[0]) + ')'
+    
+    def visitIrKernelBlock(self, node):
+        return f'KernelBlock({self.visit(node.children[0])}, torch.tensor({node.total_shape}), ' \
+               f'{node.ix}, {node.iy}, {node.ox}, {node.oy}, {node.sx}, {node.sy}, {node.px}, {node.py})'
 
     def get_operator_func(self, name: str):
         if not isinstance(name, str):
