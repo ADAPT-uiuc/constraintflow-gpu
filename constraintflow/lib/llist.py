@@ -459,13 +459,35 @@ class Llist:
         self.llist_flag = True
         return True
                 
-    def dot(self, mats: SparseTensor, total_size: int):
+    def dot(self, mats, total_size,
+            json_list=None, layer_index=None, counter=None,
+            inside_while=False, while_number=None, while_iteration=None):
         if not isinstance(mats, list):
             mats: list[SparseTensor] = [mats]
         else:
             assert(False)
+        owns_capture = (json_list is None) and dummy_mode
+        if json_list is None:
+            json_list = []
+        rhs_idx = len(json_list)
+        json_obj: dict[str, Any] = {
+            'method': 'noop',
+            'input': 'rhs',
+            'output': rhs_idx
+        }
+        json_list.append(json_obj)
+        mats_0_idx = len(json_list)
+        json_obj: dict[str, Any] = {
+            'method': 'index_lookup',
+            'input': 'json_list_' + str(rhs_idx),
+            'index': 0,
+            'output': mats_0_idx
+        }
+        json_list.append(json_obj)
         initial_shape = self.initial_shape
-        polyexp_const = SparseTensor([], [], 1, torch.tensor([1]))
+        # If `SparseTensor` constructor has no side effects (I'm assuming so
+        #   for a constructor) this should have no influence at all, commented.
+        # polyexp_const = SparseTensor([], [], 1, torch.tensor([1]))
         polyexp_const = 0.0
         if self.llist_flag:
             start_indices = [torch.tensor([0]*len(self.initial_shape) + [self.network[i].start]) for i in self.llist]
@@ -484,7 +506,70 @@ class Llist:
             initial_shape.append(math.lcm(self.initial_shape[j], mats[0].total_size[j].item()))
         
         new_total_size = torch.tensor(initial_shape+[total_size])
+        res_blocks_idx = len(json_list)
+        json_obj: dict[str, Any] = {
+            'method': 'initialise',
+            'name': 'res_blocks',
+            'value': '[]',
+            'output': res_blocks_idx
+        }
+        json_list.append(json_obj)
+        for i in range(len(mats[0].blocks)):
+            block_i_idx = len(json_list)
+            json_obj: dict[str, Any] = {
+                'method': 'extract_block',
+            }
+            json_list.append(json_obj)
+            copy_idx = len(json_list)
+            # TODO: Add a new IR node `IrBlockCopy`
+            json_obj: dict[str, Any] = {
+                'method': 'block_copy',
+                'input': block_i_idx,
+                'output': copy_idx
+            }
+            json_list.append(json_obj)
+            new_res_blocks_idx = len(json_list)
+            json_obj: dict[str, Any] = {
+                'method': 'append_list',
+                'list': 'json_list_' + str(res_blocks_idx),
+                'value': 'json_list_' + str(copy_idx),
+                'output': new_res_blocks_idx
+            }
+            json_list.append(json_obj)
+            res_blocks_idx = new_res_blocks_idx
         res_blocks = [i.copy() for i in mats[0].blocks]
+        st_idx = len(json_list)
+        json_obj: dict[str, Any] = {
+            'method': 'SparseTensor',
+            'start_indices': [idx.tolist() for idx in start_indices],
+            'blocks': 'json_list_' + str(res_blocks_idx),
+            'dims': len(self.initial_shape) + 1,
+            'total_size': new_total_size.tolist(),
+            'output': st_idx,
+        }
+        json_list.append(json_obj)
+        pes_idx = len(json_list)
+        # TODO: Check (and change if need) tensor_to_block.py for the jit
+        #   method `PolyExpSparse` so that it can accept a float for the field
+        #   `const`.
+        json_obj: dict[str, Any] = {
+            'method': 'PolyExpSparse',
+            'mat': 'json_list_' + str(st_idx),
+            'const': 0.0,
+            'output': pes_idx,
+        }
+        json_list.append(json_obj)
+        if owns_capture:
+            write_jit_capture_file(
+                'jit_Llist_dot',
+                'Llist_dot',
+                layer_index,
+                counter,
+                inside_while,
+                while_number,
+                while_iteration,
+                json_list
+            )
         return PolyExpSparse(self.network, SparseTensor(start_indices, res_blocks, len(self.initial_shape)+1, new_total_size), polyexp_const)
     
     def convert_to_poly(self, abs_elem):

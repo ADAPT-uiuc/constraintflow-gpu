@@ -503,6 +503,7 @@ class Abs_elem_sparse:
                     'method': 'PolyExpSparse',
                     'mat': 'json_list_' + str(val_mat_idx),
                     'const': 'json_list_' + str(val_const_idx),
+                    'output': pes_idx,
                 }
                 json_list.append(json_obj)
                 if owns_capture:
