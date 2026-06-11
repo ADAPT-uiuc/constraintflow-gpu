@@ -538,6 +538,22 @@ class IrDenseBlock(IrExpression):
         super().__init__()
         self.update_parent_child([inputIr])
 
+class IrKernelBlock(IrExpression):
+    def __init__(self, inputIr, total_shape: list[int],
+                 ix, iy, ox, oy, sx, sy, px, py):
+        """inputIr: the parameter `block` of the `KernelBlock` constructor"""
+        super().__init__()
+        self.total_shape = total_shape
+        self.ix = ix
+        self.iy = iy
+        self.ox = ox
+        self.oy = oy
+        self.sx = sx
+        self.sy = sy
+        self.px = px
+        self.py = py
+        self.update_parent_child([inputIr])
+
 class IrEpsilon(IrExpression):
     def __init__(self, num=None):
         super().__init__()

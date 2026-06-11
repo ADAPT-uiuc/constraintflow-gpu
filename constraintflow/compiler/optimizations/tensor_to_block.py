@@ -679,6 +679,15 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             else:
                 raise Exception("NOT IMPLEMENTED")
             output = IrDenseBlock(inputIr)
+        elif json_obj["method"] == "KernelBlock":
+            inputIr = output_vars[json_obj["block"]]
+            output = IrKernelBlock(
+                inputIr, json_obj["total_shape"],
+                json_obj["ix"], json_obj["iy"],
+                json_obj["ox"], json_obj["oy"],
+                json_obj["sx"], json_obj["sy"],
+                json_obj["px"], json_obj["py"],
+            )
         else:
             raise Exception(f"Unknown method {json_obj['method']} in replay")
         

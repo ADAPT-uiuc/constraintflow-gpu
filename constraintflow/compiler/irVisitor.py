@@ -226,6 +226,9 @@ class IRVisitor:
         elif isinstance(node, IR.IrDenseBlock):
             return self.visitIrDenseBlock(node)
         
+        elif isinstance(node, IR.IrKernelBlock):
+            return self.visitIrKernelBlock(node)
+        
         elif isinstance(node, IR.IrSimpleBinary):
             return self.visitIrSimpleBinary(node)
         
