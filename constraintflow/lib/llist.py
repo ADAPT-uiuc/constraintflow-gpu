@@ -154,6 +154,7 @@ class Llist:
                             'input': k,
                             'output': kth_weight
                         }
+                        json_list.append(json_obj)
                         block = DummyBlock(None, torch.tensor(self.network[k].weight.shape))
                         dense_idx: int = len(json_list)
                         json_obj: dict[str, Any] = {
