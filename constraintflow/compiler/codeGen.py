@@ -31,7 +31,7 @@ class CodeGen(irVisitor.IRVisitor):
         self.write("from constraintflow.lib.symexp import *")
         self.write("from transformers import *")
         self.write("\n")
-        self.write("torch.cuda.reset_peak_memory_stats()")
+        # self.write("torch.cuda.reset_peak_memory_stats()")
         self.write("def run(network_file, batch_size, eps, dataset_X, dataset_y, dataset, train, print_intermediate_results, no_sparsity):")
         
         self.indent += 1
@@ -108,6 +108,7 @@ class CodeGen(irVisitor.IRVisitor):
             self.write('from constraintflow.gbcsr.sparse_tensor import SparseTensor')
         self.write('from constraintflow.lib.llist import Llist')
         if reuse_mode.get_flag():
+            self.write('from constraintflow.gbcsr.sparse_block import DenseBlock')
             # Will remove this later. 
             self.write("def convert_to_float(x):\n    if isinstance(x, torch.Tensor):\n        return x.float()\n    if isinstance(x, SparseTensor):\n        return x.float()")
         else:
@@ -397,6 +398,12 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrGetPolyExpSparseMat(self, node):
         the_pes = self.visit(node.children[0])
         return the_pes + '.mat'
+
+    def visitIrGetKthLayerNetworkParam(self, node):
+        return f'abs_elem.network[{node.layer_index}].{node.param}'
+
+    def visitIrDenseBlock(self, node):
+        return 'DenseBlock(' + self.visit(node.children[0]) + ')'
 
     def get_operator_func(self, name: str):
         if not isinstance(name, str):

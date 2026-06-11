@@ -333,6 +333,7 @@ class Abs_elem_sparse:
                         1, json_list=json_list, layer_index=layer_index,
                         counter=counter, inside_while=inside_while,
                         while_number=while_number, while_iteration=while_iteration,
+                        lhs_index=val_const_idx,
                     )
                     val_const_idx = len(json_list) - 1
 
@@ -479,7 +480,7 @@ class Abs_elem_sparse:
                     val_mat = val_mat.unsqueeze(
                         1, json_list=json_list, layer_index=layer_index, counter=counter,
                         inside_while=inside_while, while_number=while_number,
-                        while_iteration=while_iteration)
+                        while_iteration=while_iteration, lhs_index=val_mat_idx)
                     val_mat_idx = len(json_list) - 1
                 
                 repeat_shape = torch.tensor(llist.initial_shape + [1,1])

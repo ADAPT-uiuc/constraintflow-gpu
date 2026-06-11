@@ -526,6 +526,18 @@ class IrGetPolyExpSparseMat(IrExpression):
         super().__init__()
         self.update_parent_child([inputIr])
 
+class IrGetKthLayerNetworkParam(IrExpression):
+    def __init__(self, layer_index, param):
+        super().__init__()
+        self.layer_index = layer_index
+        self.param = param
+        self.update_parent_child([])
+
+class IrDenseBlock(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.update_parent_child([inputIr])
+
 class IrEpsilon(IrExpression):
     def __init__(self, num=None):
         super().__init__()
