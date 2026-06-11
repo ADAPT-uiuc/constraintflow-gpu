@@ -168,7 +168,7 @@ class Llist:
                                 block = block.unsqueeze(0)
                                 unsqueeze_idcs.append(len(json_list))
                                 json_obj: dict[str, Any] = {
-                                    'method': 'block_squeeze',
+                                    'method': 'block_unsqueeze',
                                     'input': 'json_list_' + str(unsqueeze_idcs[-1] - 1),
                                     'index': 0,
                                     'output': unsqueeze_idcs[-1]
@@ -253,7 +253,7 @@ class Llist:
                             unsqueeze_idcs.append(len(json_list))
                             block = block.unsqueeze(0)
                             json_obj: dict[str, Any] = {
-                                'method': 'block_squeeze',
+                                'method': 'block_unsqueeze',
                                 'input': 'json_list_' + str(unsqueeze_idcs[-1] - 1),
                                 'index': 0,
                                 'output': unsqueeze_idcs[-1]
@@ -308,7 +308,7 @@ class Llist:
                         unsqueeze_idcs.append(len(json_list))
                         block = block.unsqueeze(0)
                         json_obj: dict[str, Any] = {
-                            'method': 'block_squeeze',
+                            'method': 'block_unsqueeze',
                             'input': 'json_list_' + str(unsqueeze_idcs[-1] - 1),
                             'index': 0,
                             'output': unsqueeze_idcs[-1]

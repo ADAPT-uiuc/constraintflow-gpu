@@ -215,7 +215,9 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         cond = None
         lhs = expr.children[0]
         rhs = expr.children[1]
-    if isinstance(rhs, IrAst):
+    if isinstance(expr, IrAccess):
+        irMetadata = expr.irMetadata
+    elif isinstance(rhs, IrAst):
         irMetadata = rhs.irMetadata
     elif isinstance(lhs, IrAst):
         irMetadata = lhs.irMetadata
@@ -226,7 +228,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
 
     for json_obj in json_list:
         new_name = get_var()
-        new_var = IrVar(new_name, irMetadata)
+        new_var = IrVar(new_name, copy_metadata(irMetadata) if irMetadata is not None else None)
         if json_obj["method"] == "noop":
             if json_obj["input"] == "cond":
                 output = cond
@@ -354,11 +356,16 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
             else:                
                 raise Exception("NOT IMPLEMENTED")
-            if isinstance(json_obj["index"], int):
-                indexIr = json_obj["index"]
-            elif "json_list_" in json_obj["index"]:
-                indexIr = output_vars[int(json_obj["index"].split("_")[-1])]
-            else:                
+            if "index" in json_obj:
+                if isinstance(json_obj["index"], int):
+                    indexIr = json_obj["index"]
+                elif "json_list_" in json_obj["index"]:
+                    indexIr = output_vars[int(json_obj["index"].split("_")[-1])]
+                else:                
+                    raise Exception("NOT IMPLEMENTED")
+            elif "block_id" in json_obj:
+                indexIr = json_obj["block_id"]
+            else:
                 raise Exception("NOT IMPLEMENTED")
             output = IrBlockExtract(inputIr, indexIr)
             
@@ -439,7 +446,6 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             else:
                 raise Exception("NOT IMPLEMENTED")
             repeat_dims = torch.tensor(json_obj["repeat_dims"], dtype=torch.int64)
-            print(f"filename: {filename}, Repeat dims: {repeat_dims}")
             output = IrBlockRepeat(inputIr, repeat_dims)
 
         elif json_obj["method"] == "block_clamp":
@@ -617,7 +623,21 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 const_ir = output_vars[int(json_obj["const"].split("_")[-1])]
             else:
                 raise Exception("NOT IMPLEMENTED")
+            if irMetadata is None:
+                raise Exception("PolyExpSparse replay requires PolyExp irMetadata")
+            mat_metadata = copy_metadata(irMetadata)
+            mat_metadata[-1].type = 'Float'
+            mat_metadata[-1].shape.append(IrAst.poly_size)
+            mat_metadata[-1].broadcast.append(1)
+            mat_ir.irMetadata = mat_metadata
+            const_metadata = copy_metadata(irMetadata)
+            const_metadata[-1].type = 'Float'
+            const_ir.irMetadata = const_metadata
             output = IrCombineToPoly(mat_ir, const_ir)
+            new_assignment = IrAssignment(new_var, output)
+            new_assignments.append(new_assignment)
+            output_vars.append(new_var)
+            continue
         elif json_obj["method"] == "get_sparse_tensor_blocks":
             if "json_list_" in json_obj["input"]:
                 input_ir = output_vars[int(json_obj["input"].split("_")[-1])]
@@ -645,6 +665,20 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             else:
                 raise Exception("NOT IMPLEMENTED")
             output = IrGetPolyExpSparseMat(input_ir)
+        elif json_obj["method"] == "get_kth_layer_bias":
+            output = IrGetKthLayerNetworkParam(json_obj["input"], "bias")
+        elif json_obj["method"] == "get_kth_layer_weight":
+            output = IrGetKthLayerNetworkParam(json_obj["input"], "weight")
+        elif json_obj["method"] == "DenseBlock":
+            if isinstance(json_obj["input"], int) and json_obj["input"] < len(output_vars):
+                inputIr = output_vars[json_obj["input"]]
+            elif isinstance(json_obj["input"], int):
+                inputIr = IrGetKthLayerNetworkParam(json_obj["input"], "weight")
+            elif "json_list_" in str(json_obj["input"]):
+                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrDenseBlock(inputIr)
         else:
             raise Exception(f"Unknown method {json_obj['method']} in replay")
         

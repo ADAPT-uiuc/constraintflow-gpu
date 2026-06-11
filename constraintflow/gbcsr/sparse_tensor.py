@@ -2114,6 +2114,8 @@ Blocks Types: "
         trace = json_list is not None
         if not trace:
             json_list = []
+        if trace and not owns_capture:
+            assert lhs_index != -1
         dims = self.dims+1
         total_size = torch.concat([self.total_size[:index], torch.tensor([1]), self.total_size[index:]])
         total_size = total_size.type(torch.int64)

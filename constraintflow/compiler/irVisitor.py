@@ -219,6 +219,12 @@ class IRVisitor:
         
         elif isinstance(node, IR.IrGetPolyExpSparseMat):
             return self.visitIrGetPolyExpSparseMat(node)
+
+        elif isinstance(node, IR.IrGetKthLayerNetworkParam):
+            return self.visitIrGetKthLayerNetworkParam(node)
+
+        elif isinstance(node, IR.IrDenseBlock):
+            return self.visitIrDenseBlock(node)
         
         elif isinstance(node, IR.IrSimpleBinary):
             return self.visitIrSimpleBinary(node)
