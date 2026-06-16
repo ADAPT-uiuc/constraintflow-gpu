@@ -579,9 +579,6 @@ class CodeGen(irVisitor.IRVisitor):
             raise Exception('OP NOT IDENTIFIED', op)
         return self.visit(node.children[0]) + '.unary(' + op_str + ')'
     
-    def visitIrBinaryToUnary(self, node):
-        return 'binary_to_identity_unary(' + self.get_operator_func(node.op) + ')(' + self.visit(node.children[0]) + ')'
-    
     def visitIrGetSubBlockCustomRange(self, node):
         return self.visit(node.children[0]) + '.get_sub_block_custom_range(' + self.visit(node.start_index) + ', ' + self.visit(node.end_index) + ', ' + self.visit(node.block_id) + ', ' + str(node.tensor) + ')'
 
@@ -768,15 +765,24 @@ class CodeGen(irVisitor.IRVisitor):
         
     def visitIrSimpleUnary(self, node):
         op = node.op
+        if isinstance(op, IrVar):
+            return '(' + self.visit(op) + ')(' + self.visit(node.children[0]) + ')'
         if op == '-':
             op_str = 'operator.neg'
         elif op == 'not':
             op_str = 'operator.not_'
         elif op == 'sigma':
-            op_str = "'sigma'"
+            return 'torch.sigmoid(' + self.visit(node.children[0]) + ')'
         else:
             raise Exception('OP NOT IDENTIFIED', op)
         return op_str + '(' + self.visit(node.children[0]) + ')'
+
+    def visitIrLambda(self, node):
+        if node.op in ('add', 'mul', 'and_', 'or_'):
+            return 'lambda x: x'
+        if node.op == 'sub':
+            return 'lambda x: x.unary(operator.neg)'
+        raise Exception('OP NOT IDENTIFIED', node.op)
 
     def visitIrSimpleBinary(self, node):
         [lhsIr, rhsIr] = node.children

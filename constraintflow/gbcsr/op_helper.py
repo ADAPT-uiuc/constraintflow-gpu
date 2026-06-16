@@ -34,16 +34,39 @@ def annihilator_element(op):
     else:
         return None
 
-def binary_to_identity_unary(op):
+def _record_lambda(op, json_list):
+    if json_list is not None:
+        json_list.append({
+            "method": "lambda",
+            "op": op.__name__,
+            "output": len(json_list),
+        })
+
+def binary_to_identity_unary(op, json_list=None):
     if op == operator.add:
+        _record_lambda(op, json_list)
+        if json_list is not None:
+            return lambda x: x, len(json_list) - 1
         return lambda x: x
     elif op == operator.mul:
+        _record_lambda(op, json_list)
+        if json_list is not None:
+            return lambda x: x, len(json_list) - 1
         return lambda x: x
     elif op == operator.sub:
+        _record_lambda(op, json_list)
+        if json_list is not None:
+            return lambda x: x.unary(operator.neg), len(json_list) - 1
         return lambda x: x.unary(operator.neg)
     elif op == operator.and_:
+        _record_lambda(op, json_list)
+        if json_list is not None:
+            return lambda x: x, len(json_list) - 1
         return lambda x: x
     elif op == operator.or_:
+        _record_lambda(op, json_list)
+        if json_list is not None:
+            return lambda x: x, len(json_list) - 1
         return lambda x: x
     else:
         assert(False)

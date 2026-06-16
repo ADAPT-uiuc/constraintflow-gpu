@@ -160,9 +160,6 @@ class IRVisitor:
         elif isinstance(node, IR.IrGetSubBlockCustomRange):
             return self.visitIrGetSubBlockCustomRange(node)
         
-        elif isinstance(node, IR.IrBinaryToUnary):
-            return self.visitIrBinaryToUnary(node)
-        
         elif isinstance(node, IR.IrEmptyList):
             return self.visitIrEmptyList(node)
         
@@ -261,6 +258,9 @@ class IRVisitor:
         
         elif isinstance(node, IR.IrSimpleUnary):
             return self.visitIrSimpleUnary(node)
+
+        elif isinstance(node, IR.IrLambda):
+            return self.visitIrLambda(node)
         
         elif isinstance(node, IR.IrBlockInnerProduct):
             return self.visitIrBlockInnerProduct(node)
