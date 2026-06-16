@@ -380,6 +380,9 @@ class CodeGen(irVisitor.IRVisitor):
     
     def visitIrBlockExtract(self, node):
         return self.visit(node.children[0]) + '.blocks[' + self.visit(node.children[1]) + ']'
+
+    def visitIrBlockCopy(self, node):
+        return self.visit(node.children[0]) + '.copy()'
     
     def visitIrGetSparseTensorBlocks(self, node):
         the_sparse_tensor = self.visit(node.children[0])
@@ -394,10 +397,18 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrGetPolyExpSparseConst(self, node):
         the_pes = self.visit(node.children[0])
         return the_pes + '.const'
-    
+
     def visitIrGetPolyExpSparseMat(self, node):
         the_pes = self.visit(node.children[0])
         return the_pes + '.mat'
+
+    def visitIrGetSymExpSparseConst(self, node):
+        the_ses = self.visit(node.children[0])
+        return the_ses + '.const'
+
+    def visitIrGetSymExpSparseMat(self, node):
+        the_ses = self.visit(node.children[0])
+        return the_ses + '.mat'
 
     def visitIrGetKthLayerNetworkParam(self, node):
         return f'abs_elem.network[{node.layer_index}].{node.param}'
@@ -800,10 +811,18 @@ class CodeGen(irVisitor.IRVisitor):
 
     def visitIrDot(self, node):
         [lhsIr, rhsIr] = node.children
+        dot_args = (
+            ', layer_index = layer_index, '
+            + 'counter = ' + str(node.ttb_counter)
+            + ', inside_while = ' + ('True' if node.inside_while else 'False')
+            + ', while_number = ' + str(node.while_number)
+        )
+        if node.inside_while:
+            dot_args += ', while_iteration = while_iteration'
         if lhsIr.irMetadata[-1].type == 'Neuron':
-            return self.visit(lhsIr) + '.dot(' + self.visit(rhsIr) + ', abs_elem.get_poly_size())'
+            return self.visit(lhsIr) + '.dot(' + self.visit(rhsIr) + ', abs_elem.get_poly_size()' + dot_args + ", mats_input = 'rhs')"
         elif rhsIr.irMetadata[-1].type == 'Neuron':
-            return self.visit(rhsIr) + '.dot(' + self.visit(lhsIr) + ', abs_elem.get_poly_size())'
+            return self.visit(rhsIr) + '.dot(' + self.visit(lhsIr) + ', abs_elem.get_poly_size()' + dot_args + ", mats_input = 'lhs')"
         elif lhsIr.irMetadata[-1].type == 'Float':
             if node.inside_while:
                 return 'inner_prod(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = True' + ', while_number = ' + str(node.while_number) + ', while_iteration=while_iteration) #' + str(node.ttb_counter)
@@ -867,7 +886,11 @@ class CodeGen(irVisitor.IRVisitor):
     
     def visitIrExpandSymExp(self, node):
         [inputIr] = node.children
-        return self.visit(inputIr) + '.expand_symexp_mat(SymExpSparse.count)'
+        if not reuse_mode.get_flag():
+            return self.visit(inputIr) + '.expand_symexp_mat(SymExpSparse.count)'
+        var_name = self.visit(inputIr)
+        self.write(var_name + '.total_size[-1] = SymExpSparse.count')
+        return var_name
 
     def visitIrAccess(self, node):
         [lhsIr] = node.children

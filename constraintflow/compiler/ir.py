@@ -504,6 +504,11 @@ class IrBlockExtract(IrExpression):
         super().__init__()
         self.update_parent_child([inputIr, indexIr])
 
+class IrBlockCopy(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.update_parent_child([inputIr])
+
 class IrGetSparseTensorBlocks(IrExpression):
     def __init__(self, inputIr):
         super().__init__()
@@ -522,6 +527,16 @@ class IrGetPolyExpSparseConst(IrExpression):
         self.update_parent_child([inputIr])
 
 class IrGetPolyExpSparseMat(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.update_parent_child([inputIr])
+
+class IrGetSymExpSparseConst(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.update_parent_child([inputIr])
+
+class IrGetSymExpSparseMat(IrExpression):
     def __init__(self, inputIr):
         super().__init__()
         self.update_parent_child([inputIr])
@@ -1676,5 +1691,4 @@ class IrProgram(IrAst):
         self.fstore = fstore
         self.irNodes = irNodes
         
-
 

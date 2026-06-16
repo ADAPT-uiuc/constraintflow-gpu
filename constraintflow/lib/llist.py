@@ -461,7 +461,8 @@ class Llist:
                 
     def dot(self, mats, total_size,
             json_list=None, layer_index=None, counter=None,
-            inside_while=False, while_number=None, while_iteration=None):
+            inside_while=False, while_number=None, while_iteration=None,
+            mats_input='rhs'):
         if not isinstance(mats, list):
             mats: list[SparseTensor] = [mats]
         else:
@@ -472,18 +473,11 @@ class Llist:
         rhs_idx = len(json_list)
         json_obj: dict[str, Any] = {
             'method': 'noop',
-            'input': 'rhs',
+            'input': mats_input,
             'output': rhs_idx
         }
         json_list.append(json_obj)
-        mats_0_idx = len(json_list)
-        json_obj: dict[str, Any] = {
-            'method': 'index_lookup',
-            'input': 'json_list_' + str(rhs_idx),
-            'index': 0,
-            'output': mats_0_idx
-        }
-        json_list.append(json_obj)
+        mats_0_idx = rhs_idx
         initial_shape = self.initial_shape
         # If `SparseTensor` constructor has no side effects (I'm assuming so
         #   for a constructor) this should have no influence at all, commented.
@@ -518,13 +512,15 @@ class Llist:
             block_i_idx = len(json_list)
             json_obj: dict[str, Any] = {
                 'method': 'extract_block',
+                'input': 'json_list_' + str(mats_0_idx),
+                'index': i,
+                'output': block_i_idx
             }
             json_list.append(json_obj)
             copy_idx = len(json_list)
-            # TODO: Add a new IR node `IrBlockCopy`
             json_obj: dict[str, Any] = {
                 'method': 'block_copy',
-                'input': block_i_idx,
+                'input': 'json_list_' + str(block_i_idx),
                 'output': copy_idx
             }
             json_list.append(json_obj)
@@ -548,14 +544,18 @@ class Llist:
             'output': st_idx,
         }
         json_list.append(json_obj)
+        const_idx = len(json_list)
+        json_obj: dict[str, Any] = {
+            'method': 'scalar_const',
+            'value': 0.0,
+            'output': const_idx
+        }
+        json_list.append(json_obj)
         pes_idx = len(json_list)
-        # TODO: Check (and change if need) tensor_to_block.py for the jit
-        #   method `PolyExpSparse` so that it can accept a float for the field
-        #   `const`.
         json_obj: dict[str, Any] = {
             'method': 'PolyExpSparse',
             'mat': 'json_list_' + str(st_idx),
-            'const': 0.0,
+            'const': 'json_list_' + str(const_idx),
             'output': pes_idx,
         }
         json_list.append(json_obj)
@@ -587,4 +587,3 @@ class Llist:
     
         polyexp_const = SparseTensor([], [], len(self.initial_shape)+1, torch.tensor(self.initial_shape+[index]))
         return PolyExpSparse(self.network, SparseTensor(start_indices, mats, len(self.initial_shape)+2, torch.tensor(self.initial_shape+[index, abs_elem.get_poly_size()])), polyexp_const)
-        
