@@ -198,8 +198,6 @@ class Flow:
             # print(f"U")
             # print(self.abs_elem.d['U'])
 
-            if tmp>=4:
-                asdasdasd
 
             if self.print_intermediate_results:
                 print(tmp+1, layer.type, layer.shape)
