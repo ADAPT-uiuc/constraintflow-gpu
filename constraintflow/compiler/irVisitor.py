@@ -207,6 +207,9 @@ class IRVisitor:
         
         elif isinstance(node, IR.IrBlockExtract):
             return self.visitIrBlockExtract(node)
+
+        elif isinstance(node, IR.IrBlockCopy):
+            return self.visitIrBlockCopy(node)
         
         elif isinstance(node, IR.IrGetSparseTensorBlocks):
             return self.visitIrGetSparseTensorBlocks(node)
@@ -216,9 +219,15 @@ class IRVisitor:
         
         elif isinstance(node, IR.IrGetPolyExpSparseConst):
             return self.visitIrGetPolyExpSparseConst(node)
-        
+
         elif isinstance(node, IR.IrGetPolyExpSparseMat):
             return self.visitIrGetPolyExpSparseMat(node)
+
+        elif isinstance(node, IR.IrGetSymExpSparseConst):
+            return self.visitIrGetSymExpSparseConst(node)
+
+        elif isinstance(node, IR.IrGetSymExpSparseMat):
+            return self.visitIrGetSymExpSparseMat(node)
 
         elif isinstance(node, IR.IrGetKthLayerNetworkParam):
             return self.visitIrGetKthLayerNetworkParam(node)

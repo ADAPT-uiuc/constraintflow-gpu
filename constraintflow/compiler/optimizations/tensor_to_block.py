@@ -151,9 +151,12 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         filename = f"jit_where/where_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrDot):
         [lhsIr, rhsIr] = expr.children
-        if lhsIr.irMetadata[-1].type != 'Float':
+        if lhsIr.irMetadata[-1].type == 'Float':
+            filename = f"jit_matmul/matmul_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
+        elif lhsIr.irMetadata[-1].type == 'Neuron' or rhsIr.irMetadata[-1].type == 'Neuron':
+            filename = f"jit_Llist_dot/Llist_dot_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
+        else:
             return expr, []
-        filename = f"jit_matmul/matmul_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrGetDefaultStop):
         filename = f"jit_defaultstop/stop_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrGetPriorityLList):
@@ -215,7 +218,9 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         cond = None
         lhs = expr.children[0]
         rhs = expr.children[1]
-    if isinstance(expr, IrAccess):
+    if isinstance(expr, IrDot):
+        irMetadata = expr.irMetadata
+    elif isinstance(expr, IrAccess):
         irMetadata = expr.irMetadata
     elif isinstance(rhs, IrAst):
         irMetadata = rhs.irMetadata
@@ -368,6 +373,13 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             else:
                 raise Exception("NOT IMPLEMENTED")
             output = IrBlockExtract(inputIr, indexIr)
+
+        elif json_obj["method"] == "block_copy":
+            if "json_list_" in json_obj["input"]:
+                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrBlockCopy(inputIr)
             
         elif json_obj["method"] == "binary":
             if "json_list_" in json_obj["lhs"]:
@@ -638,6 +650,30 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             new_assignments.append(new_assignment)
             output_vars.append(new_var)
             continue
+        elif json_obj["method"] == "SymExpSparse":
+            if "json_list_" in json_obj["mat"]:
+                mat_ir = output_vars[int(json_obj["mat"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            if "json_list_" in json_obj["const"]:
+                const_ir = output_vars[int(json_obj["const"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            if irMetadata is None:
+                raise Exception("SymExpSparse replay requires SymExp irMetadata")
+            mat_metadata = copy_metadata(irMetadata)
+            mat_metadata[-1].type = 'Float'
+            mat_metadata[-1].shape.append(IrAst.sym_size)
+            mat_metadata[-1].broadcast.append(1)
+            mat_ir.irMetadata = mat_metadata
+            const_metadata = copy_metadata(irMetadata)
+            const_metadata[-1].type = 'Float'
+            const_ir.irMetadata = const_metadata
+            output = IrCombineToSym(mat_ir, const_ir)
+            new_assignment = IrAssignment(new_var, output)
+            new_assignments.append(new_assignment)
+            output_vars.append(new_var)
+            continue
         elif json_obj["method"] == "get_sparse_tensor_blocks":
             if "json_list_" in json_obj["input"]:
                 input_ir = output_vars[int(json_obj["input"].split("_")[-1])]
@@ -665,6 +701,18 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             else:
                 raise Exception("NOT IMPLEMENTED")
             output = IrGetPolyExpSparseMat(input_ir)
+        elif json_obj["method"] == "get_sym_exp_sparse_const":
+            if "json_list_" in json_obj["input"]:
+                input_ir = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrGetSymExpSparseConst(input_ir)
+        elif json_obj["method"] == "get_sym_exp_sparse_mat":
+            if "json_list_" in json_obj["input"]:
+                input_ir = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrGetSymExpSparseMat(input_ir)
         elif json_obj["method"] == "get_kth_layer_bias":
             output = IrGetKthLayerNetworkParam(json_obj["input"], "bias")
         elif json_obj["method"] == "get_kth_layer_weight":

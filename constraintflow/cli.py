@@ -53,6 +53,7 @@ JIT_CAPTURE_DIRS = (
     "jit_unsqueeze",
     "jit_Abs_elem_sparse_get_elem",
     "jit_llist_get_metadata",
+    "jit_Llist_dot",
     "jit_SparseTensor_get_sparse_custom_range",
 )
 
