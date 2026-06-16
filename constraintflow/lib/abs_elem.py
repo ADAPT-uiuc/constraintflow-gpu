@@ -290,8 +290,8 @@ class Abs_elem_sparse:
                 raise Exception('NOT IMPLEMENTED')
             
     def update(self, llist, abs_shape):
-        if dummy_mode:
-            return self.update_dummy(llist, abs_shape)
+        # if dummy_mode:
+        #     return self.update_dummy(llist, abs_shape)
         llist.decoalesce()
         assert(len(llist.llist) == 1)
         if llist.llist_flag:
@@ -383,14 +383,14 @@ class Abs_elem_sparse:
                     end_index = torch.tensor([self.batch_size, self.network[max(llist.llist)].end])
                     total_size = self.d[key].total_size
                     if isinstance(abs_shape[i], float) or isinstance(abs_shape[i], int) or isinstance(abs_shape[i], bool):
-                        new_val_block = DummyBlock(None, end_index-start_index)
+                        new_val_block = ConstBlock(1, end_index-start_index)
                         new_val = SparseTensor([torch.zeros(self.d[key].dims)], [new_val_block], self.d[key].dims, end_index-start_index, [end_index-start_index], self.d[key].type, abs_shape[i])
                         self.d[key] = self.d[key].overwrite_from_index(new_val, start_index)
                     else:
                         if abs_shape[i].dense_const != self.d[key].dense_const and (not abs_shape[i].check_dense()):
                             temp = SparseTensor(
                                 [torch.tensor([0]*abs_shape[i].dims)],
-                                [DummyBlock(None, abs_shape[i].total_size)],
+                                [ConstBlock(1, abs_shape[i].total_size)],
                                 abs_shape[i].dims,
                                 abs_shape[i].total_size,
                                 [abs_shape[i].total_size],
@@ -406,7 +406,7 @@ class Abs_elem_sparse:
                     total_size = self.d[key].const.total_size
                     const = abs_shape[i].const
                     if const.dense_const != self.d[key].const.dense_const and (not const.check_dense()):
-                        temp_const = SparseTensor([torch.tensor([0]*const.dims)], [DummyBlock(None, const.total_size)], const.dims, const.total_size, [const.total_size], const.type, const.dense_const)
+                        temp_const = SparseTensor([torch.tensor([0]*const.dims)], [ConstBlock(1, const.total_size)], const.dims, const.total_size, [const.total_size], const.type, const.dense_const)
                         self.d[key].const = self.d[key].const.overwrite_from_index(temp_const, start_index)
                         self.d[key].const = self.d[key].const.overwrite_from_index(const, start_index)
                     else:
@@ -416,7 +416,7 @@ class Abs_elem_sparse:
                     total_size = torch.tensor(list(self.d[key].mat.total_size))
                     mat = abs_shape[i].mat
                     if (mat.dense_const != self.d[key].mat.dense_const and (not mat.check_dense())):
-                        temp_mat = SparseTensor([torch.tensor([0]*mat.dims)], [DummyBlock(None, mat.total_size)], mat.dims, mat.total_size, [mat.total_size], mat.type, mat.dense_const)
+                        temp_mat = SparseTensor([torch.tensor([0]*mat.dims)], [ConstBlock(1, mat.total_size)], mat.dims, mat.total_size, [mat.total_size], mat.type, mat.dense_const)
                         self.d[key].mat = self.d[key].mat.overwrite_from_index(temp_mat, start_index)
                         self.d[key].mat = self.d[key].mat.overwrite_from_index(mat, start_index)
                     else:
@@ -427,7 +427,7 @@ class Abs_elem_sparse:
                     total_size = self.d[key].const.total_size
                     const = abs_shape[i].const
                     if const.dense_const != self.d[key].const.dense_const and (not const.check_dense()):
-                        temp_const = SparseTensor([torch.tensor([0]*const.dims)], [DummyBlock(None, const.total_size)], const.dims, const.total_size, [const.total_size], const.type, const.dense_const)
+                        temp_const = SparseTensor([torch.tensor([0]*const.dims)], [ConstBlock(1, const.total_size)], const.dims, const.total_size, [const.total_size], const.type, const.dense_const)
                         self.d[key].const = self.d[key].const.overwrite_from_index(temp_const, start_index)
                         self.d[key].const = self.d[key].const.overwrite_from_index(const, start_index)
                     else:
@@ -439,7 +439,7 @@ class Abs_elem_sparse:
                     self.d[key].mat.total_size[-1] = SymExpSparse.count
                     mat = abs_shape[i].mat
                     if mat.dense_const != self.d[key].mat.dense_const and (not mat.check_dense()):
-                        temp_mat = SparseTensor([torch.tensor([0]*mat.dims)], [DummyBlock(None, mat.total_size)], mat.dims, mat.total_size, [mat.total_size], mat.type, mat.dense_const)
+                        temp_mat = SparseTensor([torch.tensor([0]*mat.dims)], [ConstBlock(1, mat.total_size)], mat.dims, mat.total_size, [mat.total_size], mat.type, mat.dense_const)
                         self.d[key].mat = self.d[key].mat.overwrite_from_index(temp_mat, start_index)
                         self.d[key].mat = self.d[key].mat.overwrite_from_index(mat, start_index)
                     else:

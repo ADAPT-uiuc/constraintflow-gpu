@@ -1132,28 +1132,6 @@ class IrUnaryOp(IrExpression):
                 # return True
         return False
 
-class IrBinaryToUnary(IrExpression):
-    def __init__(self, inputIr, op):
-        super().__init__()
-        self.op = op
-        self.irMetadata = copy_metadata(inputIr.irMetadata)
-        self.update_parent_child([inputIr])
-
-    def __hash__(self):
-        return 0   
-    
-    def __eq__(self, obj):
-        if type(self)==type(obj) and self.op == obj.op:
-            if len(self.children) == len(obj.children):
-                for i in range(len(self.children)):
-                    if self.children[i] != obj.children[i]:
-                        return False 
-                if checkEqualMetadata(self.irMetadata, obj.irMetadata):
-                    return True 
-                else:
-                    return False
-        return False
-
 class IrGetSubBlockCustomRange(IrExpression):
     def __init__(self, inputIr, start_index, end_index, block_id, tensor):
         super().__init__()
@@ -1199,6 +1177,12 @@ class IrSimpleUnary(IrExpression):
         self.op = op
         self.update_parent_child([inputIr])
 
+class IrLambda(IrExpression):
+    def __init__(self, op):
+        super().__init__()
+        self.op = op
+        self.update_parent_child([])
+        
 class IrSimpleBinary(IrExpression):
     def __init__(self, lhsIr, rhsIr, op):
         super().__init__()
@@ -1812,4 +1796,3 @@ class IrProgram(IrAst):
         self.fstore = fstore
         self.irNodes = irNodes
         
-

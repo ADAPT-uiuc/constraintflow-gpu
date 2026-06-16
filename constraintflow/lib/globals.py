@@ -25,6 +25,7 @@ debug_flag4 = Flag()
 
 dummy_mode = Flag()
 reuse_mode = Flag()
+dense_default_mode = Flag()
 # dummy_mode = False
 # reuse_mode = False
 

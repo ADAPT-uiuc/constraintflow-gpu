@@ -30,8 +30,8 @@ class Llist:
         Metadata is neural network-specific information.
         Not certifier-specific information.
         """
-        if dummy_mode:
-            return self.get_metadata_dummy(elem, batch_size)
+        # if dummy_mode:
+        #     return self.get_metadata_dummy(elem, batch_size)
         # ---- Is this true, and why? ----
         # Currently, get_metadata only supports consecutive intervals of
         # layers. Must coalesce successfully first.

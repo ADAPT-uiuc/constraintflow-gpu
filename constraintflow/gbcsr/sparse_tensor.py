@@ -534,9 +534,11 @@ class SparseTensor:
         delete_indices = []
         for i in range(self.num_blocks):
             if isinstance(self.blocks[i], ConstBlock) or (dummy_mode and self.blocks[i].block_type == 'C'):
-                if self.blocks[i].block == self.dense_const and (self.dense_const == 0.0 or self.dense_const == False):
-                    delete_indices.append(i)
-            
+                block_val = self.blocks[i].block
+                if not isinstance(block_val, torch.Tensor) or (block_val.numel() == 1 and not block_val.is_meta):
+                    if block_val == self.dense_const and (self.dense_const == 0.0 or self.dense_const == False):
+                        delete_indices.append(i)
+
         delete_indices.reverse()
 
         sparse_tensor_init_time.update_total_time(time.perf_counter()-t1)
@@ -1220,16 +1222,16 @@ Blocks Types: "
 
                 # checking if it can be turned into a unary operation 
                 if identity_element(op) == self.dense_const:
-                    block = binary_to_identity_unary(op)(block)
+                    unary_op, lambda_index = binary_to_identity_unary(op, json_list)
+                    block = unary_op(block)
+                    json_list.append({
+                        "method": "simple_unary",
+                        "input": "json_list_" + str(rhs_json_index),
+                        "op": "json_list_" + str(lambda_index),
+                        "output": len(json_list),
+                    })
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
 
-                    json_obj = {
-                        "method": "binary_to_identity_unary",
-                        "op": op.__name__,
-                        "unary_source": "json_list_" + str(rhs_json_index),
-                        "output": len(json_list)
-                    }
-                    json_list.append(json_obj)
                     block_json_index = len(json_list) - 1
                 elif annihilator_element(op) == self.dense_const and dense_const == self.dense_const:
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
@@ -1247,16 +1249,11 @@ Blocks Types: "
 
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
                     # Index Dependant
-                    rhs_block = block
                     before_binary_json_len = len(json_list)
-                    block = temp_block.binary(
-                        block,
-                        op,
-                        json_list=json_list,
-                        lhs_index=const_json_index,
-                        rhs_index=rhs_json_index,
-                    )
 
+                    block, block_json_index = temp_block.binary(block, op, json_list = json_list,
+                    lhs_index = len(json_list) - 1,
+                    rhs_index = rhs_json_index)
                     # json_obj = {
                     #     "method": "binary",
                     #     "op": op.__name__,
@@ -1265,18 +1262,6 @@ Blocks Types: "
                     #     "output": len(json_list)
                     # }
                     # json_list.append(json_obj)
-                    if dummy_mode and len(json_list) == before_binary_json_len:
-                        if block is temp_block:
-                            block_json_index = const_json_index
-                        elif block is rhs_block:
-                            block_json_index = rhs_json_index
-                        else:
-                            raise RuntimeError(
-                                "Binary replay index fallback failed in dom2 path: "
-                                "no JSON emitted and output is neither operand."
-                            )
-                    else:
-                        block_json_index = len(json_list) - 1
 
                 binary_sparse_tensor_dom2.update_total_time(time.perf_counter()-start_time)
             elif len(indices[i][1]) == 0:
@@ -1310,9 +1295,7 @@ Blocks Types: "
 
 
                 if identity_element(op) == sp_tensor.dense_const:
-                    block_operation = {"operation":"binary_with_identity_rhs", "block_shape": block.total_shape}
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
-
                     # raise Exception("NOT IMPLEMENTED")
                     pass 
                 elif annihilator_element(op) == sp_tensor.dense_const and dense_const == sp_tensor.dense_const:
@@ -1331,15 +1314,10 @@ Blocks Types: "
 
                     binary_fixed_costs.update_total_time(time.perf_counter()-start_time)
                     # Index Dependant
-                    lhs_block = block
                     before_binary_json_len = len(json_list)
-                    block = block.binary(
-                        temp_block,
-                        op,
-                        json_list=json_list,
-                        lhs_index=lhs_json_index,
-                        rhs_index=const_json_index,
-                    )
+                    block, block_json_index = block.binary(temp_block, op, json_list = json_list,
+                    lhs_index = block_json_index,
+                    rhs_index = const_json_index)
 
                     # json_obj = {
                     #     "method": "binary",
@@ -1349,18 +1327,6 @@ Blocks Types: "
                     #     "output": len(json_list)
                     # }
                     # json_list.append(json_obj)
-                    if dummy_mode and len(json_list) == before_binary_json_len:
-                        if block is lhs_block:
-                            block_json_index = lhs_json_index
-                        elif block is temp_block:
-                            block_json_index = const_json_index
-                        else:
-                            raise RuntimeError(
-                                "Binary replay index fallback failed in dom1 path: "
-                                "no JSON emitted and output is neither operand."
-                            )
-                    else:
-                        block_json_index = len(json_list) - 1
 
                 binary_sparse_tensor_dom1.update_total_time(time.perf_counter()-start_time)
             else:
@@ -1389,13 +1355,9 @@ Blocks Types: "
                 binary_sparse_tensor_overlap_expenses.update_total_time(time.perf_counter()-start_time)
                 # Index Dependant
                 before_binary_json_len = len(json_list)
-                block = block_1.binary(
-                    block_2,
-                    op,
-                    lhs_index=lhs_json_index,
-                    rhs_index=rhs_json_index,
-                    json_list=json_list,
-                )
+                block, block_json_index = block_1.binary(block_2, op, json_list = json_list,
+                lhs_index = lhs_json_index,
+                rhs_index = rhs_json_index)
                 binary_sparse_tensor_overlap.update_total_time(time.perf_counter()-start_time)
 
 
@@ -1431,26 +1393,8 @@ Blocks Types: "
                 #     "output": len(json_list)
                 # }
                 # json_list.append(json_obj)
-                if dummy_mode and len(json_list) == before_binary_json_len:
-                    if block is block_1:
-                        block_json_index = lhs_json_index
-                    elif block is block_2:
-                        block_json_index = rhs_json_index
-                    else:
-                        raise RuntimeError(
-                            "Binary replay index fallback failed in overlap path: "
-                            "no JSON emitted and output is neither operand."
-                        )
-                else:
-                    block_json_index = len(json_list) - 1
             
             start = time.perf_counter()
-            if isinstance(block, ConstBlock) and block.block == dense_const and not dummy_mode:
-                binary_fixed_costs.update_total_time(time.perf_counter()-start)
-                continue
-            if dummy_mode and block.block_type == 'C' and block.block == dense_const:
-                binary_fixed_costs.update_total_time(time.perf_counter()-start)
-                continue
             res_blocks.append(block)
 
             json_obj = {

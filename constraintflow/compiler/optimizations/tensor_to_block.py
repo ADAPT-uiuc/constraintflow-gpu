@@ -77,7 +77,6 @@ def get_profiled_branch(layer_index, block_id):
         return taken
     return None
 
-
 # Worklist Algorithm to find live nodes (essentially branches that are taken based on the profiling data that we collect during simulacrum mode)
 def get_live_nodes(cfg, layer_index):
     live_nodes = set()
@@ -183,8 +182,6 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
 
     with open(filename, 'r') as f:
         json_list = json.load(f)
-
-    print(binary_instance)
     if isinstance(expr, IrTernary):
         cond = expr.children[0]
         lhs = expr.children[1]
@@ -322,23 +319,51 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
             elif json_obj["input"] == "lhs":
                 inputIr = lhs
-            else:
-                raise Exception("NOT IMPLEMENTED")
-            output = IrSimpleUnary(inputIr, json_obj["op"])
-
-        elif json_obj["method"] == "binary_to_identity_unary":
-            if "json_list_" in json_obj["unary_source"]:
-                inputIr = output_vars[int(json_obj["unary_source"].split("_")[-1])]
-            elif json_obj["unary_source"] == "lhs":
-                inputIr = lhs
-            elif json_obj["unary_source"] == "rhs":
+            elif json_obj["input"] == "rhs":
                 inputIr = rhs
             else:
                 raise Exception("NOT IMPLEMENTED")
-            op = json_obj["op"]
-            output = IrBinaryToUnary(inputIr, op)
-            
 
+            op_ref = json_obj.get("op", json_obj.get("operation"))
+            if isinstance(op_ref, str) and "json_list_" in op_ref:
+                lambda_obj = json_list[int(op_ref.split("_")[-1])]
+                if lambda_obj["method"] == "lambda":
+                    op_ref = output_vars[int(op_ref.split("_")[-1])]
+            output = IrSimpleUnary(inputIr, op_ref)
+
+        elif json_obj["method"] == "apply_lambda":
+            if "json_list_" in json_obj["input"]:
+                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            elif json_obj["input"] == "lhs":
+                inputIr = lhs
+            elif json_obj["input"] == "rhs":
+                inputIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+
+            if not (isinstance(json_obj["op"], str) and "json_list_" in json_obj["op"]):
+                raise Exception("NOT IMPLEMENTED")
+            lambda_obj = json_list[int(json_obj["op"].split("_")[-1])]
+            if lambda_obj["method"] != "lambda":
+                raise Exception("NOT IMPLEMENTED")
+            output = IrSimpleUnary(inputIr, output_vars[int(json_obj["op"].split("_")[-1])])
+
+        elif json_obj["method"] == "torch_sigmoid":
+            input_ref = json_obj.get("block", json_obj.get("input"))
+            if "json_list_" in input_ref:
+                inputIr = output_vars[int(input_ref.split("_")[-1])]
+            elif input_ref == "lhs":
+                inputIr = lhs
+            elif input_ref == "rhs":
+                inputIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrSimpleUnary(inputIr, "sigma")
+
+        elif json_obj["method"] == "lambda":
+            output = IrLambda(json_obj["op"])
+
+            
         elif json_obj["method"] == "append_list":
             if 'json_list_' in json_obj["list"]:
                 list1 = output_vars[int(json_obj["list"].split("_")[-1])]
@@ -604,13 +629,20 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 output = IrTensorOnes(torch.tensor(json_obj["repeat_dims"], dtype=torch.int64))
 
         # torch_ones: sparse_block DummyBlock.get_dense_const_block (size = total_shape).
-        elif json_obj["method"] == "torch_ones":
-            if isinstance(json_obj["size"], list) and len(json_obj["size"]) > 0 and json_obj["size"][0] == 1:
-                output = IrTensorOnes("[batch_size" + "".join([", " + str(json_obj["size"][i]) for i in range(1, len(json_obj["size"]))]) + "]")
+        elif json_obj["method"] in ("torch_ones", "torch.ones"):
+            size = json_obj.get("size")
+            if size is None:
+                size = json_obj.get("repeat_dims")
+            if size is None:
+                size = json_obj.get("input")
+                if isinstance(size, list) and len(size) == 1 and isinstance(size[0], list):
+                    size = size[0]
+            if isinstance(size, list) and len(size) > 0 and size[0] == 1:
+                output = IrTensorOnes("[batch_size" + "".join([", " + str(size[i]) for i in range(1, len(size))]) + "]")
             else:
-                output = IrTensorOnes(torch.tensor(json_obj["size"], dtype=torch.int64))
+                output = IrTensorOnes(torch.tensor(size, dtype=torch.int64))
 
-        elif json_obj["method"] == "torch_mul":
+        elif json_obj["method"] in ("torch_mul", "torch.mul"):
             if "json_list_" in json_obj["lhs"]:
                 lhsIr = output_vars[int(json_obj["lhs"].split("_")[-1])]
             elif json_obj["lhs"] == "lhs":

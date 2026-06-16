@@ -182,6 +182,24 @@ class Flow:
             size += curr_size
             prev_size = self.model[tmp].size
             self.abs_elem.update(curr, abs_shape)
+            # print(f"abs_elem: {tmp}")
+            # print(f"LList")
+            # print(self.abs_elem.d['llist'])
+            # print("\n")
+            # print(f"l")
+            # print(self.abs_elem.d['l'])
+            # print("\n")
+            # print(f"u")
+            # print(self.abs_elem.d['u'])
+            # print("\n")
+            # print(f"L")
+            # print(self.abs_elem.d['L'])
+            # print("\n")
+            # print(f"U")
+            # print(self.abs_elem.d['U'])
+
+            if tmp>=4:
+                asdasdasd
 
             if self.print_intermediate_results:
                 print(tmp+1, layer.type, layer.shape)
