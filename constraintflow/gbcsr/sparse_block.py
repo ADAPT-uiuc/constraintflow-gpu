@@ -557,36 +557,172 @@ class DenseBlock(SparseBlock):
         # res = DenseBlock(self.block.repeat(*repeat_dims))
         return res
     
-    def unsqueeze(self, index):
+    def unsqueeze(self, index, json_list=[], template_index=-1, simulacrum=False):
         start_time = time.time()
+        json_obj = {
+            "method": "extract_sparse_block",
+            "input": "json_list_" + str(template_index),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        template_index = len(json_list) - 1
+
+        json_obj = {
+            "method": "torch_unsqueeze",
+            "input": "json_list_" + str(template_index),
+            "index": index,
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        res_index = len(json_list) - 1
         res = self.block.unsqueeze(index)
+
+        json_obj = {
+            "method": "DenseBlock",
+            "block": "json_list_" + str(res_index),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        res_index = len(json_list) - 1
+
+        if simulacrum:
+            return DenseBlock(res), res_index
         end_time = time.time()
         unsqueeze_time.update_op_time(end_time-start_time)
         return DenseBlock(res)
     
-    def squeeze(self, index):
+    def squeeze(self, index, json_list=[], template_index=-1, simulacrum=False):
         start_time = time.time()
+
+
+        json_obj = {
+            "method": "extract_sparse_block",
+            "input": "json_list_" + str(template_index),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        template_index = len(json_list) - 1
+        json_obj = {
+            "method": "torch_squeeze",
+            "input": "json_list_" + str(template_index),
+            "index": index,
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        res_index = len(json_list) - 1
         new_block = self.block.squeeze(index)
+
+        json_obj = {
+            "method": "DenseBlock",
+            "block": "json_list_" + str(res_index),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        res_index = len(json_list) - 1
         res = DenseBlock(new_block)
+        if simulacrum:
+            return res, res_index
         end_time = time.time()
         squeeze_time.update_op_time(end_time - start_time)
         return res
     
-    def matmul_equal_dims(self, sp_block, *args, **kwargs):
+    def matmul_equal_dims(self, sp_block, json_list=[], lhs_index=-1, rhs_index=-1):
         start_time_total = time.perf_counter()
         if isinstance(sp_block, DenseBlock):
+            json_obj = {
+                "method": "extract_sparse_block",
+                "input": "json_list_" + str(lhs_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            lhs_index = len(json_list) - 1
             a = self.block
+            
+            json_obj = {
+                "method": "extract_sparse_block",
+                "input": "json_list_" + str(rhs_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            rhs_index = len(json_list) - 1
             b = sp_block.block
-            start_op_time = time.perf_counter()
+
+            
+            json_obj = {
+                    "method": "torch_matmul",
+                    "lhs": "json_list_" + str(lhs_index),
+                    "rhs": "json_list_" + str(rhs_index),
+                    "output": len(json_list),
+            }
+            json_list.append(json_obj)
             c = a @ b
-            equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
+
+
+            json_obj = {
+                "method": "DenseBlock",
+                "block": "json_list_" + str(len(json_list) - 1),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            res_index = len(json_list) - 1
             res = DenseBlock(c)
         elif isinstance(sp_block, DiagonalBlock):
-            start_op_time = time.perf_counter()
-            res = DenseBlock(self.block * sp_block.block.unsqueeze(sp_block.diag_index-1))
-            equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
+            json_obj = {
+                "method": "extract_sparse_block",
+                "input": "json_list_" + str(lhs_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            lhs_index = len(json_list) - 1
+            lhs = self.block
+
+            json_obj = {
+                "method": "extract_sparse_block",
+                "input": "json_list_" + str(rhs_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            rhs_index = len(json_list) - 1
+            rhs = sp_block.block
+            
+            json_obj = {
+                "method": "torch_unsqueeze",
+                "input": "json_list_" + str(rhs_index),
+                "index": sp_block.diag_index-1,
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            rhs_index = len(json_list) - 1
+            rhs = rhs.unsqueeze(sp_block.diag_index-1)
+            
+            json_obj = {
+                "method": "torch_mul",
+                "lhs": "json_list_" + str(lhs_index),
+                "rhs": "json_list_" + str(rhs_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            res = lhs * rhs
+
+            json_obj = {
+                "method": "DenseBlock",
+                "block": "json_list_" + str(len(json_list) - 1),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            res_index = len(json_list) - 1
+            res = DenseBlock(res)
+
         elif isinstance(sp_block, KernelBlock):
+            json_obj = {
+                "method": "extract_sparse_block",
+                "input": "json_list_" + str(rhs_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            rhs_index = len(json_list) - 1
             kernel = sp_block.block
+
             kx = sp_block.kx
             ky = sp_block.ky
             sx = sp_block.sx
@@ -602,43 +738,156 @@ class DenseBlock(SparseBlock):
             curr_size = self.block.shape[-2]
             new_px = (ix + 2*px - kx) % sx
             new_py = (iy + 2*py - ky) % sy
-            start_op_time = time.perf_counter()
+
+            json_obj = {
+                "method": "extract_sparse_block",
+                "input": "json_list_" + str(lhs_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            lhs_index = len(json_list) - 1
+            json_obj = {
+                "method": "torch_reshape",
+                "input": "json_list_" + str(lhs_index),
+                "shape": (batch_size*curr_size, num_kernels, ox, oy),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            lhs_index = len(json_list) - 1
             input_tensor = self.block.reshape(batch_size*curr_size, num_kernels, ox, oy)
+
+            json_obj = {
+                "method": "F.conv_transpose2d",
+                "input": "json_list_" + str(lhs_index),
+                "kernel": "json_list_" + str(rhs_index),
+                "stride": (sx, sy),
+                "padding": (px, py),
+                "output_padding": (new_px, new_py),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
             output_tensor = F.conv_transpose2d(input_tensor, kernel, stride=(sx, sy), padding=(px, py), output_padding=(new_px, new_py))
+
+            json_obj = {
+                "method": "torch_reshape",
+                "input": "json_list_" + str(len(json_list) - 1),
+                "shape": (batch_size, curr_size, -1),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            res_index = len(json_list) - 1
+            json_obj = {
+                "method": "DenseBlock",
+                "block": "json_list_" + str(res_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            res_index = len(json_list) - 1
             res = DenseBlock(output_tensor.reshape(batch_size, curr_size, -1))
-            equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
         elif isinstance(sp_block, ConstBlock):
             if sp_block.block == 0:
                 new_total_shape = self.total_shape.clone()
                 new_total_shape[-1] = sp_block.total_shape[-1]
+
+                json_obj = {
+                    "method": "ConstBlock",
+                    "block": 0,
+                    "total_shape": new_total_shape.tolist(),
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                res_index = len(json_list) - 1
                 res = ConstBlock(0, new_total_shape)
+                
             else:
                 raise NotImplementedError
         else:
-            # if sp_block.repeat_dims[0]!=1 and sp_block.only_one_repeat:
-            #     block_2 = sp_block.block
-            # else:
-            block_2 = sp_block.get_dense()
             start_op_time = time.perf_counter()
-            c = self.block @ block_2
-            equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
+            block_2, rhs_index = sp_block.get_dense(json_list=json_list, template_index=rhs_index, simulacrum=True)
+
+
+            json_obj = {
+                "method": "extract_sparse_block",
+                "input": "json_list_" + str(lhs_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            lhs_index = len(json_list) - 1
+            lhs = self.block
+
+
+            json_obj = {
+                "method": "torch_matmul",
+                "lhs": "json_list_" + str(lhs_index),
+                "rhs": "json_list_" + str(rhs_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            c = lhs @ block_2
+
+            json_obj = {
+                "method": "DenseBlock",
+                "block": "json_list_" + str(len(json_list) - 1),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            res_index = len(json_list) - 1
             res = DenseBlock(c)
-        equal_matmul_profilier.update_total_time(time.perf_counter() - start_time_total)
-        return res
+        return res, res_index
         
-    def matmul_unequal_dims(self, sp_block, *args, **kwargs):
-        start_time_total = time.perf_counter()
+    def matmul_unequal_dims(self, sp_block, json_list=[], lhs_index=-1, rhs_index=-1):
         if isinstance(sp_block, DenseBlock):
+            json_obj = {
+                "method": "extract_sparse_block",
+                "input": "json_list_" + str(lhs_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            lhs_index = len(json_list) - 1
             a = self.block 
-            b = sp_block.unsqueeze(-1).block
-            # if baseline_gpu_mode:
-            #     torch.cuda.synchronize()
-            start_op_time = time.perf_counter()
+
+    
+
+
+            rhs_block, rhs_index = sp_block.unsqueeze(-1, json_list=json_list, template_index=rhs_index, simulacrum=True)
+
+            json_obj = {
+                "method": "extract_sparse_block",
+                "input": "json_list_" + str(rhs_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            rhs_index = len(json_list) - 1
+            b = rhs_block.block
+            
+
+            json_obj = {
+                "method": "torch_matmul",
+                "lhs": "json_list_" + str(lhs_index),
+                "rhs": "json_list_" + str(rhs_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
             c = a @ b
+
+            json_obj = {
+                "method": "torch_squeeze",
+                "input": "json_list_" + str(len(json_list) - 1),
+                "index": -1,
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            res_index = len(json_list) - 1
             res = (c).squeeze(-1)
-            # if baseline_gpu_mode:
-            #     torch.cuda.synchronize()
-            unequal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
+
+
+            json_obj = {
+                "method": "DenseBlock",
+                "block": "json_list_" + str(res_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            res_index = len(json_list) - 1
             res = DenseBlock(res)
         elif isinstance(sp_block, DiagonalBlock):
             raise NotImplementedError
@@ -647,23 +896,40 @@ class DenseBlock(SparseBlock):
         elif isinstance(sp_block, ConstBlock):
             if sp_block.block == 0:
                 new_total_shape = self.total_shape.clone()[:-1]
+                json_obj = {
+                    "method": "ConstBlock",
+                    "block": 0,
+                    "total_shape": new_total_shape.tolist(),
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                res_index = len(json_list) - 1
                 res = ConstBlock(0, new_total_shape)
             else:
                 raise NotImplementedError
         elif isinstance(sp_block, RepeatBlock):
             # warnings.warn(f'Matmul with unequal dims inefficient for {type(self)} and {type(sp_block)}')
-            sp_block = DenseBlock(sp_block.get_dense())
-            res = self.matmul_unequal_dims(sp_block)
-            return res
+
+            sp_block, rhs_index = sp_block.get_dense(json_list=json_list, template_index=rhs_index, simulacrum=True)
+
+            json_obj = {
+                "method": "DenseBlock",
+                "block": "json_list_" + str(rhs_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            rhs_index = len(json_list) - 1
+            sp_block = DenseBlock(sp_block)
+
+            res, res_index = self.matmul_unequal_dims(sp_block, json_list=json_list, lhs_index=lhs_index, rhs_index=rhs_index)
+            return res, res_index
         else:
             raise Exception(f'Unrecognized sparse block type: {type(sp_block)}')
-        unequal_matmul_profilier.update_total_time(time.perf_counter() - start_time_total)
-        return res
+        return res, res_index
         
     
     def convert_to_patches(self, ix, iy, ox, oy, sx, sy, px, py, kx, ky, num_channels, num_kernels):
         raise Exception(f'Not an efficient implementation')
-        start_time = time.time()
         flag = self.block.dtype == torch.bool 
         if flag:
             block = self.block.float() # batch_size, curr_size, prev_size
@@ -1559,27 +1825,45 @@ class ConstBlock(SparseBlock):
 
 
     # Done
-    def matmul_equal_dims(self, sp_block, *args, **kwargs):
+    def matmul_equal_dims(self, sp_block, json_list=[], lhs_index=-1, rhs_index=-1):
         # start_time = time.perf_counter()
         if self.block == 0:
             new_total_shape = self.total_shape.clone()
             new_total_shape[-1] = sp_block.total_shape[-1]
+
+            json_obj = {
+                "method": "ConstBlock",
+                "block": 0,
+                "total_shape": new_total_shape.tolist(),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            res_index = len(json_list) - 1
             res = ConstBlock(0, new_total_shape)
         else:
             raise NotImplementedError
         # matmul_time.update_op_time(time.time() - start_time)
-        return res
+        return res, res_index
 
     # Done
-    def matmul_unequal_dims(self, sp_block, *args, **kwargs):
+    def matmul_unequal_dims(self, sp_block, json_list=[], lhs_index=-1, rhs_index=-1):
         # start_time = time.perf_counter()
         if self.block == 0:
             new_total_shape = self.total_shape.clone()[:-1]
+
+            json_obj = {
+                "method": "ConstBlock",
+                "block": 0,
+                "total_shape": new_total_shape.tolist(),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            res_index = len(json_list) - 1
             res = ConstBlock(0, new_total_shape)
         else:
             raise NotImplementedError
-        # matmul_time.update_op_time(time.time() - start_time)
-        return res
+        # matmul_time.update_op_time(time.time() - start_time) 
+        return res, res_index
 
 
     # Done        

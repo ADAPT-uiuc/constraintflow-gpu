@@ -1621,15 +1621,12 @@ Blocks Types: "
                             json_list.append(json_obj)
                             rhs_block_json_index = len(json_list) - 1
 
-                            if dummy_mode:
-                                block = self.blocks[i].matmul_equal_dims(
-                                    sp_tensor.blocks[j],
-                                    json_list=json_list,
-                                    lhs_index=lhs_block_json_index,
-                                    rhs_index=rhs_block_json_index,
-                                )
-                            else:
-                                block = self.blocks[i].matmul_equal_dims(sp_tensor.blocks[j])
+                            block, block_json_index = self.blocks[i].matmul_equal_dims(
+                                sp_tensor.blocks[j],
+                                json_list=json_list,
+                                lhs_index=lhs_block_json_index,
+                                rhs_index=rhs_block_json_index,
+                            )
 
 
                         elif contained([self.start_indices[i][-1:], self.end_indices[i][-1:]], [sp_tensor.start_indices[j][-2:-1], sp_tensor.end_indices[j][-2:-1]]):    
@@ -1655,15 +1652,12 @@ Blocks Types: "
                             json_list.append(json_obj)
                             lhs_block_json_index = len(json_list) - 1
 
-                            if dummy_mode:
-                                block = self.blocks[i].matmul_equal_dims(
-                                    block_1,
-                                    json_list=json_list,
-                                    lhs_index=lhs_block_json_index,
-                                    rhs_index=rhs_block_json_index,
-                                )
-                            else:
-                                block = self.blocks[i].matmul_equal_dims(block_1)
+                            block, block_json_index = self.blocks[i].matmul_equal_dims(
+                                block_1,
+                                json_list=json_list,
+                                lhs_index=lhs_block_json_index,
+                                rhs_index=rhs_block_json_index,
+                            )
                             
                         elif contained([sp_tensor.start_indices[j][-2:-1], sp_tensor.end_indices[j][-2:-1]], [self.start_indices[i][-1:], self.end_indices[i][-1:]]):    
                             start_index = torch.concat((self.start_indices[i][:-1], sp_tensor.start_indices[j][-2:-1]))
@@ -1688,22 +1682,19 @@ Blocks Types: "
                             json_list.append(json_obj)
                             rhs_block_json_index = len(json_list) - 1
 
-                            if dummy_mode:
-                                block = block_1.matmul_equal_dims(
-                                    sp_tensor.blocks[j],
-                                    json_list=json_list,
-                                    lhs_index=lhs_block_json_index,
-                                    rhs_index=rhs_block_json_index,
-                                )
-                            else:
-                                block = block_1.matmul_equal_dims(sp_tensor.blocks[j])
+                            block, block_json_index = block_1.matmul_equal_dims(
+                                sp_tensor.blocks[j],
+                                json_list=json_list,
+                                lhs_index=lhs_block_json_index,
+                                rhs_index=rhs_block_json_index,
+                            )
                         start = time.perf_counter()
                         blocks.append(block)
 
                         json_obj = {
                             "method": "append_list",
                             "list": "json_list_" + str(res_blocks_json_list_index),
-                            "value": "json_list_" + str(len(json_list)-1),
+                            "value": "json_list_" + str(block_json_index),
                             "output": len(json_list)
                         }
                         json_list.append(json_obj)
@@ -1762,15 +1753,12 @@ Blocks Types: "
                             json_list.append(json_obj)
                             rhs_block_json_index = len(json_list) - 1
 
-                            if dummy_mode:
-                                block = block_1.matmul_unequal_dims(
-                                    sp_tensor.blocks[j],
-                                    json_list=json_list,
-                                    lhs_index=lhs_block_json_index,
-                                    rhs_index=rhs_block_json_index,
-                                )
-                            else:
-                                block = block_1.matmul_unequal_dims(sp_tensor.blocks[j])
+                            block, block_json_index = block_1.matmul_unequal_dims(
+                                sp_tensor.blocks[j],
+                                json_list=json_list,
+                                lhs_index=lhs_block_json_index,
+                                rhs_index=rhs_block_json_index,
+                            )
                         elif contained([self.start_indices[i][-1:], self.end_indices[i][-1:]], [sp_tensor.start_indices[j][-1:], sp_tensor.end_indices[j][-1:]]):
                             start_index = torch.concat((sp_tensor.start_indices[j][:-1], self.start_indices[i][-1:]))
                             end_index = torch.concat((sp_tensor.end_indices[j][:-1], self.end_indices[i][-1:]))
@@ -1794,15 +1782,12 @@ Blocks Types: "
                             json_list.append(json_obj)
                             lhs_block_json_index = len(json_list) - 1
 
-                            if dummy_mode:
-                                block = self.blocks[i].matmul_unequal_dims(
-                                    block_1,
-                                    json_list=json_list,
-                                    lhs_index=lhs_block_json_index,
-                                    rhs_index=rhs_block_json_index,
-                                )
-                            else:
-                                block = self.blocks[i].matmul_unequal_dims(block_1)
+                            block, block_json_index = self.blocks[i].matmul_unequal_dims(
+                                block_1,
+                                json_list=json_list,
+                                lhs_index=lhs_block_json_index,
+                                rhs_index=rhs_block_json_index,
+                            )
                         elif contained([sp_tensor.start_indices[j][-1:], sp_tensor.end_indices[j][-1:]], [self.start_indices[i][-1:], self.end_indices[i][-1:]]):
                             start_index = torch.concat((self.start_indices[i][:-1], sp_tensor.start_indices[j][-1:]))
                             end_index = torch.concat((self.end_indices[i][:-1], sp_tensor.end_indices[j][-1:]))
@@ -1827,15 +1812,12 @@ Blocks Types: "
                             json_list.append(json_obj)
                             rhs_block_json_index = len(json_list) - 1
 
-                            if dummy_mode:
-                                block = block_1.matmul_unequal_dims(
-                                    sp_tensor.blocks[j],
-                                    json_list=json_list,
-                                    lhs_index=lhs_block_json_index,
-                                    rhs_index=rhs_block_json_index,
-                                )
-                            else:
-                                block = block_1.matmul_unequal_dims(sp_tensor.blocks[j])
+                            block, block_json_index = block_1.matmul_unequal_dims(
+                                sp_tensor.blocks[j],
+                                json_list=json_list,
+                                lhs_index=lhs_block_json_index,
+                                rhs_index=rhs_block_json_index,
+                            )
                         
                         start = time.perf_counter()
                         blocks.append(block)
@@ -1843,7 +1825,7 @@ Blocks Types: "
                         json_obj = {
                             "method": "append_list",
                             "list": "json_list_" + str(res_blocks_json_list_index),
-                            "value": "json_list_" + str(len(json_list)-1),
+                            "value": "json_list_" + str(block_json_index),
                             "output": len(json_list)
                         }
                         json_list.append(json_obj)
