@@ -608,7 +608,11 @@ Blocks Types: "
         res += "Blocks Shapes: "
         for i in range(self.num_blocks):
             res += f"{i}-{self.blocks[i].total_shape}, "
-        return res[:-2] + '\n'
+        res = res[:-2] + '\n'
+        res += "Blocks Values:\n"
+        for i in range(self.num_blocks):
+            res += f"  {i}: {self.blocks[i].block}\n"
+        return res
 
     def expand_symexp_mat(self, symexp_count):
         assert(self.dense_const==0)

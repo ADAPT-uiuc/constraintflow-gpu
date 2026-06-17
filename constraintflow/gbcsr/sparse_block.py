@@ -7,8 +7,8 @@ import operator
 from constraintflow.gbcsr.op_helper import *
 from constraintflow.lib.globals import *
 
-def meta_tensor(block_shape):
-    return torch.empty(block_shape, device='meta')
+def meta_tensor(block_shape, dtype=None):
+    return torch.empty(block_shape, device='meta', dtype=dtype)
 
 def _sync():
     device_mode.sync()
@@ -98,7 +98,11 @@ class SparseBlock:
         self.block_type = block_type
         if block_type != 'C' and dummy_mode:
             block_shape = block.shape if isinstance(block, torch.Tensor) else self.total_shape
-            self.block = meta_tensor(block_shape)
+            if isinstance(block, bool) or (isinstance(block, torch.Tensor) and block.dtype == torch.bool):
+                block_dtype = torch.bool
+            else:
+                block_dtype = torch.float
+            self.block = meta_tensor(block_shape, dtype=block_dtype)
             return
 
         if isinstance(block, torch.Tensor) and not block.is_meta:
@@ -1740,18 +1744,18 @@ def _coerce_to_dense_block(cls, init_fn, *args, **kwargs):
 
 
 def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=False):
-    if dummy_mode or dummy:
-        res = copy.copy(y)
-        if isinstance(y.total_shape, torch.Tensor):
-            res.total_shape = y.total_shape.clone()
-        else:
-            res.total_shape = copy.copy(y.total_shape)
-        if not isinstance(res, ConstBlock):
-            if isinstance(res.block, torch.Tensor):
-                res.block = meta_tensor(res.block.shape)
-            else:
-                res.block = meta_tensor(res.total_shape)
-        return res
+    # if dummy_mode or dummy:
+    #     res = copy.copy(y)
+    #     if isinstance(y.total_shape, torch.Tensor):
+    #         res.total_shape = y.total_shape.clone()
+    #     else:
+    #         res.total_shape = copy.copy(y.total_shape)
+    #     if not isinstance(res, ConstBlock):
+    #         if isinstance(res.block, torch.Tensor):
+    #             res.block = meta_tensor(res.block.shape)
+    #         else:
+    #             res.block = meta_tensor(res.total_shape)
+    #     return res
 
     if isinstance(x, ConstBlock):
         if x.block:

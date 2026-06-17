@@ -181,6 +181,7 @@ class Flow:
                 assert(False)
             size += curr_size
             prev_size = self.model[tmp].size
+            print(layer.type)
             self.abs_elem.update(curr, abs_shape)
             # print(f"abs_elem: {tmp}")
             # print(f"LList")
