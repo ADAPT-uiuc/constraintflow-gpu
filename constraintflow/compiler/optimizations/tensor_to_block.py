@@ -110,7 +110,8 @@ def get_live_nodes(cfg, layer_index):
 def convert_to_ir_ttb(expr, layer_index, while_iteration):
     # targets = ()
     # targets = (IrBinaryOp)
-    targets = (IrBinaryOp)
+    # targets= (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop)
+    targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop, IrAddDimension, IrRemoveDimension)
     
     if not isinstance(expr, targets):
         return expr, []
@@ -562,15 +563,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 shape = "torch.tensor([batch_size" + "".join([", " + str(json_obj["total_shape"][i]) for i in range(1, len(json_obj["total_shape"]))]) + "], dtype=torch.int64)"
             else:
                 shape = torch.tensor(json_obj["total_shape"], dtype=torch.int64)
-            if (
-                isinstance(expr, (IrInnerProduct, IrDot))
-                and json_obj["block"] == 0
-                and json_index >= 2
-                and json_list[json_index - 2]["method"] == "extract_block"
-                and json_list[json_index - 1]["method"] == "extract_block"
-            ):
-                output = IrBlockInnerProduct(output_vars[-2], output_vars[-1], type='equal_dims')
-            elif isinstance(json_obj["block"], str) and "json_list_" in json_obj["block"]:
+            if isinstance(json_obj["block"], str) and "json_list_" in json_obj["block"]:
                 blockIr = output_vars[int(json_obj["block"].split("_")[-1])]
                 output = IrConstBlock(blockIr, shape)
             else:
@@ -911,9 +904,9 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             output = IrFConvTranspose2d(
                 inputIr,
                 weightIr,
-                stride=json_obj.get("stride", None),
-                padding=json_obj.get("padding", None),
-                output_padding=json_obj.get("output_padding", None),
+                stride=json_obj["stride"],
+                padding=json_obj["padding"],
+                output_padding=json_obj["output_padding"],
             )
 
         elif json_obj["method"] == "F.unfold":
