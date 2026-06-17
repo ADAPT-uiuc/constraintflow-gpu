@@ -109,8 +109,8 @@ def get_live_nodes(cfg, layer_index):
 
 def convert_to_ir_ttb(expr, layer_index, while_iteration):
     # targets = ()
-    targets = (IrBinaryOp)
     # targets = (IrBinaryOp)
+    targets = (IrBinaryOp)
     
     if not isinstance(expr, targets):
         return expr, []
