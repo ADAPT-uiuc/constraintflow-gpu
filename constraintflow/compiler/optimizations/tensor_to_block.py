@@ -109,9 +109,9 @@ def get_live_nodes(cfg, layer_index):
 
 def convert_to_ir_ttb(expr, layer_index, while_iteration):
     # targets = ()
-    targets = (IrReduce)
+    # targets = (IrUnaryOp)
     # targets= (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop)
-    # targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop, IrAddDimension, IrRemoveDimension, IrReduce)
+    targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot, IrTernary, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop, IrAddDimension, IrRemoveDimension, IrReduce)
     
     if not isinstance(expr, targets):
         return expr, []
@@ -329,9 +329,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
 
             op_ref = json_obj.get("op", json_obj.get("operation"))
             if isinstance(op_ref, str) and "json_list_" in op_ref:
-                lambda_obj = json_list[int(op_ref.split("_")[-1])]
-                if lambda_obj["method"] == "lambda":
-                    op_ref = output_vars[int(op_ref.split("_")[-1])]
+                op_ref = output_vars[int(op_ref.split("_")[-1])]
             output = IrSimpleUnary(inputIr, op_ref)
 
         elif json_obj["method"] == "apply_lambda":
@@ -1088,6 +1086,18 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 torch.tensor(json_obj["end_index"], dtype=torch.int64),
                 torch.tensor(json_obj["block_start_index"], dtype=torch.int64),
             )
+        elif json_obj["method"] == "torch_any":
+            inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            output = IrBlockAny(inputIr)
+
+        elif json_obj["method"] == "const_any":
+            inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            output = IrSimpleBinary(inputIr, IrConst(True, 'Bool'), 'eq')
+
+        elif json_obj["method"] == "torch_clamp":
+            inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            output = IrTensorClamp(inputIr, json_obj["const"], json_obj["min_true"])
+
         elif json_obj["method"] == "assign_to_view":
             if "json_list_" in json_obj["input"]:
                 inputIr = output_vars[int(json_obj["input"].split("_")[-1])]

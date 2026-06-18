@@ -711,26 +711,18 @@ Blocks Types: "
                         json_list.append(json_obj)
                         block_json_index = len(json_list) - 1
 
-                        json_obj = {
-                            "method": "block_create_similar",
-                            "input": "json_list_" + str(extracted_block_index),
-                            "arg": "json_list_" + str(block_json_index),
-                            "output": len(json_list)
-                        }
-                        json_list.append(json_obj)
-                        result_json_index = len(json_list) - 1
 
+                    res, res_index = sparse_block.create_similar(sparse_block.block, json_list = json_list, template_index = block_json_index, simulacrum = True)
+
+                    if trace: 
                         json_obj = {
                             "method": "block_set_total_shape_last_dim",
-                            "input": "json_list_" + str(result_json_index),
+                            "input": "json_list_" + str(res_index),
                             "value": int((end_index[-1] - start_index[-1]).item()),
                             "output": len(json_list)
                         }
                         json_list.append(json_obj)
                         result_json_index = len(json_list) - 1
-
-
-                    res = sparse_block.create_similar(sparse_block.block)
                     res.total_shape[-1] = end_index[-1] - start_index[-1]
                     extraction_mode = "kernel_or_patches"
                     if return_extraction_mode:
@@ -1059,14 +1051,7 @@ Blocks Types: "
             json_list.append(json_obj)
             block_json_index = len(json_list) - 1
 
-            json_obj = {
-                "method": "unary_block",
-                "input": "json_list_" + str(block_json_index),
-                "op": op_name,
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            result_block_json_index = len(json_list) - 1
+            cr, result_block_json_index = self.blocks[i].unary(op, json_list=json_list, template_index=block_json_index, simulacrum=True)
 
             json_obj = {
                 "method": "append_list",
@@ -1077,7 +1062,7 @@ Blocks Types: "
             json_list.append(json_obj)
             current_list_index = len(json_list) - 1
 
-            blocks.append(self.blocks[i].unary(op))
+            blocks.append(cr)
 
         json_obj = {
             "method": "SparseTensor",
@@ -1498,13 +1483,7 @@ Blocks Types: "
                     json_list.append(json_obj)
                     block_json_index = len(json_list) - 1
 
-                    json_obj = {
-                        "method": "any",
-                        "input": "json_list_" + str(block_json_index),
-                        "output": len(json_list),
-                    }
-                    json_list.append(json_obj)
-                    any_json_index = len(json_list) - 1
+                    block_any, any_json_index = self.blocks[i].any(json_list=json_list, template_index=block_json_index, simulacrum=True)
 
                     json_obj = {
                         "method": "simple_binary",
@@ -1516,9 +1495,13 @@ Blocks Types: "
                     json_list.append(json_obj)
                     acc_json_list_index = len(json_list) - 1
 
-                if self.blocks[i].any():
-                    res = True
-                    break
+                    if block_any:
+                        res = True
+                        break
+                else:
+                    if self.blocks[i].any():
+                        res = True
+                        break
         return res
     
     def float(self):
@@ -2121,7 +2104,7 @@ Blocks Types: "
         blocks_json_list_index = len(json_list) - 1
         clamp_sparse_tensor_expense.update_total_time(time.perf_counter()-start_time)
         for i in range(self.num_blocks):
-            cr = self.blocks[i].clamp(const, min_true)
+            
             json_obj = {
                 "method": "extract_block",
                 "input": "json_list_" + str(lhs_index),
@@ -2129,20 +2112,14 @@ Blocks Types: "
                 "output": len(json_list)
             }
             json_list.append(json_obj)
+            block_json_index = len(json_list) - 1
 
-            json_obj = {
-                "method": "block_clamp",
-                "input": "json_list_" + str(len(json_list)-1),
-                "const": const,
-                "min_true": min_true,
-                "output": len(json_list)
-            }
-            json_list.append(json_obj)
+            cr, cr_index = self.blocks[i].clamp(const, min_true, json_list=json_list, template_index=block_json_index, simulacrum=True)
 
             json_obj = {
                 "method": "append_list",
                 "list": "json_list_" + str(blocks_json_list_index),
-                "value": "json_list_" + str(len(json_list)-1),
+                "value": "json_list_" + str(cr_index),
                 "output": len(json_list)
             }
             json_list.append(json_obj)

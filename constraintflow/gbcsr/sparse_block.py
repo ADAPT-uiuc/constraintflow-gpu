@@ -57,7 +57,7 @@ def operation(x, y, op):
     binary_profilier.update_total_time(time.perf_counter() - start_time)
     return z
 
-def unary_operation(x, op, json_list = None, block_index = -1, unary_index = -1):
+def unary_operation(x, op, json_list = None, block_index = -1, unary_index = -1, concrete_unary = False):
     start_time = time.perf_counter()
     #_sync()
     start_op_time = time.perf_counter()
@@ -71,12 +71,28 @@ def unary_operation(x, op, json_list = None, block_index = -1, unary_index = -1)
         z = torch.sigmoid(x)
     else:
         if json_list is not None:
-            json_list.append({
-                "method": "simple_unary",
-                "input": "json_list_" + str(block_index),
-                "operation": "json_list_" + str(unary_index),
-                "output" : len(json_list)
-            })
+            
+            if unary_index != -1:
+                json_list.append({
+                    "method": "simple_unary",
+                    "input": "json_list_" + str(block_index),
+                    "operation": "json_list_" + str(unary_index),
+                    "output" : len(json_list)
+                })
+            elif concrete_unary:
+                if op == operator.not_:
+                    op_name = 'not'
+                elif op == operator.neg:
+                    op_name = '-'
+                json_list.append({
+                    "method": "simple_unary",
+                    "input": "json_list_" + str(block_index),
+                    "operation": op_name,
+                    "output" : len(json_list)
+                })
+            else:
+                AssertionError("Not Implemented")
+
         z = op(x)
     #_sync()
     unary_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
@@ -472,14 +488,24 @@ class SparseBlock:
 
 
 
-    def unary(self, op):
+    def unary(self, op, json_list=[], template_index=-1, simulacrum=False):
         if isinstance(self.block, torch.Tensor) and self.block.dtype == bool or isinstance(self.block, bool):
             # assert(op == operator.not_)
             pass
         else:
             # assert(op == operator.neg)
             pass
-        return self.create_similar(unary_operation(self.block, op))
+        json_list.append({
+            "method": "sparse_block_extract",
+            "input": "json_list_" + str(template_index),
+            "output": len(json_list),
+        })
+        block_index = len(json_list) - 1
+        new_block, unary_index = unary_operation(self.block, op, json_list=json_list, block_index=block_index, concrete_unary = True)
+        res, res_index = self.create_similar(block=new_block, json_list=json_list, template_index=unary_index, simulacrum=True)
+        if simulacrum:
+            return res, res_index
+        return res
     
     def float(self):
         return self.create_similar((self.block).float())
@@ -490,24 +516,53 @@ class SparseBlock:
     def size(self):
         raise Exception(f'Not implemented for {type(self)}')
     
-    def clamp(self, const, min_true):
+    def clamp(self, const, min_true, json_list=[], template_index=-1, simulacrum=False):
         start_time_total = time.perf_counter()
         # _sync()
         if min_true:
             clamp_sparse_block_expense.update_total_time(time.perf_counter() - start_time_total)
             start_op_time = time.perf_counter()
+            json_list.append({
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(template_index),
+                "output": len(json_list),
+            })
+            extract_index = len(json_list) - 1
+            json_list.append({
+                "method": "torch_clamp",
+                "input": "json_list_" + str(extract_index),
+                "const": const,
+                "min_true": True,
+                "output": len(json_list),
+            })
+            clamp_index = len(json_list) - 1
             new_block = self.block.clamp(min=const)
             clamp_sparse_block_op_time.update_total_time(time.perf_counter() - start_op_time)
         else:
             clamp_sparse_block_expense.update_total_time(time.perf_counter() - start_time_total)
             start_op_time = time.perf_counter()
+            json_list.append({
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(template_index),
+                "output": len(json_list),
+            })
+            extract_index = len(json_list) - 1
+            json_list.append({
+                "method": "torch_clamp",
+                "input": "json_list_" + str(extract_index),
+                "const": const,
+                "min_true": False,
+                "output": len(json_list),
+            })
+            clamp_index = len(json_list) - 1
             new_block = self.block.clamp(max=const)
             clamp_sparse_block_op_time.update_total_time(time.perf_counter() - start_op_time)
         start_time = time.perf_counter()
-        
         # _sync()
-        res = self.create_similar(block=new_block)
+        res, res_index = self.create_similar(block=new_block, json_list=json_list, template_index=clamp_index, simulacrum=True)
         clamp_sparse_block_expense.update_total_time(time.perf_counter() - start_time)
+        if simulacrum:
+            return res, res_index
         return res
 
     def type(self):
@@ -521,12 +576,26 @@ class SparseBlock:
     def overwrite_dense_block(self, sp_block, start_index, s):
         raise Exception(f'Not implemented')
     
-    def any(self):
+    def any(self, json_list=[], template_index=-1, simulacrum=False):
         start_time = time.time()
-        if dummy_mode:
-            return True
-        res = self.block.any()
-        any_time.update_op_time(time.time() - start_time)
+        json_list.append({
+            "method": "sparse_block_extract",
+            "input": "json_list_" + str(template_index),
+            "output": len(json_list),
+        })
+        block_index = len(json_list) - 1
+        json_list.append({
+            "method": "torch_any",
+            "input": "json_list_" + str(block_index),
+            "output": len(json_list),
+        })
+        res_index = len(json_list) - 1
+        if isinstance(self.block, torch.Tensor) and self.block.is_meta and dummy_mode:
+            res = True
+        else:
+            res = self.block.any()
+        if simulacrum:
+            return res, res_index
         return res
 
 
@@ -1890,10 +1959,25 @@ class ConstBlock(SparseBlock):
             raise NotImplementedError
 
     # Done
-    def any(self):
-        return self.block == True
+    def any(self, json_list=[], template_index=-1, simulacrum=False):
+        json_list.append({
+            "method": "sparse_block_extract",
+            "input": "json_list_" + str(template_index),
+            "output": len(json_list),
+        })
+        block_index = len(json_list) - 1
+        json_list.append({
+            "method": "const_any",
+            "input": "json_list_" + str(block_index),
+            "output": len(json_list),
+        })
+        res_index = len(json_list) - 1
+        res = self.block == True
+        if simulacrum:
+            return res, res_index
+        return res
 
-    
+
     # Done
     def float(self):
         if self.block == False:
@@ -1903,21 +1987,41 @@ class ConstBlock(SparseBlock):
         else:
             # assert False
             pass
-    
+
     # Done
-    def clamp(self, const, min_true):
+    def clamp(self, const, min_true, json_list=[], template_index=-1, simulacrum=False):
         start_time = time.perf_counter()
         if min_true:
-            if self.block >= const:
-                res = self
-            else:
-                res = ConstBlock(const, self.total_shape)
+            unchanged = self.block >= const
         else:
-            if self.block <= const:
-                res = self
-            else:
-                res = ConstBlock(const, self.total_shape)
+            unchanged = self.block <= const
+        if unchanged:
+            res = self
+        else:
+            res = ConstBlock(const, self.total_shape)
         clamp_const_block_expense.update_total_time(time.perf_counter() - start_time)
+        if simulacrum:
+            if unchanged:
+                json_list.append({
+                    "method": "sparse_block_extract",
+                    "input": "json_list_" + str(template_index),
+                    "output": len(json_list),
+                })
+                block_index = len(json_list) - 1
+                json_list.append({
+                    "method": "ConstBlock",
+                    "block": "json_list_" + str(block_index),
+                    "total_shape": self.total_shape.tolist(),
+                    "output": len(json_list),
+                })
+            else:
+                json_list.append({
+                    "method": "ConstBlock",
+                    "block": const,
+                    "total_shape": self.total_shape.tolist(),
+                    "output": len(json_list),
+                })
+            return res, len(json_list) - 1
         return res
 
 
@@ -2107,11 +2211,27 @@ class RepeatBlock(SparseBlock):
     def unary(self, op):
         return self.create_similar(unary_operation(self.block, op))
     
-    def any(self):
+    def any(self, json_list=[], template_index=-1, simulacrum=False):
+        json_list.append({
+            "method": "sparse_block_extract",
+            "input": "json_list_" + str(template_index),
+            "output": len(json_list),
+        })
+        block_index = len(json_list) - 1
+        json_list.append({
+            "method": "torch_any",
+            "input": "json_list_" + str(block_index),
+            "output": len(json_list),
+        })
+        res_index = len(json_list) - 1
         if isinstance(self.block, torch.Tensor) and self.block.is_meta:
-            return True
-        return self.block.any()
-    
+            res = True
+        else:
+            res = self.block.any()
+        if simulacrum:
+            return res, res_index
+        return res
+
     def clamp(self, const, min_true):
         start_total_time = time.perf_counter()
         # _sync()
