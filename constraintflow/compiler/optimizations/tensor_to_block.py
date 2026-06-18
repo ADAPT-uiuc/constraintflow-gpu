@@ -111,7 +111,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
     # targets = ()
     # targets = (IrUnaryOp)
     # targets= (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop)
-    targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot, IrTernary, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop, IrAddDimension, IrRemoveDimension, IrReduce)
+    targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrUnaryOp, IrClamp, IrDot, IrTernary, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop, IrAddDimension, IrRemoveDimension, IrReduce)
     
     if not isinstance(expr, targets):
         return expr, []
@@ -121,18 +121,6 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
     if isinstance(expr, IrUnaryOp) and expr.op in ('get_shape_1', 'get_shape_0'):
         return expr, []
     binary_instance = expr.ttb_counter
-    debug_skip_layers = {
-        int(x)
-        for x in os.environ.get("TTB_DEBUG_SKIP_LAYERS", "").split(",")
-        if x.strip()
-    }
-    debug_skip_counters = {
-        int(x)
-        for x in os.environ.get("TTB_DEBUG_SKIP_COUNTERS", "").split(",")
-        if x.strip()
-    }
-    if layer_index in debug_skip_layers and (not debug_skip_counters or binary_instance in debug_skip_counters):
-        return expr, []
 
     if while_iteration is None and getattr(expr, "inside_while", False):
         while_iteration = -1
