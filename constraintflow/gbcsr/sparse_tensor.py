@@ -1944,9 +1944,7 @@ Blocks Types: "
             json_list.append(json_obj)
             blocks_json_list_index = len(json_list) - 1
         for i in range(self.num_blocks):
-            blocks.append(self.blocks[i].squeeze(index))
-            start_indices.append(torch.concat([self.start_indices[i][:index], self.start_indices[i][index+1:]]))
-            end_indices.append(torch.concat([self.end_indices[i][:index], self.end_indices[i][index+1:]]))
+
             if trace:
                 json_obj = {
                     "method": "extract_block",
@@ -1956,22 +1954,21 @@ Blocks Types: "
                 }
                 json_list.append(json_obj)
 
-                json_obj = {
-                    "method": "block_squeeze",
-                    "input": "json_list_" + str(len(json_list)-1),
-                    "index": index,
-                    "output": len(json_list)
-                }
-                json_list.append(json_obj)
-
+            block, block_index = self.blocks[i].squeeze(index, json_list=json_list, template_index=len(json_list)-1, simulacrum=True)
+            blocks.append(block)
+            if trace:
                 json_obj = {
                     "method": "append_list",
                     "list": "json_list_" + str(blocks_json_list_index),
-                    "value": "json_list_" + str(len(json_list)-1),
+                    "value": "json_list_" + str(block_index),
                     "output": len(json_list)
                 }
                 json_list.append(json_obj)
                 blocks_json_list_index = len(json_list) - 1
+            
+            start_indices.append(torch.concat([self.start_indices[i][:index], self.start_indices[i][index+1:]]))
+            end_indices.append(torch.concat([self.end_indices[i][:index], self.end_indices[i][index+1:]]))
+            
         if trace:
             json_obj = {
                 "method": "SparseTensor",
@@ -2017,9 +2014,6 @@ Blocks Types: "
             json_list.append(json_obj)
             blocks_json_list_index = len(json_list) - 1
         for i in range(self.num_blocks):
-            blocks.append(self.blocks[i].unsqueeze(index))
-            start_indices.append(torch.concat([self.start_indices[i][:index], torch.tensor([0]), self.start_indices[i][index:]]))
-            end_indices.append(torch.concat([self.end_indices[i][:index], torch.tensor([1]), self.end_indices[i][index:]]))
             if trace:
                 json_obj = {
                     "method": "extract_block",
@@ -2029,22 +2023,20 @@ Blocks Types: "
                 }
                 json_list.append(json_obj)
 
-                json_obj = {
-                    "method": "block_unsqueeze",
-                    "input": "json_list_" + str(len(json_list)-1),
-                    "index": index,
-                    "output": len(json_list)
-                }
-                json_list.append(json_obj)
-
+            block, block_index = self.blocks[i].unsqueeze(index, json_list=json_list, template_index=len(json_list)-1, simulacrum=True)
+            blocks.append(block)
+            start_indices.append(torch.concat([self.start_indices[i][:index], torch.tensor([0]), self.start_indices[i][index:]]))
+            end_indices.append(torch.concat([self.end_indices[i][:index], torch.tensor([1]), self.end_indices[i][index:]]))
+            if trace:
                 json_obj = {
                     "method": "append_list",
                     "list": "json_list_" + str(blocks_json_list_index),
-                    "value": "json_list_" + str(len(json_list)-1),
+                    "value": "json_list_" + str(block_index),
                     "output": len(json_list)
                 }
                 json_list.append(json_obj)
                 blocks_json_list_index = len(json_list) - 1
+
         if trace:
             json_obj = {
                 "method": "SparseTensor",
@@ -2091,18 +2083,12 @@ Blocks Types: "
             }
             json_list.append(json_obj)
 
-            json_obj = {
-                "method": "repeat",
-                "input": "json_list_" + str(len(json_list)-1),
-                "repeat_dims": repeat_dims.tolist(),
-                "output": len(json_list)
-            }
-            json_list.append(json_obj)
-            blocks.append(self.blocks[i].repeat(repeat_dims))
+            block, block_index = self.blocks[i].repeat(repeat_dims, json_list=json_list, template_index=len(json_list)-1, simulacrum=True)
+            blocks.append(block)
             json_obj = {
                 "method": "append_list",
                 "list": "json_list_" + str(blocks_json_list_index),
-                "value": "json_list_" + str(len(json_list)-1),
+                "value": "json_list_" + str(block_index),
                 "output": len(json_list)
             }
             json_list.append(json_obj)
@@ -2179,19 +2165,55 @@ Blocks Types: "
         return SparseTensor(self.start_indices, blocks, self.dims, self.total_size, self.end_indices, self.type, self.dense_const)
 
             
-    def sum(self, dim):
+    def sum(self, dim, json_list=None, lhs_index=-1, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None):
+        start_time = time.perf_counter()
+        owns_capture = json_list is None and dummy_mode
+        if owns_capture:
+            json_list = [{"method": "noop", "input": "lhs", "output": 0}]
+            lhs_index = 0
+        trace = json_list is not None
+        if not trace:
+            json_list = []
+        total_size = torch.concat([self.total_size[:dim], self.total_size[dim+1:]])
         start_indices = []
         end_indices = []
         blocks = []
-        total_size = torch.concat([self.total_size[:dim], self.total_size[dim+1:]])
+        if trace:
+            json_list.append({
+                "method": "initialise",
+                "name": "blocks",
+                "value": "[]",
+                "output": len(json_list),
+            })
+            blocks_json_list_index = len(json_list) - 1
+        else:
+            blocks_json_list_index = 0
         for i in range(self.num_blocks):
             start_indices.append(torch.concat([self.start_indices[i][:dim], self.start_indices[i][dim+1:]]))
             end_indices.append(torch.concat([self.end_indices[i][:dim], self.end_indices[i][dim+1:]]))
-            blocks.append(self.blocks[i].sum(dim))
-
-        
+            if trace:
+                json_list.append({
+                    "method": "extract_block",
+                    "input": "json_list_" + str(lhs_index),
+                    "index": i,
+                    "output": len(json_list),
+                })
+            block, block_index = self.blocks[i].sum(dim, json_list=json_list, template_index=len(json_list)-1, simulacrum=True)
+            blocks.append(block)
+            if trace:
+                json_list.append({
+                    "method": "append_list",
+                    "list": "json_list_" + str(blocks_json_list_index),
+                    "value": "json_list_" + str(block_index),
+                    "output": len(json_list),
+                })
+                blocks_json_list_index = len(json_list) - 1
         overlap_classes = find_connected_blocks(start_indices, end_indices)
-        res = sp_tensor_from_overlap_classes(overlap_classes, start_indices, end_indices, blocks, total_size, self.dims-1, self.dense_const, self.type)
+        res = sp_tensor_from_overlap_classes(overlap_classes, start_indices, end_indices, blocks, total_size, self.dims-1, self.dense_const, self.type,
+                                             json_list=json_list, res_blocks_json_list_index=blocks_json_list_index)
+        if owns_capture:
+            write_jit_capture_file("jit_sum", "sum", layer_index, counter, inside_while, while_number, while_iteration, json_list)
+        sum_time.update_total_time(time.perf_counter() - start_time)
         return res
     
 def sparse_max(x:SparseTensor, y:SparseTensor, json_list=[], x_json_index=-1, y_json_index=-1):

@@ -547,7 +547,25 @@ class DenseBlock(SparseBlock):
             return self.block, len(json_list) - 1
         return self.block
     
-    def repeat(self, repeat_dims):
+    def repeat(self, repeat_dims, json_list=[], template_index=-1, simulacrum=False):
+        json_obj = {
+            "method": "extract_sparse_block",
+            "input": "json_list_" + str(template_index),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        block_index = len(json_list) - 1
+
+        json_obj = {
+            "method": "RepeatBlock",
+            "block": "json_list_" + str(block_index),
+            "total_shape": (self.total_shape*repeat_dims).tolist(),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        repeat_index = len(json_list) - 1
+        if simulacrum:
+            return RepeatBlock(self.block, self.total_shape*repeat_dims), repeat_index
         return RepeatBlock(self.block, self.total_shape*repeat_dims)
         start_time = time.time()
         expand_dims = torch.tensor(self.block.shape) * repeat_dims
@@ -950,8 +968,33 @@ class DenseBlock(SparseBlock):
         
     
         
-    def sum(self, dim):
-        return DenseBlock(self.block.sum(dim))
+    def sum(self, dim, json_list=[], template_index=-1, simulacrum=False):
+        json_obj = {
+            "method": "sparse_block_extract",
+            "input": "json_list_" + str(template_index),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        template_index = len(json_list) - 1
+        json_obj = {
+            "method": "torch_sum",
+            "input": "json_list_" + str(template_index),
+            "dim": dim,
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        sum_index = len(json_list) - 1
+        json_obj = {
+            "method": "DenseBlock",
+            "block": "json_list_" + str(sum_index),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        res_index = len(json_list) - 1
+        res = DenseBlock(self.block.sum(dim))
+        if simulacrum:
+            return res, res_index
+        return res
     
     def size(self):
         return self.block.size()
@@ -1675,17 +1718,71 @@ class ConstBlock(SparseBlock):
         return ret
     
     # Done
-    def repeat(self, repeat_dims):
-        res =  ConstBlock(self.block, self.total_shape*repeat_dims)
+    def repeat(self, repeat_dims, json_list=[], template_index=-1, simulacrum=False):
+        json_obj = {
+            "method": "sparse_block_extract",
+            "input": "json_list_" + str(template_index),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        block_index = len(json_list) - 1
+        json_obj = {
+            "method": "ConstBlock",
+            "block": "json_list_" + str(block_index),
+            "total_shape": (self.total_shape*repeat_dims).tolist(),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        const_index = len(json_list) - 1
+        res = ConstBlock(self.block, self.total_shape*repeat_dims)
+        if simulacrum:
+            return res, const_index
         return res
 
     # Done
-    def unsqueeze(self, index):
-        return ConstBlock(self.block, torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]]))
+    def unsqueeze(self, index, json_list=[], template_index=-1, simulacrum=False):
+        json_list.append({
+            "method": "sparse_block_extract",
+            "input": "json_list_" + str(template_index),
+            "output": len(json_list),
+        })
+        res_index = len(json_list) - 1
+
+        json_list.append({
+            "method": "ConstBlock",
+            "block": "json_list_" + str(res_index),
+            "total_shape": torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]]).tolist(),
+            "output": len(json_list),
+        })
+        res_index = len(json_list) - 1
+        res = ConstBlock(self.block, torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]]))
+        
+        if simulacrum:
+            return res, res_index
+        return res
     
     # Done
-    def squeeze(self, index):
-        return ConstBlock(self.block, torch.concat([self.total_shape[:index], self.total_shape[index+1:]]))
+    def squeeze(self, index, json_list=[], template_index=-1, simulacrum=False):
+
+        json_list.append({
+            "method": "sparse_block_extract",
+            "input": "json_list_" + str(template_index),
+            "output": len(json_list),
+        })
+        extract_index = len(json_list) - 1
+
+        json_list.append({
+            "method": "ConstBlock",
+            "block": "json_list_" + str(extract_index),
+            "total_shape": torch.concat([self.total_shape[:index], self.total_shape[index+1:]]).tolist(),
+            "output": len(json_list),
+        })
+        res_index = len(json_list) - 1
+        res = ConstBlock(self.block, torch.concat([self.total_shape[:index], self.total_shape[index+1:]]))
+        
+        if simulacrum:
+            return res, res_index
+        return res
 
     # Done
     def overwrite_dense_block(self, sp_block, start_index, s):
@@ -1888,10 +1985,33 @@ class ConstBlock(SparseBlock):
         return ConstBlock(block, self.total_shape)
     
     # Done
-    def sum(self, dim):
-        new_const = self.block * self.total_shape[dim]
-        new_total_shape = torch.concat([self.total_shape[:dim], self.total_shape[dim+1:]])
-        return ConstBlock(new_const, new_total_shape)
+    def sum(self, dim, json_list=[], template_index=-1, simulacrum=False):
+        json_obj = {
+            "method": "sparse_block_extract",
+            "input": "json_list_" + str(template_index),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        json_obj = {
+            "method": "torch_mul",
+            "lhs": "json_list_" + str(len(json_list)-1),
+            "rhs": self.total_shape[dim],
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        mul_index = len(json_list) - 1
+        json_obj = {
+            "method": "ConstBlock",
+            "block": "json_list_" + str(mul_index),
+            "total_shape": torch.concat([self.total_shape[:dim], self.total_shape[dim+1:]]),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        const_index = len(json_list) - 1
+        res = ConstBlock(self.block * self.total_shape[dim], torch.concat([self.total_shape[:dim], self.total_shape[dim+1:]]))
+        if simulacrum:
+            return res, const_index
+        return res
     
 
 

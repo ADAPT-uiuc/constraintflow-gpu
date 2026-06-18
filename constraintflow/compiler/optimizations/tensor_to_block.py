@@ -109,9 +109,9 @@ def get_live_nodes(cfg, layer_index):
 
 def convert_to_ir_ttb(expr, layer_index, while_iteration):
     # targets = ()
-    # targets = (IrBinaryOp)
+    targets = (IrReduce)
     # targets= (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop)
-    targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop, IrAddDimension, IrRemoveDimension)
+    # targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop, IrAddDimension, IrRemoveDimension, IrReduce)
     
     if not isinstance(expr, targets):
         return expr, []
@@ -177,7 +177,9 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         filename = f"jit_polyexp_stop/stop_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrGetPolyexpNotStop):
         filename = f"jit_polyexp_not_stop/notstop_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
-    
+    elif isinstance(expr, IrReduce):
+        filename = f"jit_sum/sum_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
+
     if not os.path.exists(filename):
         return expr, []
 
@@ -211,7 +213,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         rhs_input = expr.children[1]
         lhs = IrPolyExpMat(lhs_input)
         rhs = IrPolyExpNotStopFloat(rhs_input)
-    elif isinstance(expr, IrAddDimension) or isinstance(expr, IrRemoveDimension):
+    elif isinstance(expr, IrAddDimension) or isinstance(expr, IrRemoveDimension) or isinstance(expr, IrReduce):
         cond = None
         lhs = expr.children[0]
         rhs = None
