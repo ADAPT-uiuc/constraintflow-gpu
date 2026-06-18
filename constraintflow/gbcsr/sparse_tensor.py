@@ -374,6 +374,7 @@ def sp_tensor_from_overlap_classes(overlap_classes, start_indices, end_indices, 
             index_j = len(json_list)-1
             
             block = block.binary(new_block, operator.add, json_list=json_list, lhs_index=index_i, rhs_index=index_j)
+            index_i = len(json_list) - 1
 
         res_start_indices += block.start_indices
         res_end_indices += block.end_indices
