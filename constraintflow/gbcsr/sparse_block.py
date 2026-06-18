@@ -87,7 +87,7 @@ def unary_operation(x, op, json_list = None, block_index = -1, unary_index = -1,
                 json_list.append({
                     "method": "simple_unary",
                     "input": "json_list_" + str(block_index),
-                    "operation": op_name,
+                    "op": op_name,
                     "output" : len(json_list)
                 })
             else:
