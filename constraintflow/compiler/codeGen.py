@@ -1011,7 +1011,9 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrReduce(self, node):
         [inputIr] = node.children
         size = node.reduce_dim
-        return self.visit(inputIr) + '.sum(dim=' + str(size) + ')'
+        if node.inside_while:
+            return '(' + self.visit(inputIr) + ').sum(' + str(size) + ', layer_index = layer_index, counter = ' + str(node.ttb_counter) + ', inside_while = True, while_number = ' + str(node.while_number) + ', while_iteration=while_iteration)'
+        return '(' + self.visit(inputIr) + ').sum(' + str(size) + ', layer_index = layer_index, counter = ' + str(node.ttb_counter) + ', inside_while = False, while_number = ' + str(node.while_number) + ')'
 
     def visitIrMapCoeff(self, node):
         [inputIr] = node.children
