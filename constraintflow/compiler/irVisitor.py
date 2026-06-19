@@ -343,6 +343,9 @@ class IRVisitor:
         elif isinstance(node, IR.IrSetBlockTotalShapeLastDim):
             return self.visitIrSetBlockTotalShapeLastDim(node)
 
+        elif isinstance(node, IR.IrAssignToBlock):
+            return self.visitIrAssignToBlock(node)
+
         elif isinstance(node, IR.IrBlockGetSubBlockCustomRange):
             return self.visitIrBlockGetSubBlockCustomRange(node)
 

@@ -1601,6 +1601,11 @@ class IrSetBlockTotalShapeLastDim(IrStatement):
         super().__init__()
         self.update_parent_child([inputVarIr, valueIr])
 
+class IrAssignToBlock(IrStatement):
+    def __init__(self, blockVarIr, valueIr):
+        super().__init__()
+        self.update_parent_child([blockVarIr, valueIr])
+
 class IrBlockGetSubBlockCustomRange(IrExpression):
     def __init__(self, inputIr, start_index, end_index, block_start_index):
         super().__init__()

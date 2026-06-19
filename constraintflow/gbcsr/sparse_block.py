@@ -3230,7 +3230,7 @@ class PatchesBlock(SparseBlock):
                 return res, res_index
         return super().binary(sp_block, op, json_list=json_list, lhs_index=lhs_index, rhs_index=rhs_index)
     
-    def total_expand(self, json_list=[], template_index=-1):
+    def total_expand(self, json_list=[], template_index=-1, simulacrum=False):
         original_index = template_index
         new_dims = list(self.total_shape[:-1]) + [(self.block.shape[-1])]
         json_obj = {
@@ -3239,23 +3239,25 @@ class PatchesBlock(SparseBlock):
             "output": len(json_list),
         }
         json_list.append(json_obj)
-        template_index = len(json_list) - 1
+        extract_index = len(json_list) - 1
         json_obj = {
             "method": "torch_expand",
-            "input": "json_list_" + str(template_index),
-            "shape": new_dims,
+            "input": "json_list_" + str(extract_index),
+            "shape": [int(d) for d in self.total_shape[:-1]] + [int(self.block.shape[-1])],
             "output": len(json_list),
         }
         json_list.append(json_obj)
-        template_index = len(json_list) - 1
+        expand_index = len(json_list) - 1
         json_obj = {
             "method": "assign_to_block",
             "assign_to": "json_list_" + str(original_index),
-            "value": "json_list_" + str(len(json_list) - 1),
+            "value": "json_list_" + str(expand_index),
         }
         json_list.append(json_obj)
         self.block = self.block.expand(*new_dims)
-        return self, original_index
+        if simulacrum:
+            return self, original_index
+        return self
 
 
 class ConstBlock(SparseBlock):
@@ -3640,25 +3642,125 @@ class RepeatBlock(SparseBlock):
         ret = f'RepeatBlock: {self.block.shape} with total shape {self.total_shape} and repeat dims {self.repeat_dims}'
         return ret
 
-    def get_dense(self):
+    def get_dense(self, json_list=[], template_index=-1, simulacrum=False):
         # DUSH: On block
-        return self.block.expand(*self.total_shape)
+        json_obj = {
+            "method": "sparse_block_extract",
+            "input": "json_list_" + str(template_index),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        template_index = len(json_list) - 1
+        json_obj = {
+            "method": "torch_expand",
+            "input": "json_list_" + str(template_index),
+            "shape": self.total_shape.tolist(),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        expand_index = len(json_list) - 1
+        dense_block = self.block.expand(*self.total_shape)
+        if simulacrum:
+            return dense_block, expand_index
+        return dense_block
 
-    def repeat(self, repeat_dims):
-        return RepeatBlock(self.block, self.total_shape*repeat_dims)
+    def repeat(self, repeat_dims, json_list=[], template_index=-1, simulacrum=False):
+        json_obj = {
+            "method": "sparse_block_extract",
+            "input": "json_list_" + str(template_index),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        template_index = len(json_list) - 1
+
+        json_obj = {
+            "method": "RepeatBlock",
+            "block": "json_list_" + str(template_index),
+            "total_shape": (self.total_shape*repeat_dims).tolist(),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        repeat_index = len(json_list) - 1
+        repeat_block = RepeatBlock(self.block, self.total_shape*repeat_dims)
+        if simulacrum:
+            return repeat_block, repeat_index
+        return repeat_block
     
-    def unsqueeze(self, index):
-        return RepeatBlock(self.block.unsqueeze(index), torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]]))
+    def unsqueeze(self, index, json_list=[], template_index=-1, simulacrum=False):
+        json_obj = {
+            "method": "sparse_block_extract",
+            "input": "json_list_" + str(template_index),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        template_index = len(json_list) - 1
+        json_obj = {
+            "method": "torch_unsqueeze",
+            "input": "json_list_" + str(template_index),
+            "index": index,
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        unsqueeze_index = len(json_list) - 1
 
-    def squeeze(self, index):
+        new_total_shape = torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]])
+        json_obj = {
+            "method": "RepeatBlock",
+            "block": "json_list_" + str(unsqueeze_index),
+            "total_shape": new_total_shape.tolist(),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        repeat_index = len(json_list) - 1
+        repeat_block = RepeatBlock(self.block.unsqueeze(index), new_total_shape)
+        if simulacrum:
+            return repeat_block, repeat_index
+        return repeat_block
+
+    def squeeze(self, index, json_list=[], template_index=-1, simulacrum=False):
         start_time = time.time()
-        new_block = self.block.squeeze(index)
-        end_time = time.time()
-        squeeze_time.update_op_time(end_time - start_time)
-        return RepeatBlock(new_block, torch.concat([self.total_shape[:index], self.total_shape[index+1:]]))
+        json_obj = {
+            "method": "sparse_block_extract",
+            "input": "json_list_" + str(template_index),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        template_index = len(json_list) - 1
+        json_obj = {
+            "method": "torch_squeeze",
+            "input": "json_list_" + str(template_index),
+            "index": index,
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        squeeze_index = len(json_list) - 1
+        new_total_shape = torch.concat([self.total_shape[:index], self.total_shape[index+1:]])
+        json_obj = {
+            "method": "RepeatBlock",
+            "block": "json_list_" + str(squeeze_index),
+            "total_shape": new_total_shape.tolist(),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        repeat_index = len(json_list) - 1
+        repeat_block = RepeatBlock(self.block.squeeze(index), new_total_shape)
+        if simulacrum:
+            return repeat_block, repeat_index
+        return repeat_block
     
-    def create_similar(self, block):
-        return RepeatBlock(block, self.total_shape) 
+    def create_similar(self, block, json_list=[], template_index=-1, simulacrum=False):
+        json_obj = {
+            "method": "RepeatBlock",
+            "block": "json_list_" + str(template_index),
+            "total_shape": self.total_shape.tolist(),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        repeat_index = len(json_list) - 1
+        repeat_block = RepeatBlock(block, self.total_shape)
+        if simulacrum:
+            return repeat_block, repeat_index
+        return repeat_block
     
     def get_sub_block_custom_range(self, start_index, end_index, block_start_index):
         slice_start = start_index - block_start_index
@@ -3671,50 +3773,196 @@ class RepeatBlock(SparseBlock):
         res = RepeatBlock(b, new_total_shape)
         return res
     
-    def matmul_equal_dims(self, sp_block):
-        return DenseBlock(self.get_dense()).matmul_equal_dims(sp_block)
+    def matmul_equal_dims(self, sp_block, json_list=[], lhs_index=-1, rhs_index=-1):
+
+        block_1, block_1_index = self.get_dense(json_list=json_list, template_index=lhs_index, simulacrum=True)
+        json_obj = {
+            "method": "DenseBlock",
+            "block": "json_list_" + str(block_1_index),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        dense_block_index = len(json_list) - 1
+        d_block = DenseBlock(block_1)
+        res, res_index = d_block.matmul_equal_dims(sp_block, json_list=json_list, lhs_index=dense_block_index, rhs_index=rhs_index)
+        return res, res_index
     
-    def matmul_unequal_dims(self, sp_block):
-        return DenseBlock(self.get_dense()).matmul_unequal_dims(sp_block)
+    def matmul_unequal_dims(self, sp_block, json_list=[], lhs_index=-1, rhs_index=-1):
+        block_1, block_1_index = self.get_dense(json_list=json_list, template_index=lhs_index, simulacrum=True)
+        json_obj = {
+            "method": "DenseBlock",
+            "block": "json_list_" + str(block_1_index),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        dense_block_index = len(json_list) - 1
+        d_block = DenseBlock(block_1)
+        res, res_index = d_block.matmul_unequal_dims(sp_block, json_list=json_list, lhs_index=dense_block_index, rhs_index=rhs_index)
+        return res, res_index
     
-    def binary(self, sp_block, op, *args, **kwargs):
+    def binary(self, sp_block, op, json_list=[], lhs_index=-1, rhs_index=-1):
         start_time = time.perf_counter()
         if isinstance(sp_block, DiagonalBlock):
             if (self.repeat_dims[sp_block.diag_index] > 1) and self.only_one_repeat:
+                json_obj = {
+                    "method": "sparse_block_extract",
+                    "input": "json_list_" + str(lhs_index),
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                lhs_index = len(json_list) - 1
+                json_obj = {
+                    "method": "torch_squeeze",
+                    "input": "json_list_" + str(lhs_index),
+                    "index": sp_block.diag_index,
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                block_1_index = len(json_list) - 1
                 block_1 = self.block.squeeze(sp_block.diag_index)
-                block_2 = sp_block.block 
+
+                json_obj = {
+                    "method": "sparse_block_extract",
+                    "input": "json_list_" + str(rhs_index),
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                block_2_index = len(json_list) - 1
+                block_2 = sp_block.block
+
+                json_obj = {
+                    "method": "torch_binary",
+                    "lhs": "json_list_" + str(block_1_index),
+                    "rhs": "json_list_" + str(block_2_index),
+                    "op": op.__name__,
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                binary_index = len(json_list) - 1
                 block = operation(block_1, block_2, op)
-                res = sp_block.create_similar(block)
+
+
+                res, res_index = sp_block.create_similar(block, json_list=json_list, template_index=binary_index, simulacrum=True)
                 binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
-                return res
+                return res, res_index
             elif (self.repeat_dims[sp_block.diag_index-1] > 1) and self.only_one_repeat:
-                block_1 = self.block.squeeze(sp_block.diag_index-1)
-                block_2 = sp_block.block 
+                
+                json_obj = {
+                    "method": "sparse_block_extract",
+                    "input": "json_list_" + str(lhs_index),
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                lhs_index = len(json_list) - 1
+                json_obj = {
+                    "method": "torch_squeeze",
+                    "input": "json_list_" + str(lhs_index),
+                    "index": sp_block.diag_index - 1,
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                block_1_index = len(json_list) - 1
+                block_1 = self.block.squeeze(sp_block.diag_index - 1)
+
+                json_obj = {
+                    "method": "sparse_block_extract",
+                    "input": "json_list_" + str(rhs_index),
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                block_2_index = len(json_list) - 1
+                block_2 = sp_block.block
+
+                json_obj = {
+                    "method": "torch_binary",
+                    "lhs": "json_list_" + str(block_1_index),
+                    "rhs": "json_list_" + str(block_2_index),
+                    "op": op.__name__,
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                binary_index = len(json_list) - 1
                 block = operation(block_1, block_2, op)
-                res = sp_block.create_similar(block)
+                res, res_index = sp_block.create_similar(block, json_list=json_list, template_index=binary_index, simulacrum=True)
                 binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
-                return res
+                return res, res_index
         if isinstance(sp_block, PatchesBlock):
             if self.only_one_repeat and self.repeat_dims[-1] > 1 and len(sp_block.total_shape) == 3: #last condition means patches was not unsqueezed
-                sp_block = sp_block.total_expand()
+                sp_block, sp_block_index = sp_block.total_expand(json_list=json_list, template_index=rhs_index, simulacrum=True)
+                
+                json_obj = {
+                    "method": "sparse_block_extract",
+                    "input": "json_list_" + str(lhs_index),
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                lhs_index = len(json_list) - 1
+                json_obj = {
+                    "method": "torch_expand",
+                    "input": "json_list_" + str(lhs_index),
+                    "shape": list(sp_block.block.shape),
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                block_1_index = len(json_list) - 1
                 block_1 = self.block.expand(sp_block.block.shape)
+
+                json_obj = {
+                    "method": "sparse_block_extract",
+                    "input": "json_list_" + str(sp_block_index),
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                sp_block_index = len(json_list) - 1
                 block_2 = sp_block.block 
+
+                json_obj = {
+                    "method": "torch_binary",
+                    "lhs": "json_list_" + str(block_1_index),
+                    "rhs": "json_list_" + str(sp_block_index),
+                    "op": op.__name__,
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                binary_index = len(json_list) - 1
                 block = operation(block_1, block_2, op)
-                res = sp_block.create_similar(block)
+                res, res_index = sp_block.create_similar(block, json_list=json_list, template_index=binary_index, simulacrum=True)
                 binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
-                return res
+                return res, res_index
         if isinstance(sp_block, KernelBlock):
             if self.only_one_repeat and self.repeat_dims[-1] > 1:
-                block = sp_block.convert_to_patches()
+                block, block_index = sp_block.convert_to_patches(json_list=json_list, template_index=rhs_index, simulacrum=True)
                 binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
-                return self.binary(block, op)
+                res, res_index = self.binary(block, op, json_list=json_list, lhs_index=lhs_index, rhs_index=block_index)
+                return res, res_index
         
-        block_1 = DenseBlock(self.get_dense())
+        block, block_index = self.get_dense(json_list=json_list, template_index=lhs_index, simulacrum=True)
+        json_obj = {
+            "method": "DenseBlock",
+            "block": "json_list_" + str(block_index),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        dense_block_index = len(json_list) - 1
+        block_1 = DenseBlock(block)
         binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
-        return block_1.binary(sp_block, op)
+        res, res_index = block_1.binary(sp_block, op, json_list=json_list, lhs_index=dense_block_index, rhs_index=rhs_index)
+        return res, res_index
     
-    def unary(self, op):
-        return self.create_similar(unary_operation(self.block, op))
+    def unary(self, op, json_list=[], template_index=-1, simulacrum=False):
+        json_obj = {
+            "method": "sparse_block_extract",
+            "input": "json_list_" + str(template_index),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        template_index = len(json_list) - 1
+        block, block_index = unary_operation(self.block, op, json_list=json_list, block_index=template_index, concrete_unary = True)
+        res, res_index = self.create_similar(block, json_list=json_list, template_index=block_index, simulacrum=True)
+
+        if simulacrum:
+            return res, res_index
+        return res
     
     def any(self, json_list=[], template_index=-1, simulacrum=False):
         json_list.append({
@@ -3737,26 +3985,68 @@ class RepeatBlock(SparseBlock):
             return res, res_index
         return res
 
-    def clamp(self, const, min_true):
+    def clamp(self, const, min_true, json_list=[], template_index=-1, simulacrum=False):
         start_total_time = time.perf_counter()
         # _sync()
         clamp_repeat_block_expense.update_total_time(time.perf_counter() - start_total_time)
         if min_true:
             start_time = time.perf_counter()
+            json_obj = {
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(template_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            template_index = len(json_list) - 1
+            json_obj = {
+                "method": "torch_clamp",
+                "input": "json_list_" + str(template_index),
+                "const": const,
+                "min_true": True,
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            clamp_index = len(json_list) - 1
             new_block = self.block.clamp(min=const)
             clamp_repeat_block_op_time.update_op_time(time.perf_counter() - start_time)
         else:
             start_time = time.perf_counter()
+            json_obj = {
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(template_index),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            template_index = len(json_list) - 1
+            json_obj = {
+                "method": "torch_clamp",
+                "input": "json_list_" + str(template_index),
+                "const": const,
+                "min_true": False,
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            clamp_index = len(json_list) - 1
             new_block = self.block.clamp(max=const)
             clamp_repeat_block_op_time.update_op_time(time.perf_counter() - start_time)
         start_time = time.perf_counter()
         # _sync()
         clamp_repeat_block_expense.update_total_time(time.perf_counter() - start_time)
-        return RepeatBlock(new_block, self.total_shape)
+        json_obj = {
+            "method": "RepeatBlock",
+            "block": "json_list_" + str(clamp_index),
+            "total_shape": self.total_shape.tolist(),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        repeat_index = len(json_list) - 1
+        repeat_block = RepeatBlock(new_block, self.total_shape)
+        if simulacrum:
+            return repeat_block, repeat_index
+        return repeat_block
 
 
 DENSE_DEFAULT_COERCED_BLOCK_TYPES = (
-    RepeatBlock,
 )
 
 def _should_coerce_to_dense(cls):
