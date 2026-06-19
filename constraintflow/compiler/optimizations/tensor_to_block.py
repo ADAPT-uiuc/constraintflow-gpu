@@ -1138,6 +1138,28 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 print(f"Output list length: {len(output_vars)}, expected: {json_obj['output'] + 1}")
             assert(len(output_vars) == json_obj["output"] + 1)
             continue
+
+        elif json_obj["method"] == "assign_to_block":
+            if "json_list_" in json_obj["assign_to"]:
+                assignToIr = output_vars[int(json_obj["assign_to"].split("_")[-1])]
+            elif json_obj["assign_to"] == "lhs":
+                assignToIr = lhs
+            elif json_obj["assign_to"] == "rhs":
+                assignToIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+
+            if "json_list_" in json_obj["value"]:
+                valueIr = output_vars[int(json_obj["value"].split("_")[-1])]
+            elif json_obj["value"] == "lhs":
+                valueIr = lhs
+            elif json_obj["value"] == "rhs":
+                valueIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+
+            new_assignments.append(IrAssignToBlock(assignToIr, valueIr))
+            continue
         else:
             raise Exception(f"Unknown method {json_obj['method']} in replay at output {json_obj.get('output')}")
         

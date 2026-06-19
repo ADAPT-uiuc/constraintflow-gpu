@@ -55,7 +55,6 @@ def _run_cli(program_file: str, network: str, dataset: str, extra_args: list[str
 
     if compile:
         cmd.append("--compile")
-    cmd.append("--dense")
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise RuntimeError(

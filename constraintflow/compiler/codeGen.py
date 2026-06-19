@@ -1060,6 +1060,11 @@ class CodeGen(irVisitor.IRVisitor):
         value = self.visit(node.children[1])
         self.write(block_var + ".total_shape[-1] = " + value)
 
+    def visitIrAssignToBlock(self, node):
+        block_var = self.visit(node.children[0])
+        value = self.visit(node.children[1])
+        self.write(block_var + ".block = " + value)
+
     def visitIrBlockGetSubBlockCustomRange(self, node):
         return (
             self.visit(node.children[0]) +
