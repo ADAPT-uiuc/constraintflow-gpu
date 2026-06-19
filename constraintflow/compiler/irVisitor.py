@@ -187,6 +187,9 @@ class IRVisitor:
         elif isinstance(node, IR.IrTorchPermute):
             return self.visitIrTorchPermute(node)
 
+        elif isinstance(node, IR.IrTorchTranspose):
+            return self.visitIrTorchTranspose(node)
+
         elif isinstance(node, IR.IrTorchMatmul):
             return self.visitIrTorchMatmul(node)
 

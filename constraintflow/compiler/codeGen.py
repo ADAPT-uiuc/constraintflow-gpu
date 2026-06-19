@@ -417,6 +417,9 @@ class CodeGen(irVisitor.IRVisitor):
         perm_args = ', '.join(str(i) for i in node.permutation)
         return input_expr + '.permute(' + perm_args + ')'
 
+    def visitIrTorchTranspose(self, node):
+        return self.visit(node.children[0]) + '.transpose(' + str(node.dim0) + ', ' + str(node.dim1) + ')'
+
     def visitIrTorchMatmul(self, node):
         return 'torch.matmul(' + self.visit(node.children[0]) + ', ' + self.visit(node.children[1]) + ')'
 
