@@ -541,6 +541,13 @@ class IrTorchPermute(IrExpression):
         self.permutation = permutation
         self.update_parent_child([inputIr])
 
+class IrTorchTranspose(IrExpression):
+    def __init__(self, inputIr, dim0, dim1):
+        super().__init__()
+        self.dim0 = dim0
+        self.dim1 = dim1
+        self.update_parent_child([inputIr])
+
 class IrTorchMatmul(IrExpression):
     def __init__(self, lhsIr, rhsIr):
         super().__init__()

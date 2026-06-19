@@ -934,6 +934,18 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 permutation = json_obj["perm"]
             output = IrTorchPermute(inputIr, permutation)
 
+        elif json_obj["method"] == "torch_transpose":
+            if "json_list_" in json_obj["input"]:
+                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            elif json_obj["input"] == "lhs":
+                inputIr = lhs
+            elif json_obj["input"] == "rhs":
+                inputIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            dim0, dim1 = json_obj["dims"]
+            output = IrTorchTranspose(inputIr, dim0, dim1)
+
         elif json_obj["method"] == "tensor_repeat":
             if "json_list_" in json_obj["lhs"]:
                 inputIr = output_vars[int(json_obj["lhs"].split("_")[-1])]
