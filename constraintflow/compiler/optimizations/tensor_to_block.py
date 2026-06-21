@@ -830,6 +830,8 @@ def replace_all_occurrences_expr(expr, var_map):
         return var_map[expr.name]
     if isinstance(expr, (int, float, list)):
         return expr
+    if expr is None:
+        return expr
     for i in range(len(expr.children)):
         new_child = replace_all_occurrences_expr(expr.children[i], var_map)
         expr.children[i] = new_child
