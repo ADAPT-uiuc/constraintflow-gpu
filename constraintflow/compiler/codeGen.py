@@ -855,18 +855,24 @@ class CodeGen(irVisitor.IRVisitor):
 
     def visitIrExtractPolyCoeff(self, node):
         [inputIr] = node.children
-        return self.visit(inputIr) + '.get_mat(abs_elem)'
+        return self.visit(inputIr) + '.get_mat(abs_elem' \
+            + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=' + str(node.inside_while) + ', while_number=' + str(node.while_number) + ', while_iteration=None)'
     
     def visitIrExtractSymCoeff(self, node):
         [inputIr] = node.children
-        return self.visit(inputIr) + '.get_mat(SymExpSparse.count)'
+        return self.visit(inputIr) + '.get_mat(SymExpSparse.count' \
+            + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=' + str(node.inside_while) + ', while_number=' + str(node.while_number) + ', while_iteration=None)'
 
-    def visitIrExtractPolyConst(self, node):
+    def visitIrExtractPolyConst(self, node, ):
         [inputIr] = node.children
+        if reuse_mode:
+            return self.visit(inputIr) + '.const'
         return self.visit(inputIr) + '.get_const()'
     
     def visitIrExtractSymConst(self, node):
         [inputIr] = node.children
+        if reuse_mode:
+            return self.visit(inputIr) + '.const'
         return self.visit(inputIr) + '.get_const()'
 
     def visitIrConvertNeuronToPoly(self, node):
@@ -909,8 +915,10 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrMapCoeff(self, node):
         [inputIr] = node.children
         if inputIr.irMetadata[-1].type == 'PolyExp':    
-            return self.visit(inputIr) + '.get_mat(abs_elem)'
-        return self.visit(inputIr) + '.get_mat(SymExpSparse.count)'
+            return self.visit(inputIr) + '.get_mat(abs_elem' \
+                + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=' + str(node.inside_while) + ', while_number=' + str(node.while_number) + ', while_iteration=None)'
+        return self.visit(inputIr) + '.get_mat(SymExpSparse.count' \
+                + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=' + str(node.inside_while) + ', while_number=' + str(node.while_number) + ', while_iteration=None)'
 
     def visitIrMapNeuron(self, node):
         if node.dims:
