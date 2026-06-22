@@ -114,6 +114,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop,
         IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop,
         IrAddDimension, IrRemoveDimension, IrAccess,
+        IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff,
         # IrGetAbsElemSparseDKey, # IrGetPolyExpSparseConst,
         # IrGetPolyExpSparseMat
     )
@@ -171,6 +172,12 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
     elif isinstance(expr, IrAccess) and expr.isMetadata:
         filename = f'jit_llist_get_metadata/llist_get_metadata_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
         # print(filename)
+    elif isinstance(expr, IrExtractPolyCoeff):
+        filename = f'jit_poly_exp_sparse_get_mat/poly_exp_sparse_get_mat_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
+    elif isinstance(expr, IrExtractSymCoeff):
+        filename = f'jit_poly_exp_sparse_get_mat/poly_exp_sparse_get_mat_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
+    elif isinstance(expr, IrMapCoeff):
+        filename = f'jit_poly_exp_sparse_get_mat/poly_exp_sparse_get_mat_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
     
     with open(filename, 'r') as f:
         json_list = json.load(f)
@@ -214,6 +221,10 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         cond = None
         lhs = expr.children[0]
         rhs = None
+    elif isinstance(expr, (IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff)):
+        cond = None
+        lhs = expr.children[0]
+        rhs = None
     else:
         cond = None
         lhs = expr.children[0]
@@ -226,6 +237,8 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         irMetadata = rhs.irMetadata
     elif isinstance(lhs, IrAst):
         irMetadata = lhs.irMetadata
+    # elif isinstance(expr, (IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff)):
+    #     irMetadata = expr.irMetadata
     else:
         irMetadata = None
     new_assignments = []
