@@ -202,6 +202,7 @@ class SparseBlock:
                 json_obj = {
                     "method": "extract_sparse_block",
                     "input": "json_list_" + str(rhs_index),
+                    "block_type": sp_block.block_type,
                     "output": len(json_list),
                 }
                 json_list.append(json_obj)
@@ -210,6 +211,7 @@ class SparseBlock:
                 json_obj = {
                     "method": "extract_sparse_block",
                     "input": "json_list_" + str(lhs_index),
+                    "block_type": self.block_type,
                     "output": len(json_list),
                 }
                 json_list.append(json_obj)
@@ -246,6 +248,7 @@ class SparseBlock:
                 json_obj = {
                     "method": "extract_sparse_block",
                     "input": "json_list_" + str(rhs_index),
+                    "block_type": sp_block.block_type,
                     "output": len(json_list),
                 }
                 json_list.append(json_obj)
@@ -254,6 +257,7 @@ class SparseBlock:
                 json_obj = {
                     "method": "extract_sparse_block",
                     "input": "json_list_" + str(lhs_index),
+                    "block_type": self.block_type,
                     "output": len(json_list),
                 }
                 json_list.append(json_obj)
@@ -346,6 +350,7 @@ class SparseBlock:
                 json_obj = {
                     "method": "extract_sparse_block",
                     "input": "json_list_" + str(rhs_index),
+                    "block_type": sp_block.block_type,
                     "output": len(json_list),
                 }
                 json_list.append(json_obj)
@@ -354,6 +359,7 @@ class SparseBlock:
                 json_obj = {
                     "method": "extract_sparse_block",
                     "input": "json_list_" + str(lhs_index),
+                    "block_type": self.block_type,
                     "output": len(json_list),
                 }
                 json_list.append(json_obj)
@@ -423,6 +429,7 @@ class SparseBlock:
             json_obj = {
                 "method": "extract_sparse_block",
                 "input": "json_list_" + str(lhs_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -432,6 +439,7 @@ class SparseBlock:
             json_obj = {
                 "method": "extract_sparse_block",
                 "input": "json_list_" + str(rhs_index),
+                "block_type": sp_block.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -453,6 +461,7 @@ class SparseBlock:
             json_obj = {
                 "method": "extract_sparse_block",
                 "input": "json_list_" + str(lhs_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -461,6 +470,7 @@ class SparseBlock:
             json_obj = {
                 "method": "extract_sparse_block",
                 "input": "json_list_" + str(rhs_index),
+                "block_type": sp_block.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -508,6 +518,7 @@ class SparseBlock:
         json_list.append({
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         })
         block_index = len(json_list) - 1
@@ -535,6 +546,7 @@ class SparseBlock:
             json_list.append({
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(template_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             })
             extract_index = len(json_list) - 1
@@ -554,6 +566,7 @@ class SparseBlock:
             json_list.append({
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(template_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             })
             extract_index = len(json_list) - 1
@@ -591,6 +604,7 @@ class SparseBlock:
         json_list.append({
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         })
         block_index = len(json_list) - 1
@@ -618,8 +632,9 @@ class DenseBlock(SparseBlock):
         #     self.batch_size = self.batch_size.item()
 
     def get_dense(self, json_list=[], template_index=-1, simulacrum=False):
-        json_list.append({"method": "extract_sparse_block", 
-            "input": "json_list_" + str(template_index), 
+        json_list.append({"method": "extract_sparse_block",
+            "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list)
         })
         if simulacrum:
@@ -630,6 +645,7 @@ class DenseBlock(SparseBlock):
         json_obj = {
             "method": "extract_sparse_block",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -659,6 +675,7 @@ class DenseBlock(SparseBlock):
         json_obj = {
             "method": "extract_sparse_block",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -695,6 +712,7 @@ class DenseBlock(SparseBlock):
         json_obj = {
             "method": "extract_sparse_block",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -729,6 +747,7 @@ class DenseBlock(SparseBlock):
             json_obj = {
                 "method": "extract_sparse_block",
                 "input": "json_list_" + str(lhs_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -738,6 +757,7 @@ class DenseBlock(SparseBlock):
             json_obj = {
                 "method": "extract_sparse_block",
                 "input": "json_list_" + str(rhs_index),
+                "block_type": sp_block.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -767,6 +787,7 @@ class DenseBlock(SparseBlock):
             json_obj = {
                 "method": "extract_sparse_block",
                 "input": "json_list_" + str(lhs_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -776,6 +797,7 @@ class DenseBlock(SparseBlock):
             json_obj = {
                 "method": "extract_sparse_block",
                 "input": "json_list_" + str(rhs_index),
+                "block_type": sp_block.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -814,6 +836,7 @@ class DenseBlock(SparseBlock):
             json_obj = {
                 "method": "extract_sparse_block",
                 "input": "json_list_" + str(rhs_index),
+                "block_type": sp_block.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -839,6 +862,7 @@ class DenseBlock(SparseBlock):
             json_obj = {
                 "method": "extract_sparse_block",
                 "input": "json_list_" + str(lhs_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -906,6 +930,7 @@ class DenseBlock(SparseBlock):
             json_obj = {
                 "method": "extract_sparse_block",
                 "input": "json_list_" + str(lhs_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -937,6 +962,7 @@ class DenseBlock(SparseBlock):
             json_obj = {
                 "method": "extract_sparse_block",
                 "input": "json_list_" + str(lhs_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -951,6 +977,7 @@ class DenseBlock(SparseBlock):
             json_obj = {
                 "method": "extract_sparse_block",
                 "input": "json_list_" + str(rhs_index),
+                "block_type": sp_block.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -1051,6 +1078,7 @@ class DenseBlock(SparseBlock):
         json_obj = {
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -1093,6 +1121,7 @@ class DenseBlock(SparseBlock):
             json_list.append({
                 "method": "extract_sparse_block",
                 "input": "json_list_" + str(template_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             })
             tensor_index = len(json_list) - 1
@@ -1163,6 +1192,7 @@ class KernelBlock(SparseBlock):
         json_obj = {
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -1238,6 +1268,7 @@ class KernelBlock(SparseBlock):
         json_obj = {
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -1268,6 +1299,7 @@ class KernelBlock(SparseBlock):
         json_obj = {
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -1297,6 +1329,7 @@ class KernelBlock(SparseBlock):
         json_obj = {
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -1331,6 +1364,7 @@ class KernelBlock(SparseBlock):
             json_obj = {
                 "method": "extract_sparse_block",
                 "input": "json_list_" + str(lhs_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -1356,6 +1390,7 @@ class KernelBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(rhs_index),
+                "block_type": sp_block.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -1405,6 +1440,7 @@ class KernelBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(k_new_index),
+                "block_type": k_new.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -1465,6 +1501,7 @@ class KernelBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(rhs_index),
+                "block_type": sp_block.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -1498,6 +1535,7 @@ class KernelBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(lhs_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -1592,6 +1630,7 @@ class KernelBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(lhs_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -1611,6 +1650,7 @@ class KernelBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(rhs_index),
+                "block_type": sp_block.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -1690,6 +1730,7 @@ class KernelBlock(SparseBlock):
         json_obj = {
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -1801,6 +1842,7 @@ class DiagonalBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(template_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -1831,6 +1873,7 @@ class DiagonalBlock(SparseBlock):
         json_obj = {
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -1886,6 +1929,7 @@ class DiagonalBlock(SparseBlock):
         json_obj = {
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -1923,6 +1967,7 @@ class DiagonalBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(template_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -1956,6 +2001,7 @@ class DiagonalBlock(SparseBlock):
         json_obj = {
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -1991,6 +2037,7 @@ class DiagonalBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(template_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -2011,6 +2058,7 @@ class DiagonalBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(template_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -2045,6 +2093,7 @@ class DiagonalBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(template_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -2076,6 +2125,7 @@ class DiagonalBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(template_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -2106,6 +2156,7 @@ class DiagonalBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(template_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -2136,6 +2187,7 @@ class DiagonalBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(template_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -2159,6 +2211,7 @@ class DiagonalBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(lhs_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -2176,6 +2229,7 @@ class DiagonalBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(rhs_index),
+                "block_type": sp_block.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -2210,6 +2264,7 @@ class DiagonalBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(rhs_index),
+                "block_type": sp_block.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -2220,6 +2275,7 @@ class DiagonalBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(lhs_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -2294,6 +2350,7 @@ class DiagonalBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(lhs_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -2310,6 +2367,7 @@ class DiagonalBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(rhs_index),
+                "block_type": sp_block.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -2384,6 +2442,7 @@ class DiagonalBlock(SparseBlock):
             json_list.append({
                 "method": "extract_sparse_block",
                 "input": "json_list_" + str(template_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             })
             tensor_index = len(json_list) - 1
@@ -2426,6 +2485,7 @@ class DiagonalBlock(SparseBlock):
                 json_obj = {
                     "method": "sparse_block_extract",
                     "input": "json_list_" + str(lhs_index),
+                    "block_type": self.block_type,
                     "output": len(json_list),
                 }
                 json_list.append(json_obj)
@@ -2435,6 +2495,7 @@ class DiagonalBlock(SparseBlock):
                 json_obj = {
                     "method": "sparse_block_extract",
                     "input": "json_list_" + str(rhs_index),
+                    "block_type": sp_block.block_type,
                     "output": len(json_list),
                 }
                 json_list.append(json_obj)
@@ -2468,6 +2529,7 @@ class DiagonalBlock(SparseBlock):
                 json_obj = {
                     "method": "sparse_block_extract",
                     "input": "json_list_" + str(lhs_index),
+                    "block_type": self.block_type,
                     "output": len(json_list),
                 }
                 json_list.append(json_obj)
@@ -2477,6 +2539,7 @@ class DiagonalBlock(SparseBlock):
                 json_obj = {
                     "method": "sparse_block_extract",
                     "input": "json_list_" + str(rhs_index),
+                    "block_type": sp_block.block_type,
                     "output": len(json_list),
                 }
                 json_list.append(json_obj)
@@ -2541,6 +2604,7 @@ class PatchesBlock(SparseBlock):
         json_obj = {
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -2575,6 +2639,7 @@ class PatchesBlock(SparseBlock):
         json_obj = {
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -2608,6 +2673,7 @@ class PatchesBlock(SparseBlock):
         json_obj = {
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -2672,6 +2738,7 @@ class PatchesBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(lhs_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -2688,6 +2755,7 @@ class PatchesBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(rhs_index),
+                "block_type": sp_block.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -2747,6 +2815,7 @@ class PatchesBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(lhs_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -2768,6 +2837,7 @@ class PatchesBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(rhs_index),
+                "block_type": sp_block.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -2869,6 +2939,7 @@ class PatchesBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(lhs_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -2890,6 +2961,7 @@ class PatchesBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(rhs_index),
+                "block_type": sp_block.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -3022,6 +3094,7 @@ class PatchesBlock(SparseBlock):
         json_obj = {
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -3202,6 +3275,7 @@ class PatchesBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(template_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -3251,6 +3325,7 @@ class PatchesBlock(SparseBlock):
                 json_obj = {
                     "method": "sparse_block_extract",
                     "input": "json_list_" + str(lhs_index),
+                    "block_type": self.block_type,
                     "output": len(json_list),
                 }
                 json_list.append(json_obj)
@@ -3260,6 +3335,7 @@ class PatchesBlock(SparseBlock):
                 json_obj = {
                     "method": "sparse_block_extract",
                     "input": "json_list_" + str(rhs_index),
+                    "block_type": sp_block.block_type,
                     "output": len(json_list),
                 }
                 json_list.append(json_obj)
@@ -3294,6 +3370,7 @@ class PatchesBlock(SparseBlock):
         json_obj = {
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -3333,6 +3410,7 @@ class ConstBlock(SparseBlock):
         json_list.append({
             "method": "extract_sparse_block", 
             "input": "json_list_" + str(template_index), 
+            "block_type": self.block_type,
             "output": len(json_list)
         })
         json_list.append({
@@ -3356,6 +3434,7 @@ class ConstBlock(SparseBlock):
         json_obj = {
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -3378,6 +3457,7 @@ class ConstBlock(SparseBlock):
         json_list.append({
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         })
         res_index = len(json_list) - 1
@@ -3401,6 +3481,7 @@ class ConstBlock(SparseBlock):
         json_list.append({
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         })
         extract_index = len(json_list) - 1
@@ -3456,6 +3537,7 @@ class ConstBlock(SparseBlock):
             json_list.append({
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(rhs_index),
+                "block_type": sp_block.block_type,
                 "output": len(json_list),
                 "meta": "We are fucked"
             })
@@ -3486,12 +3568,14 @@ class ConstBlock(SparseBlock):
             json_list.append({
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(rhs_index),
+                "block_type": sp_block.block_type,
                 "output": len(json_list),
             })
             rhs_index = len(json_list) - 1
             json_list.append({
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(lhs_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             })
             lhs_index = len(json_list) - 1
@@ -3528,6 +3612,7 @@ class ConstBlock(SparseBlock):
         json_list.append({
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         })
         block_index = len(json_list) - 1
@@ -3570,6 +3655,7 @@ class ConstBlock(SparseBlock):
                 json_list.append({
                     "method": "sparse_block_extract",
                     "input": "json_list_" + str(template_index),
+                    "block_type": self.block_type,
                     "output": len(json_list),
                 })
                 block_index = len(json_list) - 1
@@ -3675,6 +3761,7 @@ class ConstBlock(SparseBlock):
         json_obj = {
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -3722,6 +3809,7 @@ class RepeatBlock(SparseBlock):
         json_obj = {
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -3743,6 +3831,7 @@ class RepeatBlock(SparseBlock):
         json_obj = {
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -3765,6 +3854,7 @@ class RepeatBlock(SparseBlock):
         json_obj = {
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -3797,6 +3887,7 @@ class RepeatBlock(SparseBlock):
         json_obj = {
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -3850,6 +3941,7 @@ class RepeatBlock(SparseBlock):
             json_list.append({
                 "method": "extract_sparse_block",
                 "input": "json_list_" + str(template_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             })
             tensor_index = len(json_list) - 1
@@ -3903,6 +3995,7 @@ class RepeatBlock(SparseBlock):
                 json_obj = {
                     "method": "sparse_block_extract",
                     "input": "json_list_" + str(lhs_index),
+                    "block_type": self.block_type,
                     "output": len(json_list),
                 }
                 json_list.append(json_obj)
@@ -3920,6 +4013,7 @@ class RepeatBlock(SparseBlock):
                 json_obj = {
                     "method": "sparse_block_extract",
                     "input": "json_list_" + str(rhs_index),
+                    "block_type": sp_block.block_type,
                     "output": len(json_list),
                 }
                 json_list.append(json_obj)
@@ -3946,6 +4040,7 @@ class RepeatBlock(SparseBlock):
                 json_obj = {
                     "method": "sparse_block_extract",
                     "input": "json_list_" + str(lhs_index),
+                    "block_type": self.block_type,
                     "output": len(json_list),
                 }
                 json_list.append(json_obj)
@@ -3963,6 +4058,7 @@ class RepeatBlock(SparseBlock):
                 json_obj = {
                     "method": "sparse_block_extract",
                     "input": "json_list_" + str(rhs_index),
+                    "block_type": sp_block.block_type,
                     "output": len(json_list),
                 }
                 json_list.append(json_obj)
@@ -3989,6 +4085,7 @@ class RepeatBlock(SparseBlock):
                 json_obj = {
                     "method": "sparse_block_extract",
                     "input": "json_list_" + str(lhs_index),
+                    "block_type": self.block_type,
                     "output": len(json_list),
                 }
                 json_list.append(json_obj)
@@ -4006,6 +4103,7 @@ class RepeatBlock(SparseBlock):
                 json_obj = {
                     "method": "sparse_block_extract",
                     "input": "json_list_" + str(sp_block_index),
+                    "block_type": sp_block.block_type,
                     "output": len(json_list),
                 }
                 json_list.append(json_obj)
@@ -4049,6 +4147,7 @@ class RepeatBlock(SparseBlock):
         json_obj = {
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -4064,6 +4163,7 @@ class RepeatBlock(SparseBlock):
         json_list.append({
             "method": "sparse_block_extract",
             "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
             "output": len(json_list),
         })
         block_index = len(json_list) - 1
@@ -4090,6 +4190,7 @@ class RepeatBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(template_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -4110,6 +4211,7 @@ class RepeatBlock(SparseBlock):
             json_obj = {
                 "method": "sparse_block_extract",
                 "input": "json_list_" + str(template_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -4181,12 +4283,14 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                     json_list.append({
                         "method": "extract_sparse_block",
                         "input": "json_list_" + str(x_index),
+                        "block_type": x.block_type,
                         "output": len(json_list),
                     })
                     x_block_index = len(json_list) - 1
                     json_list.append({
                         "method": "extract_sparse_block",
                         "input": "json_list_" + str(y_index),
+                        "block_type": y.block_type,
                         "output": len(json_list),
                     })
                     y_block_index = len(json_list) - 1
@@ -4194,6 +4298,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                     json_list.append({
                         "method": "extract_sparse_block",
                         "input": "json_list_" + str(z_index),
+                        "block_type": z.block_type,
                         "output": len(json_list),
                     })
                     z_block_index = len(json_list) - 1
@@ -4204,6 +4309,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                     json_list.append({
                         "method": "extract_sparse_block",
                         "input": "json_list_" + str(x_index),
+                        "block_type": x.block_type,
                         "output": len(json_list),
                     })
                     x_block_index = len(json_list) - 1
@@ -4211,6 +4317,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                     json_list.append({
                         "method": "extract_sparse_block",
                         "input": "json_list_" + str(y_index),
+                        "block_type": y.block_type,
                         "output": len(json_list),
                     })
                     y_block_index = len(json_list) - 1
@@ -4218,6 +4325,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                     json_list.append({
                         "method": "extract_sparse_block",
                         "input": "json_list_" + str(z_index),
+                        "block_type": z.block_type,
                         "output": len(json_list),
                     })
                     z_block_index = len(json_list) - 1
@@ -4230,6 +4338,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                     json_list.append({
                         "method": "extract_sparse_block",
                         "input": "json_list_" + str(x_index),
+                        "block_type": x.block_type,
                         "output": len(json_list),
                     })
                     x_block_index = len(json_list) - 1
@@ -4246,6 +4355,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                 json_list.append({
                     "method": "extract_sparse_block",
                     "input": "json_list_" + str(x_index),
+                    "block_type": x.block_type,
                     "output": len(json_list),
                 })
                 x_block_index = len(json_list) - 1
@@ -4266,6 +4376,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
             json_list.append({
                 "method": "extract_sparse_block",
                 "input": "json_list_" + str(x_index),
+                "block_type": x.block_type,
                 "output": len(json_list),
             })
             x_block_index = len(json_list) - 1
@@ -4336,6 +4447,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
         json_list.append({
             "method": "extract_sparse_block",
             "input": "json_list_" + str(x_index),
+            "block_type": x.block_type,
             "output": len(json_list),
         })
         x_block_index = len(json_list) - 1
@@ -4356,12 +4468,14 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                     json_list.append({
                         "method": "extract_sparse_block",
                         "input": "json_list_" + str(x_index),
+                        "block_type": x.block_type,
                         "output": len(json_list),
                     })
                     x_block_index = len(json_list) - 1
                     json_list.append({
                         "method": "extract_sparse_block",
                         "input": "json_list_" + str(y_index),
+                        "block_type": y.block_type,
                         "output": len(json_list),
                     })
                     y_block_index = len(json_list) - 1
@@ -4369,6 +4483,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                     json_list.append({
                         "method": "extract_sparse_block",
                         "input": "json_list_" + str(z_index),
+                        "block_type": z.block_type,
                         "output": len(json_list),
                     })
                     z_block_index = len(json_list) - 1
@@ -4383,6 +4498,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                     json_list.append({
                         "method": "extract_sparse_block",
                         "input": "json_list_" + str(x_squeezed_index),
+                        "block_type": x_squeezed.block_type,
                         "output": len(json_list),
                     })
                     x_block_index = len(json_list) - 1
@@ -4390,6 +4506,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                     json_list.append({
                         "method": "extract_sparse_block",
                         "input": "json_list_" + str(y_index),
+                        "block_type": y.block_type,
                         "output": len(json_list),
                     })
                     y_block_index = len(json_list) - 1
@@ -4397,6 +4514,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                     json_list.append({
                         "method": "extract_sparse_block",
                         "input": "json_list_" + str(z_index),
+                        "block_type": z.block_type,
                         "output": len(json_list),
                     })
                     z_block_index = len(json_list) - 1
@@ -4447,6 +4565,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                     json_list.append({
                         "method": "extract_sparse_block",
                         "input": "json_list_" + str(x_index),
+                        "block_type": x.block_type,
                         "output": len(json_list),
                     })
                     x_block_index = len(json_list) - 1
@@ -4466,6 +4585,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                     json_list.append({
                         "method": "extract_sparse_block",
                         "input": "json_list_" + str(x_index),
+                        "block_type": x.block_type,
                         "output": len(json_list),
                     })
                     x_block_index = len(json_list) - 1
@@ -4480,6 +4600,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                     json_list.append({
                         "method": "extract_sparse_block",
                         "input": "json_list_" + str(y_index),
+                        "block_type": y.block_type,
                         "output": len(json_list),
                     })
                     y_block_index = len(json_list) - 1
@@ -4487,6 +4608,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                     json_list.append({
                         "method": "extract_sparse_block",
                         "input": "json_list_" + str(z_index),
+                        "block_type": z.block_type,
                         "output": len(json_list),
                     })
                     z_block_index = len(json_list) - 1
@@ -4497,6 +4619,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                     json_list.append({
                         "method": "extract_sparse_block",
                         "input": "json_list_" + str(x_index),
+                        "block_type": x.block_type,
                         "output": len(json_list),
                     })
                     x_block_index = len(json_list) - 1
@@ -4516,6 +4639,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
             json_list.append({
                 "method": "extract_sparse_block",
                 "input": "json_list_" + str(x_index),
+                "block_type": x.block_type,
                 "output": len(json_list),
             })
             x_block_index = len(json_list) - 1
@@ -4606,6 +4730,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                 json_list.append({
                     "method": "extract_sparse_block",
                     "input": "json_list_" + str(x_index),
+                    "block_type": x.block_type,
                     "output": len(json_list),
                 })
                 x_block_index = len(json_list) - 1
@@ -4626,12 +4751,14 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                 json_list.append({
                     "method": "extract_sparse_block",
                     "input": "json_list_" + str(x_index),
+                    "block_type": x.block_type,
                     "output": len(json_list),
                 })
                 x_block_index = len(json_list) - 1
                 json_list.append({
                     "method": "extract_sparse_block",
                     "input": "json_list_" + str(z_index),
+                    "block_type": z.block_type,
                     "output": len(json_list),
                 })
                 z_block_index = len(json_list) - 1
@@ -4653,6 +4780,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                 json_list.append({
                     "method": "extract_sparse_block",
                     "input": "json_list_" + str(z_index),
+                    "block_type": z.block_type,
                     "output": len(json_list),
                 })
                 z_block_index = len(json_list) - 1
@@ -4675,12 +4803,14 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                 json_list.append({
                     "method": "extract_sparse_block",
                     "input": "json_list_" + str(x_index),
+                    "block_type": x.block_type,
                     "output": len(json_list),
                 })
                 x_block_index = len(json_list) - 1
                 json_list.append({
                     "method": "extract_sparse_block",
                     "input": "json_list_" + str(y_index),
+                    "block_type": y.block_type,
                     "output": len(json_list),
                 })
                 y_block_index = len(json_list) - 1
@@ -4700,12 +4830,14 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                 json_list.append({
                     "method": "extract_sparse_block",
                     "input": "json_list_" + str(x_index),
+                    "block_type": x.block_type,
                     "output": len(json_list),
                 })
                 x_block_index = len(json_list) - 1
                 json_list.append({
                     "method": "extract_sparse_block",
                     "input": "json_list_" + str(y_index),
+                    "block_type": y.block_type,
                     "output": len(json_list),
                 })
                 y_block_index = len(json_list) - 1
@@ -4713,6 +4845,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                 json_list.append({
                     "method": "extract_sparse_block",
                     "input": "json_list_" + str(z_index),
+                    "block_type": z.block_type,
                     "output": len(json_list),
                 })
                 z_block_index = len(json_list) - 1
@@ -4734,6 +4867,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                 json_list.append({
                     "method": "extract_sparse_block",
                     "input": "json_list_" + str(z_index),
+                    "block_type": z.block_type,
                     "output": len(json_list),
                 })
                 z_block_index = len(json_list) - 1
@@ -4755,6 +4889,7 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
             json_list.append({
                 "method": "extract_sparse_block",
                 "input": "json_list_" + str(y_index),
+                "block_type": y.block_type,
                 "output": len(json_list),
             })
             y_block_index = len(json_list) - 1
