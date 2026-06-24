@@ -721,7 +721,7 @@ def get_dims(x, layer_index=None, counter=None, inside_while=False, while_number
     elif isinstance(x, torch.Tensor):
         res = x.dim()
     else:
-        assert(False)
+        assert(False), f'get_dims type of x: {type(x)}'
         res = 1
     json_list = [
         {"method": "noop", "input": "lhs", "output": 0},

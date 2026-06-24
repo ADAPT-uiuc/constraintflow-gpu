@@ -113,11 +113,18 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
     # targets= (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop)
     targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrUnaryOp, IrClamp, IrDot, IrTernary, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop, IrAddDimension, IrRemoveDimension, IrReduce)
     
+    targets = (
+        IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp,
+        IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop,
+        IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop,
+        IrAddDimension, IrRemoveDimension, IrAccess,
+        IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff,
+        # IrGetAbsElemSparseDKey, # IrGetPolyExpSparseConst,
+        # IrGetPolyExpSparseMat
+    )
     if not isinstance(expr, targets):
         return expr, []
 
-    # if isinstance(expr, IrBinaryOp) and expr.op in ('max', 'min'):
-    #     return expr, []
     if isinstance(expr, IrUnaryOp) and expr.op in ('get_shape_1', 'get_shape_0'):
         return expr, []
     binary_instance = expr.ttb_counter
@@ -137,7 +144,6 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         else:
             filename = f"jit_unary/unary_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrMult) or isinstance(expr, IrBinaryOp):
-        # print(expr)
         filename = f"jit_binary/binary_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrInnerProduct):
         filename = f"jit_matmul/matmul_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
@@ -153,9 +159,12 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         filename = f"jit_where/where_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrDot):
         [lhsIr, rhsIr] = expr.children
-        if lhsIr.irMetadata[-1].type != 'Float':
+        if lhsIr.irMetadata[-1].type == 'Float':
+            filename = f"jit_matmul/matmul_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
+        elif lhsIr.irMetadata[-1].type == 'Neuron' or rhsIr.irMetadata[-1].type == 'Neuron':
+            filename = f"jit_Llist_dot/Llist_dot_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
+        else:
             return expr, []
-        filename = f"jit_matmul/matmul_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrGetDefaultStop):
         filename = f"jit_defaultstop/stop_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrGetPriorityLList):
@@ -171,6 +180,18 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
     if not os.path.exists(filename):
         return expr, []
 
+    elif isinstance(expr, IrAccess) and (not expr.isMetadata):
+        filename = f'jit_Abs_elem_sparse_get_elem/Abs_elem_sparse_get_elem_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
+    elif isinstance(expr, IrAccess) and expr.isMetadata:
+        filename = f'jit_llist_get_metadata/llist_get_metadata_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
+        # print(filename)
+    elif isinstance(expr, IrExtractPolyCoeff):
+        filename = f'jit_poly_exp_sparse_get_mat/poly_exp_sparse_get_mat_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
+    elif isinstance(expr, IrExtractSymCoeff):
+        filename = f'jit_poly_exp_sparse_get_mat/poly_exp_sparse_get_mat_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
+    elif isinstance(expr, IrMapCoeff):
+        filename = f'jit_poly_exp_sparse_get_mat/poly_exp_sparse_get_mat_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
+    
     with open(filename, 'r') as f:
         json_list = json.load(f)
     if isinstance(expr, IrTernary):
@@ -205,14 +226,32 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         cond = None
         lhs = expr.children[0]
         rhs = None
+    elif isinstance(expr, IrAccess) and (not expr.isMetadata):
+        cond = None
+        lhs = expr.children[0]
+        rhs = None
+    elif isinstance(expr, IrAccess) and expr.isMetadata:
+        cond = None
+        lhs = expr.children[0]
+        rhs = None
+    elif isinstance(expr, (IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff)):
+        cond = None
+        lhs = expr.children[0]
+        rhs = None
     else:
         cond = None
         lhs = expr.children[0]
         rhs = expr.children[1]
-    if isinstance(rhs, IrAst):
+    if isinstance(expr, IrDot):
+        irMetadata = expr.irMetadata
+    elif isinstance(expr, IrAccess):
+        irMetadata = expr.irMetadata
+    elif isinstance(rhs, IrAst):
         irMetadata = rhs.irMetadata
     elif isinstance(lhs, IrAst):
         irMetadata = lhs.irMetadata
+    # elif isinstance(expr, (IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff)):
+    #     irMetadata = expr.irMetadata
     else:
         irMetadata = None
     new_assignments = []
@@ -220,7 +259,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
 
     for json_index, json_obj in enumerate(json_list):
         new_name = get_var()
-        new_var = IrVar(new_name, irMetadata)
+        new_var = IrVar(new_name, copy_metadata(irMetadata) if irMetadata is not None else None)
         if json_obj["method"] == "noop":
             if json_obj["input"] == "cond":
                 output = cond
@@ -236,6 +275,9 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         
         elif json_obj["method"] == "SparseTensor":
             if "json_list_" in json_obj['blocks']:
+                # print(len(output_vars), int(json_obj['blocks'].split("_")[-1]))
+                # if 'debug_pos' in json_obj:
+                #     print(json_obj['debug_pos'])
                 blocksIr = output_vars[int(json_obj['blocks'].split("_")[-1])]
             elif json_obj['blocks'] == []:
                 blocksIr = []
@@ -280,7 +322,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             elif isinstance(output, bool):
                 output = IrConst(output, 'Bool')
             else:
-                raise Exception("NOT IMPLEMENTED")
+                raise Exception(f"NOT IMPLEMENTED output: {output}")
 
         elif json_obj["method"] == "bool_value":
             output = IrConst(json_obj["value"], 'Bool')
@@ -382,13 +424,25 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
             else:                
                 raise Exception("NOT IMPLEMENTED")
-            if isinstance(json_obj["index"], int):
-                indexIr = json_obj["index"]
-            elif "json_list_" in json_obj["index"]:
-                indexIr = output_vars[int(json_obj["index"].split("_")[-1])]
-            else:                
+            if "index" in json_obj:
+                if isinstance(json_obj["index"], int):
+                    indexIr = json_obj["index"]
+                elif "json_list_" in json_obj["index"]:
+                    indexIr = output_vars[int(json_obj["index"].split("_")[-1])]
+                else:                
+                    raise Exception("NOT IMPLEMENTED")
+            elif "block_id" in json_obj:
+                indexIr = json_obj["block_id"]
+            else:
                 raise Exception("NOT IMPLEMENTED")
             output = IrBlockExtract(inputIr, indexIr)
+
+        elif json_obj["method"] == "block_copy":
+            if "json_list_" in json_obj["input"]:
+                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrBlockCopy(inputIr)
             
         elif json_obj["method"] == "binary":
             if "json_list_" in json_obj["lhs"]:
@@ -1160,6 +1214,122 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
 
             new_assignments.append(IrAssignToBlock(assignToIr, valueIr))
             continue
+        elif json_obj["method"] == "PolyExpSparse":
+            if "json_list_" in json_obj["mat"]:
+                mat_ir = output_vars[int(json_obj["mat"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            if "json_list_" in json_obj["const"]:
+                const_ir = output_vars[int(json_obj["const"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            if irMetadata is None:
+                raise Exception("PolyExpSparse replay requires PolyExp irMetadata")
+            mat_metadata = copy_metadata(irMetadata)
+            mat_metadata[-1].type = 'Float'
+            mat_metadata[-1].shape.append(IrAst.poly_size)
+            mat_metadata[-1].broadcast.append(1)
+            mat_ir.irMetadata = mat_metadata
+            const_metadata = copy_metadata(irMetadata)
+            const_metadata[-1].type = 'Float'
+            const_ir.irMetadata = const_metadata
+            output = IrCombineToPoly(mat_ir, const_ir)
+            new_assignment = IrAssignment(new_var, output)
+            new_assignments.append(new_assignment)
+            output_vars.append(new_var)
+            continue
+        elif json_obj["method"] == "SymExpSparse":
+            if "json_list_" in json_obj["mat"]:
+                mat_ir = output_vars[int(json_obj["mat"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            if "json_list_" in json_obj["const"]:
+                const_ir = output_vars[int(json_obj["const"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            if irMetadata is None:
+                raise Exception("SymExpSparse replay requires SymExp irMetadata")
+            mat_metadata = copy_metadata(irMetadata)
+            mat_metadata[-1].type = 'Float'
+            mat_metadata[-1].shape.append(IrAst.sym_size)
+            mat_metadata[-1].broadcast.append(1)
+            mat_ir.irMetadata = mat_metadata
+            const_metadata = copy_metadata(irMetadata)
+            const_metadata[-1].type = 'Float'
+            const_ir.irMetadata = const_metadata
+            output = IrCombineToSym(mat_ir, const_ir)
+            new_assignment = IrAssignment(new_var, output)
+            new_assignments.append(new_assignment)
+            output_vars.append(new_var)
+            continue
+        elif json_obj["method"] == "get_sparse_tensor_blocks":
+            if "json_list_" in json_obj["input"]:
+                input_ir = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrGetSparseTensorBlocks(input_ir)
+        elif json_obj["method"] == "get_abs_elem_sparse_d_key":
+            if "json_list_" in json_obj["input"]:
+                # print(len(output_vars), int(json_obj["input"].split("_")[-1]))
+                # input_ir = output_vars[int(json_obj["input"].split("_")[-1])]
+                pass
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            key = json_obj["key"]
+            output = IrGetAbsElemSparseDKey(None, key)
+        elif json_obj["method"] == "get_poly_exp_sparse_const":
+            if "json_list_" in json_obj["input"]:
+                input_ir = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrGetPolyExpSparseConst(input_ir)
+        elif json_obj["method"] == "get_poly_exp_sparse_mat":
+            if "json_list_" in json_obj["input"]:
+                input_ir = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrGetPolyExpSparseMat(input_ir)
+        elif json_obj["method"] == "get_sym_exp_sparse_const":
+            if "json_list_" in json_obj["input"]:
+                input_ir = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrGetSymExpSparseConst(input_ir)
+        elif json_obj["method"] == "get_sym_exp_sparse_mat":
+            if "json_list_" in json_obj["input"]:
+                input_ir = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrGetSymExpSparseMat(input_ir)
+        elif json_obj["method"] == "expand_symexp_mat":
+            if "json_list_" in json_obj["input"]:
+                input_ir = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrExpandSymExp(input_ir)
+        elif json_obj["method"] == "get_kth_layer_bias":
+            output = IrGetKthLayerNetworkParam(json_obj["input"], "bias")
+        elif json_obj["method"] == "get_kth_layer_weight":
+            output = IrGetKthLayerNetworkParam(json_obj["input"], "weight")
+        elif json_obj["method"] == "DenseBlock":
+            if isinstance(json_obj["input"], int) and json_obj["input"] < len(output_vars):
+                inputIr = output_vars[json_obj["input"]]
+            elif isinstance(json_obj["input"], int):
+                inputIr = IrGetKthLayerNetworkParam(json_obj["input"], "weight")
+            elif "json_list_" in str(json_obj["input"]):
+                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrDenseBlock(inputIr)
+        elif json_obj["method"] == "KernelBlock":
+            inputIr = output_vars[json_obj["block"]]
+            output = IrKernelBlock(
+                inputIr, json_obj["total_shape"],
+                json_obj["ix"], json_obj["iy"],
+                json_obj["ox"], json_obj["oy"],
+                json_obj["sx"], json_obj["sy"],
+                json_obj["px"], json_obj["py"],
+            )
         else:
             raise Exception(f"Unknown method {json_obj['method']} in replay at output {json_obj.get('output')}")
         
@@ -1252,7 +1422,9 @@ def tensor_to_block_block(block, layer_index, ir_list = None, while_iteration=No
 def replace_all_occurrences_expr(expr, var_map):
     if isinstance(expr, IrVar) and expr.name in var_map.keys(): 
         return var_map[expr.name]
-    if isinstance(expr, int):
+    if isinstance(expr, (int, float, list)):
+        return expr
+    if expr is None:
         return expr
     for i in range(len(expr.children)):
         new_child = replace_all_occurrences_expr(expr.children[i], var_map)
@@ -1339,7 +1511,6 @@ def unroll_while(cfg, layer_index):
             exit_node = cfg.get_block_id(block.jump[1])
             while_number = first_while_block.while_number
             filename = f"jit_while/while_iterations_layer_{layer_index}_while_{while_number}.json"
-            print(f"Reading while iteration count from {filename}")
             with open(filename, 'r') as f:
                 json_obj = json.load(f)
                 num_iterations = json_obj["num_iterations"]
@@ -1375,7 +1546,6 @@ def tensor_to_block(ir):
             for j, layer_index in enumerate(layer_indices):
                 cfg = deepcopy_cfg_with_fresh_identifiers(transformerIr.cfg)
                 unroll_while(cfg, layer_index)
-                print(layer_index, 'after unroll while')
                 new_cfgs[layer_index] = cfg
             
             transformerIr.layerwise_cfgs = new_cfgs

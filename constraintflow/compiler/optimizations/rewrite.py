@@ -725,9 +725,14 @@ def hoist_split_targets(expr, inside_while, while_number):
     expr.update_parent_child(new_children)
 
     targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpNotStop, IrGetPolyexpStop, IrAddDimension, IrRemoveDimension, IrReduce)
+    targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpNotStop, IrGetPolyexpStop, IrAddDimension, IrRemoveDimension, IrAccess,
+               IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff)
     if isinstance(expr, targets):
-        expr.inside_while = inside_while
-        expr.while_number = while_number
+        # IrAccess keeps default while_number=-1 when not in a while body, matching
+        # simulacrum JIT filenames for get_metadata/get_elem recorded at Affine sites.
+        if not isinstance(expr, IrAccess) or inside_while:
+            expr.inside_while = inside_while
+            expr.while_number = while_number
         new_name = get_var(True)
         new_var = IrVar(new_name, expr.irMetadata)
         new_assignment = IrAssignment(new_var, expr)
@@ -747,6 +752,8 @@ def assign_ttb_counter(expr):
         new_children.append(new_child)
     expr.update_parent_child(new_children)
     targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpNotStop, IrGetPolyexpStop, IrAddDimension, IrRemoveDimension, IrReduce)
+    targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpNotStop, IrGetPolyexpStop, IrAddDimension, IrRemoveDimension, IrGetAbsElemSparseDKey, IrAccess,
+               IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff)
     if isinstance(expr, targets):
         ttb_counter += 1
         expr.ttb_counter = ttb_counter
