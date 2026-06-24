@@ -552,9 +552,9 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             else:
                 raise Exception("NOT IMPLEMENTED KernelBlock block ref")
             if isinstance(json_obj["total_shape"], list) and len(json_obj["total_shape"]) > 0 and json_obj["total_shape"][0] == 1:
-                shape = "torch.tensor([batch_size" + "".join([", " + str(json_obj["total_shape"][i]) for i in range(1, len(json_obj["total_shape"]))]) + "], dtype=torch.int64)"
+                shape = "[batch_size" + "".join([", " + str(json_obj["total_shape"][i]) for i in range(1, len(json_obj["total_shape"]))]) + "]"
             else:
-                shape = torch.tensor(json_obj["total_shape"], dtype=torch.int64)
+                shape = json_obj["total_shape"]
             output = IrKernelBlock(
                 blockIr,
                 shape,
@@ -1235,6 +1235,13 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 raise Exception("NOT IMPLEMENTED")
 
             new_assignments.append(IrAssignToBlock(assignToIr, valueIr))
+            # The writer appends assign_to_block to json_list, so it occupies an
+            # index slot that later "output": len(json_list) values account for.
+            # Append a placeholder output_var (bound to the mutated block) to keep
+            # output_vars positionally aligned, mirroring assign_to_view above.
+            new_assignment = IrAssignment(new_var, assignToIr)
+            new_assignments.append(new_assignment)
+            output_vars.append(new_var)
             continue
         elif json_obj["method"] == "PolyExpSparse":
             if "json_list_" in json_obj["mat"]:
