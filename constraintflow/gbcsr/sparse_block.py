@@ -854,7 +854,7 @@ class DenseBlock(SparseBlock):
             ix = sp_block.ix
             iy = sp_block.iy
             num_kernels = sp_block.num_kernels
-            batch_size = self.batch_size
+            batch_size = int(self.batch_size)
             curr_size = self.block.shape[-2]
             new_px = (ix + 2*px - kx) % sx
             new_py = (iy + 2*py - ky) % sy
@@ -880,7 +880,7 @@ class DenseBlock(SparseBlock):
             json_obj = {
                 "method": "F.conv_transpose2d",
                 "input": "json_list_" + str(lhs_index),
-                "kernel": "json_list_" + str(rhs_index),
+                "weight": "json_list_" + str(rhs_index),
                 "stride": (sx, sy),
                 "padding": (px, py),
                 "output_padding": (new_px, new_py),
@@ -2765,6 +2765,8 @@ class PatchesBlock(SparseBlock):
                 "input": "json_list_" + str(lhs_index),
                 "weight": "json_list_" + str(rhs_index),
                 "stride": (sp_block.sx, sp_block.sy),
+                "padding": (0, 0),
+                "output_padding": (0, 0),
                 "output": len(json_list),
             }
             json_list.append(json_obj)
@@ -3050,7 +3052,7 @@ class PatchesBlock(SparseBlock):
             json_list.append(json_obj)
             res_index = len(json_list) - 1
             res = DenseBlock(ret)
-        elif isinstance(sp_block, ConstBlock) and not sp_block.block == 0:
+        elif isinstance(sp_block, ConstBlock) and sp_block.block == 0:
             json_obj = {
                 "method": "ConstBlock",
                 "block": 0,
