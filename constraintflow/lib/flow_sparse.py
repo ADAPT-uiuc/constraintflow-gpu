@@ -181,7 +181,24 @@ class Flow:
                 assert(False)
             size += curr_size
             prev_size = self.model[tmp].size
+            print(layer.type)
             self.abs_elem.update(curr, abs_shape)
+            # print(f"abs_elem: {tmp}")
+            # print(f"LList")
+            # print(self.abs_elem.d['llist'])
+            # print("\n")
+            # print(f"l")
+            # print(self.abs_elem.d['l'])
+            # print("\n")
+            # print(f"u")
+            # print(self.abs_elem.d['u'])
+            # print("\n")
+            # print(f"L")
+            # print(self.abs_elem.d['L'])
+            # print("\n")
+            # print(f"U")
+            # print(self.abs_elem.d['U'])
+
 
             if self.print_intermediate_results:
                 print(tmp+1, layer.type, layer.shape)
@@ -189,12 +206,15 @@ class Flow:
                 print('---------------------------')
                 lb = (abs_shape[0].get_dense())
                 ub = (abs_shape[1].get_dense())
-                L = (abs_shape[2].mat)
-                U = (abs_shape[3].mat)
                 print(f'l: {lb}')
                 print(f'u: {ub}')
-                print(f'L: {L}')
-                print(f'U: {U}')
+                if len(abs_shape) > 3:
+                    L = (abs_shape[2].mat)
+                    U = (abs_shape[3].mat)
+                    print(f'L: {L}')
+                    print(f'U: {U}')
+                elif len(abs_shape) > 2 and hasattr(abs_shape[2], 'mat'):
+                    print(f'Z: {abs_shape[2].mat}')
         lb = (abs_shape[0].get_dense())
         ub = (abs_shape[1].get_dense())
 
@@ -210,4 +230,3 @@ class Flow:
 
 
         return lb, ub
-

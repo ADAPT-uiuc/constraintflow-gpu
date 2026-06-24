@@ -25,6 +25,7 @@ debug_flag4 = Flag()
 
 dummy_mode = Flag()
 reuse_mode = Flag()
+dense_default_mode = Flag()
 # dummy_mode = False
 # reuse_mode = False
 
@@ -149,6 +150,7 @@ union_tensors_time = Time()
 patches_to_mat_time = Time()
 sub_block_custom_range_time = Time()
 squeeze_time = Time()
+sum_time = Time()
 sanity_time = Time()
 sparse_tensor_init_time = Time()
 binary_profilier = OperationTime()

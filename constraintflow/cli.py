@@ -4,6 +4,7 @@ import constraintflow.lib.globals as globals
 argv = sys.argv[1:]
 globals.dummy_mode.set_flag() if "--simulacrum" in argv else globals.dummy_mode.reset_flag()
 globals.reuse_mode.set_flag() if "--reuse" in argv else globals.reuse_mode.reset_flag()
+globals.dense_default_mode.set_flag() if "--dense" in argv else globals.dense_default_mode.reset_flag()
 
 print(f'dummy_mode in cli: {globals.dummy_mode}')
 print(f'reuse_mode in cli: {globals.reuse_mode}')
@@ -198,7 +199,7 @@ def run(
     batch_size: int = typer.Option(1, help="Batch size"),
     eps: float = typer.Option(0.01, help="Epsilon"),
     train: bool = typer.Option(False, help="Run on training dataset"),
-    print_intermediate_results: bool = typer.Option(False, help="Print intermediate results"),
+    print_intermediate_results: bool = True,
     no_sparsity: bool = typer.Option(False, help="Disable sparsity optimizations"),
     device: str = typer.Option("cpu", help="Device mode: cpu, gpu (CUDA), or gpumac (Apple MPS)"),
     output_path: str = typer.Option("output/", help="Path where compiled program is stored"),
@@ -206,6 +207,7 @@ def run(
     opt: bool = typer.Option(False, help="Static shape analysis and direct computation over blocks."),
     simulacrum: bool = typer.Option(False, help="Run Simulacrum (dummy blocks)"),
     reuse: bool = typer.Option(False, help="Reuse the stored indices that were stored by running dummy blocks"),
+    dense: bool = typer.Option(False, help="Use dense blocks by default"),
 ):
     """
     Run a compiled ConstraintFlow program.

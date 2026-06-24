@@ -167,3 +167,6 @@ class PolyExpSparse:
         if const == None:
             const = self.const
         return PolyExpSparse(network, mat, const)
+
+    def __repr__(self):
+        return f"PolyExpSparse(mat={self.mat}, const={self.const})"

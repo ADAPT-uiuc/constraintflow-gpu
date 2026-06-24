@@ -110,7 +110,17 @@ def unary(x, op, layer_index=None, counter=None, inside_while=False, while_numbe
                 with open(capture_path, 'w') as f:
                     json.dump(json_list, f, indent=4)
     else:
+        json_list = []
+        json_list.append({"method": "noop", "input": "lhs", "output": 0})
+        op_name = '-' if op == operator.neg else 'not' if op == operator.not_ else 'sigma'
+        json_list.append({"method": "simple_unary", "input": "json_list_0", "op": op_name, "output": 1})
         res = op(x)
+        if dummy_mode:
+            if layer_index is not None and counter is not None:
+                os.makedirs("jit_unary", exist_ok=True)
+                capture_path = f"jit_unary/unary_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+                with open(capture_path, 'w') as f:
+                    json.dump(json_list, f, indent=4)
     unary_time.update_total_time(time.perf_counter() - start_time)
     return res
 
@@ -194,6 +204,7 @@ def binary(x, y, op, layer_index = None, counter = None, inside_while = False, w
 
         start_time = time.perf_counter()
         temp = convert_dense_to_sparse(x, y.total_size, json_list=json_list, x_index=lhs_idx)
+        lhs_idx = len(json_list)-1
         binary_tensor_ops_expenses.update_total_time(time.perf_counter() - start_time)
         res = temp.binary(y, op, json_list = json_list, lhs_index=lhs_idx, rhs_index=rhs_idx)
         binary_tensor_ops_y_sparsity.update_total_time(time.perf_counter() - start_time)

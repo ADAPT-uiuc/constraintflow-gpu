@@ -52,6 +52,7 @@ def _run_cli(program_file: str, network: str, dataset: str, extra_args: list[str
         dataset,
         *extra_args,
     ]
+
     if compile:
         cmd.append("--compile")
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
@@ -82,33 +83,91 @@ def _assert_bounds_close(lhs: torch.Tensor, rhs: torch.Tensor, name: str) -> Non
 def test(
     program_files: str = typer.Argument(..., help="Comma-separated list of ConstraintFlow program files to test"),
     network: str = typer.Argument(..., help="Network path/name"),
-    dataset: str = typer.Argument(..., help="Dataset"),
+    dataset: str = "mnist",
 ):
     for program_file in program_files.split(","):
         program_file = "examples/compiler_examples/" + program_file
-        epss = [0, 0.01]
+        print(f"Testing program file: {program_file} with network: {network} and dataset: {dataset}")
+        epss = [0, 0.001]
         batch_sizes = [1, 2]
         for batch_size in batch_sizes:
             baseline_lbs, baseline_ubs = [], []
             for eps in epss:
-                baseline_lb, baseline_ub = _run_cli(program_file, network, dataset, ["--eps", str(eps), "--batch-size", str(batch_size)])
+                try:
+                    baseline_lb, baseline_ub = _run_cli(program_file, network, dataset, ["--eps", str(eps), "--batch-size", str(batch_size)])
+                except AssertionError as e:
+                    typer.echo(f"Program File: {program_file}")
+                    typer.echo(f"Program File: {program_file}")
+                    typer.echo(f"Baseline run failed")
+                    typer.echo(f"AssertionError: {e}")
+                    typer.echo(f"Program file: {program_file}")
+                    typer.echo(f"Network: {network}")
+                    typer.echo(f"Dataset: {dataset}")
+                    typer.echo(f"Batch size: {batch_size}")
+                    typer.echo(f"Eps: {eps}")
+                    raise e
                 baseline_lbs.append(baseline_lb)
                 baseline_ubs.append(baseline_ub)
-            
-            simulacrum_lb, simulacrum_ub = _run_cli(program_file, network, dataset, ["--simulacrum", "--eps", str(eps), "--batch-size", str(batch_size)])
+            try:
+                simulacrum_lb, simulacrum_ub = _run_cli(program_file, network, dataset, ["--simulacrum", "--eps", str(eps), "--batch-size", str(batch_size)])
+            except AssertionError as e:
+                typer.echo(f"Program File: {program_file}")
+                typer.echo(f"Simulacrum run failed")
+                typer.echo(f"AssertionError: {e}")
+                typer.echo(f"Program file: {program_file}")
+                typer.echo(f"Network: {network}")
+                typer.echo(f"Dataset: {dataset}")
+                typer.echo(f"Batch size: {batch_size}")
+                typer.echo(f"Eps: {eps}")
+                raise e
             reuse_lbs, reuse_ubs = [], []
             for i, eps in enumerate(epss):
                 if i==0:
-                    reuse_lb, reuse_ub = _run_cli(program_file, network, dataset, ["--reuse", "--eps", str(eps), "--batch-size", str(batch_size)])
+                    try:
+                        reuse_lb, reuse_ub = _run_cli(program_file, network, dataset, ["--reuse", "--eps", str(eps), "--batch-size", str(batch_size)])
+                    except AssertionError as e:
+                        typer.echo(f"Program File: {program_file}")
+                        typer.echo(f"Reuse run failed")
+                        typer.echo(f"AssertionError: {e}")
+                        typer.echo(f"Program file: {program_file}")
+                        typer.echo(f"Network: {network}")
+                        typer.echo(f"Dataset: {dataset}")
+                        typer.echo(f"Batch size: {batch_size}")
+                        typer.echo(f"Eps: {eps}")
+                        raise e
                 else:
-                    reuse_lb, reuse_ub = _run_cli(program_file, network, dataset, ["--eps", str(eps), "--batch-size", str(batch_size)], compile=False)
+                    try:
+                        reuse_lb, reuse_ub = _run_cli(program_file, network, dataset, ["--eps", str(eps), "--batch-size", str(batch_size)], compile=False)
+                    except AssertionError as e:
+                        typer.echo(f"Program File: {program_file}")
+                        typer.echo(f"Reuse run failed")
+                        typer.echo(f"AssertionError: {e}")
+                        typer.echo(f"Program file: {program_file}")
+                        typer.echo(f"Network: {network}")
+                        typer.echo(f"Dataset: {dataset}")
+                        typer.echo(f"Batch size: {batch_size}")
+                        typer.echo(f"Eps: {eps}")
+                        raise e
                 reuse_lbs.append(reuse_lb)
                 reuse_ubs.append(reuse_ub)
 
             for baseline_lb, baseline_ub, reuse_lb, reuse_ub in zip(baseline_lbs, baseline_ubs, reuse_lbs, reuse_ubs):
-
-                _assert_bounds_close(baseline_lb, reuse_lb, "Lower bounds baseline vs reuse")
-                _assert_bounds_close(baseline_ub, reuse_ub, "Upper bounds baseline vs reuse")
+                try:
+                    _assert_bounds_close(baseline_lb, reuse_lb, "Lower bounds baseline vs reuse")
+                    _assert_bounds_close(baseline_ub, reuse_ub, "Upper bounds baseline vs reuse")
+                except AssertionError as e:
+                    typer.echo(f"Program File: {program_file}")
+                    typer.echo(f"AssertionError: {e}")
+                    typer.echo(f"Baseline LB: {baseline_lb}")
+                    typer.echo(f"Reuse LB: {reuse_lb}")
+                    typer.echo(f"Baseline UB: {baseline_ub}")
+                    typer.echo(f"Reuse UB: {reuse_ub}")
+                    typer.echo(f"Program file: {program_file}")
+                    typer.echo(f"Network: {network}")
+                    typer.echo(f"Dataset: {dataset}")
+                    typer.echo(f"Batch size: {batch_size}")
+                    typer.echo(f"Eps: {eps}")
+                    raise e
 
                 typer.echo(f"JIT test passed: baseline and jit modes bounds match for eps={eps} and batch_size={batch_size}.")
     
