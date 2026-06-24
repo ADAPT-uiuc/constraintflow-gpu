@@ -111,7 +111,6 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
     # targets = ()
     # targets = (IrUnaryOp)
     # targets= (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop)
-    targets = (IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrUnaryOp, IrClamp, IrDot, IrTernary, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop, IrAddDimension, IrRemoveDimension, IrReduce)
     
     targets = (
         IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp,
@@ -119,6 +118,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop,
         IrAddDimension, IrRemoveDimension, IrAccess,
         IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff,
+        IrReduce
         # IrGetAbsElemSparseDKey, # IrGetPolyExpSparseConst,
         # IrGetPolyExpSparseMat
     )
@@ -176,9 +176,6 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         filename = f"jit_polyexp_not_stop/notstop_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrReduce):
         filename = f"jit_sum/sum_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
-
-    if not os.path.exists(filename):
-        return expr, []
 
     elif isinstance(expr, IrAccess) and (not expr.isMetadata):
         filename = f'jit_Abs_elem_sparse_get_elem/Abs_elem_sparse_get_elem_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
@@ -487,10 +484,16 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             output = IrSimpleBinary(lhsIr, rhsIr, json_obj["op"])
 
         elif json_obj["method"] == "DenseBlock":
-            if "json_list_" not in json_obj["block"]:
-                raise Exception("NOT IMPLEMENTED DenseBlock block ref")
-            blockIr = output_vars[int(json_obj["block"].split("_")[-1])]
-            output = IrDenseBlock(blockIr)
+            ref = json_obj["input"] if "input" in json_obj else json_obj["block"]
+            if isinstance(ref, int) and ref < len(output_vars):
+                inputIr = output_vars[ref]
+            elif isinstance(ref, int):
+                inputIr = IrGetKthLayerNetworkParam(ref, "weight")
+            elif "json_list_" in str(ref):
+                inputIr = output_vars[int(str(ref).split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED DenseBlock ref")
+            output = IrDenseBlock(inputIr)
 
         elif json_obj["method"] == "DiagonalBlock":
             if "json_list_" not in json_obj["block"]:
@@ -528,9 +531,12 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             )
 
         elif json_obj["method"] == "KernelBlock":
-            if "json_list_" not in json_obj["block"]:
+            if isinstance(json_obj["block"], int):
+                blockIr = output_vars[json_obj["block"]]
+            elif "json_list_" in str(json_obj["block"]):
+                blockIr = output_vars[int(str(json_obj["block"]).split("_")[-1])]
+            else:
                 raise Exception("NOT IMPLEMENTED KernelBlock block ref")
-            blockIr = output_vars[int(json_obj["block"].split("_")[-1])]
             if isinstance(json_obj["total_shape"], list) and len(json_obj["total_shape"]) > 0 and json_obj["total_shape"][0] == 1:
                 shape = "torch.tensor([batch_size" + "".join([", " + str(json_obj["total_shape"][i]) for i in range(1, len(json_obj["total_shape"]))]) + "], dtype=torch.int64)"
             else:
@@ -1311,25 +1317,6 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             output = IrGetKthLayerNetworkParam(json_obj["input"], "bias")
         elif json_obj["method"] == "get_kth_layer_weight":
             output = IrGetKthLayerNetworkParam(json_obj["input"], "weight")
-        elif json_obj["method"] == "DenseBlock":
-            if isinstance(json_obj["input"], int) and json_obj["input"] < len(output_vars):
-                inputIr = output_vars[json_obj["input"]]
-            elif isinstance(json_obj["input"], int):
-                inputIr = IrGetKthLayerNetworkParam(json_obj["input"], "weight")
-            elif "json_list_" in str(json_obj["input"]):
-                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
-            else:
-                raise Exception("NOT IMPLEMENTED")
-            output = IrDenseBlock(inputIr)
-        elif json_obj["method"] == "KernelBlock":
-            inputIr = output_vars[json_obj["block"]]
-            output = IrKernelBlock(
-                inputIr, json_obj["total_shape"],
-                json_obj["ix"], json_obj["iy"],
-                json_obj["ox"], json_obj["oy"],
-                json_obj["sx"], json_obj["sy"],
-                json_obj["px"], json_obj["py"],
-            )
         else:
             raise Exception(f"Unknown method {json_obj['method']} in replay at output {json_obj.get('output')}")
         
