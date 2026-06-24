@@ -2573,15 +2573,16 @@ def sp_where(x: SparseTensor, y: SparseTensor, z: SparseTensor, json_list=[], x_
                     lhs_index=z_json_index,
                 )
 
-            block = sp_where_block(x_block, y_block, z_block)
-            json_obj = {
-                "method": "sp_where_block",
-                "x": "json_list_" + str(x_block_index),
-                "y": "json_list_" + str(y_block_index),
-                "z": "json_list_" + str(z_block_index),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
+            block, block_json_index = sp_where_block(
+                x_block,
+                y_block,
+                z_block,
+                json_list=json_list,
+                x_index=x_block_index,
+                y_index=y_block_index,
+                z_index=z_block_index,
+                simulacrum=True,
+            )
 
             res_start_indices.append(start_index)
             res_end_indices.append(end_index)
@@ -2590,7 +2591,7 @@ def sp_where(x: SparseTensor, y: SparseTensor, z: SparseTensor, json_list=[], x_
             json_obj = {
                 "method": "append_list",
                 "list": "json_list_" + str(res_blocks_json_list_index),
-                "value": "json_list_" + str(len(json_list)-1),
+                "value": "json_list_" + str(block_json_index),
                 "output": len(json_list)
             }
             json_list.append(json_obj)

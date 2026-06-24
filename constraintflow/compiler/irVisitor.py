@@ -192,6 +192,8 @@ class IRVisitor:
 
         elif isinstance(node, IR.IrTorchMatmul):
             return self.visitIrTorchMatmul(node)
+        elif isinstance(node, IR.IrTorchWhere):
+            return self.visitIrTorchWhere(node)
 
         elif isinstance(node, IR.IrTorchUnsqueeze):
             return self.visitIrTorchUnsqueeze(node)
