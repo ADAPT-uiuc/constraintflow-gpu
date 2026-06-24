@@ -403,7 +403,6 @@ class Abs_elem_sparse:
                         }
                         json_list.append(json_obj)
                 else:
-                    hkljlj
                     start_indices = []
                     end_indices = []
                     blocks = []
@@ -464,9 +463,7 @@ class Abs_elem_sparse:
                         'start_indices': [start_idx.tolist() for start_idx in start_indices],
                         'blocks': 'json_list_' + str(blocks_idx),
                         'dims': len(start_indices[0]),
-                        'total_size': [self.batch_size,
-                                       self.network[llist.llist[0]].size,
-                                       self.d[key].mat.total_size[-1]],
+                        'total_size': val_mat.total_size.tolist(),
                         'end_indices': [end_idx.tolist() for end_idx in end_indices],
                         'type': self.d[key].mat.type.__name__,
                         'dense_const': self.d[key].mat.dense_const,

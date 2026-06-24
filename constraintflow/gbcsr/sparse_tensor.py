@@ -622,13 +622,76 @@ Blocks Types: "
         self.total_size[-1] = symexp_count
         return self
 
-    def get_dense(self, dummy: bool=False):
+    def get_dense(self, dummy: bool=False, json_list=None, template_index=-1, simulacrum=False):
+        trace = json_list is not None
+        if trace:
+            # res = ones(total_size) * dense_const
+            json_list.append({
+                "method": "tensor_ones",
+                "repeat_dims": self.total_size.tolist(),
+                "output": len(json_list),
+            })
+            ones_index = len(json_list) - 1
+            json_list.append({
+                "method": "scalar_const",
+                "value": self.dense_const,
+                "output": len(json_list),
+            })
+            const_index = len(json_list) - 1
+            json_list.append({
+                "method": "torch_mul",
+                "lhs": "json_list_" + str(ones_index),
+                "rhs": "json_list_" + str(const_index),
+                "output": len(json_list),
+            })
+            res_index = len(json_list) - 1
+
         if dummy_mode or dummy:
-            return torch.empty(tuple(self.total_size.tolist()), device="meta")
-        res = torch.ones(list(self.total_size), dtype=self.type)*self.dense_const
+            res = torch.empty(tuple(self.total_size.tolist()), device="meta")
+        else:
+            res = torch.ones(list(self.total_size), dtype=self.type)*self.dense_const
+
         for i in range(self.num_blocks):
-            s = get_slice(self.start_indices[i], self.end_indices[i])
-            res[tuple(s)] = self.blocks[i].get_dense()
+            if trace:
+                json_list.append({
+                    "method": "extract_block",
+                    "input": "json_list_" + str(template_index),
+                    "index": i,
+                    "output": len(json_list),
+                })
+                extracted_index = len(json_list) - 1
+                block_dense, block_dense_index = self.blocks[i].get_dense(
+                    json_list=json_list, template_index=extracted_index, simulacrum=True
+                )
+                # Build the destination view index: use 0 (full slice ':')
+                # for dimensions that span the whole tensor (e.g. batch),
+                # otherwise an explicit [start, end] range.
+                index = []
+                for j in range(self.start_indices[i].shape[0]):
+                    s_j = int(self.start_indices[i][j])
+                    e_j = int(self.end_indices[i][j])
+                    if s_j == 0 and e_j == int(self.total_size[j]):
+                        index.append(0)
+                    else:
+                        index.append([s_j, e_j])
+                json_list.append({
+                    "method": "assign_to_view",
+                    "input": "json_list_" + str(res_index),
+                    "base": "json_list_" + str(res_index),
+                    "index": index,
+                    "value": "json_list_" + str(block_dense_index),
+                    "output": len(json_list),
+                })
+                res_index = len(json_list) - 1
+                if not (dummy_mode or dummy):
+                    s = get_slice(self.start_indices[i], self.end_indices[i])
+                    res[tuple(s)] = block_dense
+            else:
+                s = get_slice(self.start_indices[i], self.end_indices[i])
+                res[tuple(s)] = self.blocks[i].get_dense()
+
+        if trace and simulacrum:
+            return res, res_index
         return res
     
     def get_dense_custom_range(self, start_index, end_index):
@@ -739,17 +802,11 @@ Blocks Types: "
             raise NotImplementedError
         extraction_mode = "normal"
         if trace:
-            json_obj = {
-                "method": "get_sub_block_custom_range_block",
-                "lhs": "json_list_" + str(extracted_block_index),
-                "start_index": start_index.tolist(),
-                "end_index": end_index.tolist(),
-                "block_start_index": block_start_index.tolist(),
-                "output": len(json_list)
-            }
-            json_list.append(json_obj)
-            result_json_index = len(json_list) - 1
-        res = self.blocks[block_id].get_sub_block_custom_range(start_index, end_index, block_start_index)
+            res, result_json_index = self.blocks[block_id].get_sub_block_custom_range(
+                start_index, end_index, block_start_index,
+                json_list=json_list, template_index=extracted_block_index, simulacrum=True)
+        else:
+            res = self.blocks[block_id].get_sub_block_custom_range(start_index, end_index, block_start_index)
         if tensor:
             ret = res.block
             if trace:
@@ -1622,10 +1679,75 @@ Blocks Types: "
         assert(self.dense_const == 0.0)
         
         if sp_tensor.dense_const != 0.0 and sp_tensor.check_dense()==False:
-            dense_sp_tensor = sp_tensor.get_dense()
+            dense_sp_tensor, dense_sp_tensor_index = sp_tensor.get_dense(json_list=json_list, template_index=rhs_index, simulacrum=True)
+            # Re-wrap the densified rhs as a single DenseBlock SparseTensor in
+            # the trace, and point rhs_index at it for downstream extractions.
+            rhs_db_index = len(json_list)
+            json_list.append({
+                "method": "DenseBlock",
+                "input": "json_list_" + str(dense_sp_tensor_index),
+                "output": rhs_db_index,
+            })
+            rhs_blocks_index = len(json_list)
+            json_list.append({
+                "method": "initialise",
+                "name": "rhs_blocks",
+                "value": "[]",
+                "output": rhs_blocks_index,
+            })
+            rhs_appended_index = len(json_list)
+            json_list.append({
+                "method": "append_list",
+                "list": "json_list_" + str(rhs_blocks_index),
+                "value": "json_list_" + str(rhs_db_index),
+                "output": rhs_appended_index,
+            })
+            rhs_index = len(json_list)
+            json_list.append({
+                "method": "SparseTensor",
+                "start_indices": [torch.tensor([0]*len(dense_sp_tensor.shape)).tolist()],
+                "blocks": "json_list_" + str(rhs_appended_index),
+                "dims": sp_tensor.dims,
+                "total_size": sp_tensor.total_size.tolist(),
+                "type": "float",
+                "dense_const": 0.0,
+                "output": rhs_index,
+            })
             sp_tensor = SparseTensor([torch.tensor([0]*len(dense_sp_tensor.shape))], [DenseBlock(dense_sp_tensor)], sp_tensor.dims, sp_tensor.total_size, type=float, dense_const=0.0)
 
-            dense_self = self.get_dense()
+            dense_self, dense_self_index = self.get_dense(json_list=json_list, template_index=lhs_index, simulacrum=True)
+            # Re-wrap the densified lhs (self) likewise, updating lhs_index.
+            lhs_db_index = len(json_list)
+            json_list.append({
+                "method": "DenseBlock",
+                "input": "json_list_" + str(dense_self_index),
+                "output": lhs_db_index,
+            })
+            lhs_blocks_index = len(json_list)
+            json_list.append({
+                "method": "initialise",
+                "name": "lhs_blocks",
+                "value": "[]",
+                "output": lhs_blocks_index,
+            })
+            lhs_appended_index = len(json_list)
+            json_list.append({
+                "method": "append_list",
+                "list": "json_list_" + str(lhs_blocks_index),
+                "value": "json_list_" + str(lhs_db_index),
+                "output": lhs_appended_index,
+            })
+            lhs_index = len(json_list)
+            json_list.append({
+                "method": "SparseTensor",
+                "start_indices": [torch.tensor([0]*len(dense_self.shape)).tolist()],
+                "blocks": "json_list_" + str(lhs_appended_index),
+                "dims": len(dense_self.shape),
+                "total_size": torch.tensor(dense_self.shape).tolist(),
+                "type": "float",
+                "dense_const": 0.0,
+                "output": lhs_index,
+            })
             self.start_indices = [torch.tensor([0]*len(dense_self.shape))]
             self.blocks = [DenseBlock(dense_self)]
             self.dims = len(dense_self.shape)

@@ -251,6 +251,7 @@ class CodeGen(irVisitor.IRVisitor):
         # self.counter += 1
 
     # For the del statements
+    # Currently not used. 
     def visitIrDel(self, node):
         # self.write('del ' + ', '.join(node.var_names))
         # self.write('gc.collect()')

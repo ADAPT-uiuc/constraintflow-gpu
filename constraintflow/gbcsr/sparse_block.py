@@ -1074,9 +1074,32 @@ class DenseBlock(SparseBlock):
         return [DenseBlock(new_block)], [torch.tensor([0]*len(self.total_shape))]
         
     
-    def get_sub_block_custom_range(self, start_index, end_index, block_start_index):
-        s = get_slice(start_index - block_start_index, end_index - block_start_index)
-        return DenseBlock(self.block[tuple(s)])
+    def get_sub_block_custom_range(self, start_index, end_index, block_start_index, json_list=[], template_index=-1, simulacrum=False):
+        local_start = start_index - block_start_index
+        local_end = end_index - block_start_index
+        s = get_slice(local_start, local_end)
+        res = DenseBlock(self.block[tuple(s)])
+        if simulacrum:
+            json_list.append({
+                "method": "extract_sparse_block",
+                "input": "json_list_" + str(template_index),
+                "output": len(json_list),
+            })
+            tensor_index = len(json_list) - 1
+            json_list.append({
+                "method": "torch_slice",
+                "input": "json_list_" + str(tensor_index),
+                "index": [[int(local_start[j]), int(local_end[j])] for j in range(local_start.shape[0])],
+                "output": len(json_list),
+            })
+            slice_index = len(json_list) - 1
+            json_list.append({
+                "method": "DenseBlock",
+                "input": "json_list_" + str(slice_index),
+                "output": len(json_list),
+            })
+            return res, len(json_list) - 1
+        return res
     
     def create_similar(self, block, json_list=[], template_index=-1, simulacrum=False):
         json_obj = {
@@ -2338,13 +2361,38 @@ class DiagonalBlock(SparseBlock):
     
     
     
-    def get_sub_block_custom_range(self, start_index, end_index, block_start_index):
-        start_index = torch.concat([start_index[:self.diag_index], start_index[self.diag_index+1:]])
-        end_index = torch.concat([end_index[:self.diag_index], end_index[self.diag_index+1:]])
-        block_start_index = torch.concat([block_start_index[:self.diag_index], block_start_index[self.diag_index+1:]])
-        s = get_slice(start_index - block_start_index, end_index - block_start_index)
+    def get_sub_block_custom_range(self, start_index, end_index, block_start_index, json_list=[], template_index=-1, simulacrum=False):
+        r_start = torch.concat([start_index[:self.diag_index], start_index[self.diag_index+1:]])
+        r_end = torch.concat([end_index[:self.diag_index], end_index[self.diag_index+1:]])
+        r_block_start = torch.concat([block_start_index[:self.diag_index], block_start_index[self.diag_index+1:]])
+        local_start = r_start - r_block_start
+        local_end = r_end - r_block_start
+        s = get_slice(local_start, local_end)
         block = self.block[tuple(s)]
-        return DiagonalBlock(block, torch.concat([torch.tensor(block.shape[:self.diag_index]), torch.tensor(block.shape[self.diag_index-1:])]),  self.diag_index)
+        res = DiagonalBlock(block, torch.concat([torch.tensor(block.shape[:self.diag_index]), torch.tensor(block.shape[self.diag_index-1:])]),  self.diag_index)
+        if simulacrum:
+            json_list.append({
+                "method": "extract_sparse_block",
+                "input": "json_list_" + str(template_index),
+                "output": len(json_list),
+            })
+            tensor_index = len(json_list) - 1
+            json_list.append({
+                "method": "torch_slice",
+                "input": "json_list_" + str(tensor_index),
+                "index": [[int(local_start[j]), int(local_end[j])] for j in range(local_start.shape[0])],
+                "output": len(json_list),
+            })
+            slice_index = len(json_list) - 1
+            json_list.append({
+                "method": "DiagonalBlock",
+                "block": "json_list_" + str(slice_index),
+                "total_shape": res.total_shape.tolist(),
+                "diag_index": self.diag_index,
+                "output": len(json_list),
+            })
+            return res, len(json_list) - 1
+        return res
 
     def create_similar(self, block, json_list=[], template_index=-1, simulacrum=False):
         json_obj = {
@@ -3575,8 +3623,25 @@ class ConstBlock(SparseBlock):
 
 
     # Done        
-    def get_sub_block_custom_range(self, start_index, end_index, block_start_index):
-        return ConstBlock(self.block, end_index - start_index)
+    def get_sub_block_custom_range(self, start_index, end_index, block_start_index, json_list=[], template_index=-1, simulacrum=False):
+        new_total_shape = end_index - start_index
+        res = ConstBlock(self.block, new_total_shape)
+        if simulacrum:
+            json_list.append({
+                "method": "object_lookup",
+                "input": "json_list_" + str(template_index),
+                "object": "block",
+                "output": len(json_list),
+            })
+            const_value_index = len(json_list) - 1
+            json_list.append({
+                "method": "ConstBlock",
+                "block": "json_list_" + str(const_value_index),
+                "total_shape": new_total_shape.tolist(),
+                "output": len(json_list),
+            })
+            return res, len(json_list) - 1
+        return res
     
     # Done
     def get_patches(self, batch_size, total_shape, ix, iy, ox, oy, sx, sy, px, py, kx, ky, num_channels, num_kernels):
@@ -3762,7 +3827,7 @@ class RepeatBlock(SparseBlock):
             return repeat_block, repeat_index
         return repeat_block
     
-    def get_sub_block_custom_range(self, start_index, end_index, block_start_index):
+    def get_sub_block_custom_range(self, start_index, end_index, block_start_index, json_list=[], template_index=-1, simulacrum=False):
         slice_start = start_index - block_start_index
         slice_end = end_index - block_start_index
         new_total_shape = slice_end - slice_start
@@ -3771,6 +3836,27 @@ class RepeatBlock(SparseBlock):
         s = get_slice(slice_start, slice_end)
         b = self.block[tuple(s)]
         res = RepeatBlock(b, new_total_shape)
+        if simulacrum:
+            json_list.append({
+                "method": "extract_sparse_block",
+                "input": "json_list_" + str(template_index),
+                "output": len(json_list),
+            })
+            tensor_index = len(json_list) - 1
+            json_list.append({
+                "method": "torch_slice",
+                "input": "json_list_" + str(tensor_index),
+                "index": [[int(slice_start[j]), int(slice_end[j])] for j in range(slice_start.shape[0])],
+                "output": len(json_list),
+            })
+            slice_index = len(json_list) - 1
+            json_list.append({
+                "method": "RepeatBlock",
+                "block": "json_list_" + str(slice_index),
+                "total_shape": new_total_shape.tolist(),
+                "output": len(json_list),
+            })
+            return res, len(json_list) - 1
         return res
     
     def matmul_equal_dims(self, sp_block, json_list=[], lhs_index=-1, rhs_index=-1):
@@ -4155,8 +4241,8 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                         z_block = z.block
                         res = y.create_similar(block=where_block(x_block, y_block, z_block))
                 elif isinstance(y, ConstBlock):
-                    y_block = torch.ones(x.block.shape)*y.block 
-                    z_block = torch.ones(x.block.shape)*z.block 
+                    y_block = torch.ones(x.block.shape, device=x.block.device)*y.block 
+                    z_block = torch.ones(x.block.shape, device=x.block.device)*z.block 
                     res = x.create_similar(block=where_block(x.block, y_block, z_block))
                     # raise Exception('Check this case')
                 else:

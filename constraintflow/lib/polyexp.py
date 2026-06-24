@@ -63,8 +63,8 @@ class PolyExpSparse:
                 )
             return self.mat
         if dense:
-            block = self.mat.get_dense()
             sp_mat_idx = -1
+            mat_idx = -1
             if trace:
                 mat_idx = len(json_list)
                 json_obj: dict[str, Any] = {
@@ -73,11 +73,21 @@ class PolyExpSparse:
                     'output': mat_idx,
                 }
                 json_list.append(json_obj)
-                sb_idx = len(json_list)
+            block_ret = self.mat.get_dense(
+                json_list=json_list if trace else None,
+                template_index=mat_idx,
+                simulacrum=True,
+            )
+            if trace:
+                block, block_idx = block_ret
+            else:
+                block = block_ret
+            if trace:
+                db_idx = len(json_list)
                 json_obj: dict[str, Any] = {
-                    'method': 'SparseBlock',
-                    'block': block.tolist(),
-                    'output': sb_idx,
+                    'method': 'DenseBlock',
+                    'input': 'json_list_' + str(block_idx),
+                    'output': db_idx,
                 }
                 json_list.append(json_obj)
                 block_list_idx = len(json_list)
@@ -92,7 +102,7 @@ class PolyExpSparse:
                 json_obj: dict[str, Any] = {
                     'method': 'append_list',
                     'list': 'json_list_' + str(block_list_idx),
-                    'value': 'json_list_' + str(sb_idx),
+                    'value': 'json_list_' + str(db_idx),
                     'output': appended_idx,
                 }
                 json_list.append(json_obj)
@@ -106,7 +116,7 @@ class PolyExpSparse:
                     'output': sp_mat_idx,
                 }
                 json_list.append(json_obj)
-            sp_mat = SparseTensor([torch.tensor([0]*block.dim())], [SparseBlock(block)], block.dim(), torch.tensor(block.shape))
+            sp_mat = SparseTensor([torch.tensor([0]*block.dim())], [DenseBlock(block)], block.dim(), torch.tensor(block.shape))
         else:
             sp_mat_idx = -1
             if trace:
