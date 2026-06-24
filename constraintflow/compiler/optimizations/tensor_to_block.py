@@ -1112,10 +1112,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
             else:
                 raise Exception("NOT IMPLEMENTED")
-            if isinstance(expr, (IrInnerProduct, IrDot)):
-                output = IrObjectLookup(inputIr, "block_dense_const")
-            else:
-                output = IrObjectLookup(inputIr, "block")
+            output = IrObjectLookup(inputIr, "block")
 
         elif json_obj["method"] == "block_create_similar":
             if "json_list_" in json_obj["input"]:

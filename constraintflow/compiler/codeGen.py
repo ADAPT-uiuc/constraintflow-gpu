@@ -1145,9 +1145,6 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrObjectLookup(self, node):
         if node.object_name == "block":
             return self.visit(node.children[0]) + ".block"
-        if node.object_name == "block_dense_const":
-            input_expr = self.visit(node.children[0])
-            return "(" + input_expr + ".get_dense() if isinstance(" + input_expr + ", ConstBlock) else " + input_expr + ".block)"
         raise Exception("NOT IMPLEMENTED")
 
     def visitIrBlockCreateSimilar(self, node):
