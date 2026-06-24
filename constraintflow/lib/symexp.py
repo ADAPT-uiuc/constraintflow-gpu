@@ -1,3 +1,4 @@
+from typing import Any
 from constraintflow.gbcsr.sparse_tensor import *
 from constraintflow.gbcsr.sparse_block import *
 
@@ -43,10 +44,71 @@ class SymExpSparse:
         assert(self.mat.dense_const==0)
         self.mat.total_size[-1] = SymExpSparse.count
 
-    def get_mat(self, sym_size):
+    def get_mat(self, sym_size, json_list=None, layer_index=None,
+                counter=None, inside_while=False, while_number=None,
+                while_iteration=None, lhs_index=-1):
+        owns_capture = (json_list is None) and dummy_mode
+        if owns_capture:
+            json_list = [{"method": "noop", "input": "lhs", "output": 0}]
+            lhs_index = 0
+        trace = json_list is not None
+        if not trace:
+            json_list = []
+        if trace and not owns_capture:
+            assert lhs_index != -1
+
         if self.mat == None:
+            if trace:
+                st_idx = len(json_list)
+                json_obj: dict[str, Any] = {
+                    'method': 'SparseTensor',
+                    'start_indices': [],
+                    'blocks': [],
+                    'dims': 0,
+                    'total_size': [],
+                    'output': st_idx,
+                }
+                json_list.append(json_obj)
+            if owns_capture:
+                write_jit_capture_file(
+                    'jit_poly_exp_sparse_get_mat',
+                    'poly_exp_sparse_get_mat',
+                    layer_index,
+                    counter,
+                    inside_while,
+                    while_number,
+                    while_iteration,
+                    json_list
+                )
             return SparseTensor([], [], 0, torch.tensor([]))
+
         self.expand_mat()
+        if trace:
+            mat_idx = len(json_list)
+            json_obj: dict[str, Any] = {
+                'method': 'get_sym_exp_sparse_mat',
+                'input': 'json_list_' + str(lhs_index),
+                'output': mat_idx,
+            }
+            json_list.append(json_obj)
+            expand_idx = len(json_list)
+            json_obj: dict[str, Any] = {
+                'method': 'expand_symexp_mat',
+                'input': 'json_list_' + str(mat_idx),
+                'output': expand_idx,
+            }
+            json_list.append(json_obj)
+        if owns_capture:
+            write_jit_capture_file(
+                'jit_poly_exp_sparse_get_mat',
+                'poly_exp_sparse_get_mat',
+                layer_index,
+                counter,
+                inside_while,
+                while_number,
+                while_iteration,
+                json_list
+            )
         return self.mat
 
     def get_const(self):

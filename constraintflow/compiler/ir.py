@@ -504,6 +504,71 @@ class IrBlockExtract(IrExpression):
         super().__init__()
         self.update_parent_child([inputIr, indexIr])
 
+class IrBlockCopy(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.update_parent_child([inputIr])
+
+class IrGetSparseTensorBlocks(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.update_parent_child([inputIr])
+
+class IrGetAbsElemSparseDKey(IrExpression):
+    def __init__(self, inputIr, key: str):
+        super().__init__()
+        self.key = key
+        self.ttb_counter = -1
+        self.update_parent_child([inputIr])
+
+class IrGetPolyExpSparseConst(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.update_parent_child([inputIr])
+
+class IrGetPolyExpSparseMat(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.update_parent_child([inputIr])
+
+class IrGetSymExpSparseConst(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.update_parent_child([inputIr])
+
+class IrGetSymExpSparseMat(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.update_parent_child([inputIr])
+
+class IrGetKthLayerNetworkParam(IrExpression):
+    def __init__(self, layer_index, param):
+        super().__init__()
+        self.layer_index = layer_index
+        self.param = param
+        self.update_parent_child([])
+
+class IrDenseBlock(IrExpression):
+    def __init__(self, inputIr):
+        super().__init__()
+        self.update_parent_child([inputIr])
+
+class IrKernelBlock(IrExpression):
+    def __init__(self, inputIr, total_shape: list[int],
+                 ix, iy, ox, oy, sx, sy, px, py):
+        """inputIr: the parameter `block` of the `KernelBlock` constructor"""
+        super().__init__()
+        self.total_shape = total_shape
+        self.ix = ix
+        self.iy = iy
+        self.ox = ox
+        self.oy = oy
+        self.sx = sx
+        self.sy = sy
+        self.px = px
+        self.py = py
+        self.update_parent_child([inputIr])
+
 class IrEpsilon(IrExpression):
     def __init__(self, num=None):
         super().__init__()
@@ -767,6 +832,7 @@ class IrAccess(IrExpression):
         super().__init__()
         self.isMetadata = isMetadata
         self.elem = elem
+        self.ttb_counter = -1
 
         lhsIrMetadata = lhsIr.irMetadata
 
@@ -974,6 +1040,7 @@ class IrGetSubBlockCustomRange(IrExpression):
         self.block_id = block_id
         self.tensor = tensor
         self.update_parent_child([inputIr])
+
 
 class IrMult(IrExpression):
     def __init__(self, lhsIr, rhsIr, op):
@@ -1624,5 +1691,4 @@ class IrProgram(IrAst):
         self.fstore = fstore
         self.irNodes = irNodes
         
-
 
