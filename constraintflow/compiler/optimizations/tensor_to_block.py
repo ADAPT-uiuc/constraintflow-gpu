@@ -324,16 +324,16 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         elif json_obj["method"] == "bool_value":
             output = IrConst(json_obj["value"], 'Bool')
 
-        elif json_obj["method"] == "get_sub_block_custom_range":
-            if "json_list_" in json_obj["lhs"]:
-                inputIr = output_vars[int(json_obj["lhs"].split("_")[-1])]
-            elif json_obj["lhs"] == "lhs":
-                inputIr = lhs
-            elif json_obj["lhs"] == "rhs":
-                inputIr = rhs
-            else:
-                raise Exception("NOT IMPLEMENTED")
-            output = IrGetSubBlockCustomRange(inputIr, torch.tensor(json_obj["start_index"], dtype=torch.int64), torch.tensor(json_obj["end_index"], dtype=torch.int64), json_obj["block_id"], json_obj["tensor"])
+        # elif json_obj["method"] == "get_sub_block_custom_range":
+        #     if "json_list_" in json_obj["lhs"]:
+        #         inputIr = output_vars[int(json_obj["lhs"].split("_")[-1])]
+        #     elif json_obj["lhs"] == "lhs":
+        #         inputIr = lhs
+        #     elif json_obj["lhs"] == "rhs":
+        #         inputIr = rhs
+        #     else:
+        #         raise Exception("NOT IMPLEMENTED")
+        #     output = IrGetSubBlockCustomRange(inputIr, torch.tensor(json_obj["start_index"], dtype=torch.int64), torch.tensor(json_obj["end_index"], dtype=torch.int64), json_obj["block_id"], json_obj["tensor"])
 
         elif json_obj["method"] == "unary_block":
             if "json_list_" in json_obj["input"]:
@@ -482,6 +482,12 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 raise Exception("NOT IMPLEMENTED")
 
             output = IrSimpleBinary(lhsIr, rhsIr, json_obj["op"])
+
+        elif json_obj["method"] == "torch_where":
+            condIr = output_vars[int(json_obj["cond"].split("_")[-1])]
+            lhsIr = output_vars[int(json_obj["lhs"].split("_")[-1])]
+            rhsIr = output_vars[int(json_obj["rhs"].split("_")[-1])]
+            output = IrTorchWhere(condIr, lhsIr, rhsIr)
 
         elif json_obj["method"] == "DenseBlock":
             ref = json_obj["input"] if "input" in json_obj else json_obj["block"]
@@ -1134,18 +1140,18 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             assert(len(output_vars) == json_obj["output"] + 1)
             continue
 
-        elif json_obj["method"] == "get_sub_block_custom_range_block":
-            if "json_list_" in json_obj["lhs"]:
-                inputIr = output_vars[int(json_obj["lhs"].split("_")[-1])]
-            else:
-                raise Exception("NOT IMPLEMENTED")
+        # elif json_obj["method"] == "get_sub_block_custom_range_block":
+        #     if "json_list_" in json_obj["lhs"]:
+        #         inputIr = output_vars[int(json_obj["lhs"].split("_")[-1])]
+        #     else:
+        #         raise Exception("NOT IMPLEMENTED")
 
-            output = IrBlockGetSubBlockCustomRange(
-                inputIr,
-                torch.tensor(json_obj["start_index"], dtype=torch.int64),
-                torch.tensor(json_obj["end_index"], dtype=torch.int64),
-                torch.tensor(json_obj["block_start_index"], dtype=torch.int64),
-            )
+        #     output = IrBlockGetSubBlockCustomRange(
+        #         inputIr,
+        #         torch.tensor(json_obj["start_index"], dtype=torch.int64),
+        #         torch.tensor(json_obj["end_index"], dtype=torch.int64),
+        #         torch.tensor(json_obj["block_start_index"], dtype=torch.int64),
+        #     )
         elif json_obj["method"] == "torch_any":
             inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
             output = IrBlockAny(inputIr)

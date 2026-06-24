@@ -101,10 +101,20 @@ def unary_operation(x, op, json_list = None, block_index = -1, unary_index = -1,
         return z, len(json_list) - 1
     return z
 
-def where_block(x, y, z):
+def where_block(x, y, z, json_list=None, cond_index=-1, lhs_index=-1, rhs_index=-1):
     start_time = time.time()
+    if json_list is not None:
+        json_list.append({
+            "method": "torch_where",
+            "cond": "json_list_" + str(cond_index),
+            "lhs": "json_list_" + str(lhs_index),
+            "rhs": "json_list_" + str(rhs_index),
+            "output": len(json_list),
+        })
     w = torch.where(x, y, z)
     where_time.update_op_time(time.time() - start_time)
+    if json_list is not None:
+        return w, len(json_list) - 1
     return w
 
 class SparseBlock:
@@ -4145,7 +4155,7 @@ def _coerce_to_dense_block(cls, init_fn, *args, **kwargs):
 
 
 
-def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=False):
+def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=False, json_list=[], x_index=-1, y_index=-1, z_index=-1, simulacrum=False):
     # if dummy_mode or dummy:
     #     res = copy.copy(y)
     #     if isinstance(y.total_shape, torch.Tensor):
@@ -4161,179 +4171,614 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
 
     if isinstance(x, ConstBlock):
         if x.block:
-            return y
+            return (y, y_index) if simulacrum else y
         else:
-            return z
+            return (z, z_index) if simulacrum else z
     elif isinstance(x, DenseBlock):
         if isinstance(y, type(z)):
             if not isinstance(y, (KernelBlock, PatchesBlock)):
                 if isinstance(y, DenseBlock):
+                    json_list.append({
+                        "method": "extract_sparse_block",
+                        "input": "json_list_" + str(x_index),
+                        "output": len(json_list),
+                    })
+                    x_block_index = len(json_list) - 1
+                    json_list.append({
+                        "method": "extract_sparse_block",
+                        "input": "json_list_" + str(y_index),
+                        "output": len(json_list),
+                    })
+                    y_block_index = len(json_list) - 1
                     y_block = y.block
+                    json_list.append({
+                        "method": "extract_sparse_block",
+                        "input": "json_list_" + str(z_index),
+                        "output": len(json_list),
+                    })
+                    z_block_index = len(json_list) - 1
                     z_block = z.block
-                    res = y.create_similar(block=where_block(x.block, y_block, z_block))
+                    w, w_index = where_block(x.block, y_block, z_block, json_list=json_list, cond_index=x_block_index, lhs_index=y_block_index, rhs_index=z_block_index)
+                    res, res_index = y.create_similar(block=w, json_list=json_list, template_index=w_index, simulacrum=True)
                 elif isinstance(y, DiagonalBlock):
+                    json_list.append({
+                        "method": "extract_sparse_block",
+                        "input": "json_list_" + str(x_index),
+                        "output": len(json_list),
+                    })
+                    x_block_index = len(json_list) - 1
+                    x_diag, x_diag_index = get_diagonal(x.block, y.diag_index, json_list=json_list, template_index=x_block_index)
+                    json_list.append({
+                        "method": "extract_sparse_block",
+                        "input": "json_list_" + str(y_index),
+                        "output": len(json_list),
+                    })
+                    y_block_index = len(json_list) - 1
                     y_block = y.block
+                    json_list.append({
+                        "method": "extract_sparse_block",
+                        "input": "json_list_" + str(z_index),
+                        "output": len(json_list),
+                    })
+                    z_block_index = len(json_list) - 1
                     z_block = z.block
-                    res = y.create_similar(block=where_block(get_diagonal(x.block, y.diag_index), y_block, z_block))
+                    w, w_index = where_block(x_diag, y_block, z_block, json_list=json_list, cond_index=x_diag_index, lhs_index=y_block_index, rhs_index=z_block_index)
+                    res, res_index = y.create_similar(block=w, json_list=json_list, template_index=w_index, simulacrum=True)
                 elif isinstance(y, ConstBlock):
-                    y_block = y.get_dense()
-                    z_block = z.get_dense()
-                    res = x.create_similar(block=where_block(x.block, y_block, z_block))
+                    y_block, y_block_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
+                    z_block, z_block_index = z.get_dense(json_list=json_list, template_index=z_index, simulacrum=True)
+                    json_list.append({
+                        "method": "extract_sparse_block",
+                        "input": "json_list_" + str(x_index),
+                        "output": len(json_list),
+                    })
+                    x_block_index = len(json_list) - 1
+                    w, w_index = where_block(x.block, y_block, z_block, json_list=json_list, cond_index=x_block_index, lhs_index=y_block_index, rhs_index=z_block_index)
+                    res, res_index = x.create_similar(block=w, json_list=json_list, template_index=w_index, simulacrum=True)
                     raise Exception('Check this case')
                 else:
                     raise NotImplementedError
-                return res
+                return (res, res_index) if simulacrum else res
             if y.parameters() == z.parameters():
                 if isinstance(y, KernelBlock):
-                    y = y.convert_to_patches()
-                    z = z.convert_to_patches()
-                res = DenseBlock(where_block(x.block, y.get_dense(), z.get_dense()))
+                    y, y_index = y.convert_to_patches(json_list=json_list, template_index=y_index, simulacrum=True)
+                    z, z_index = z.convert_to_patches(json_list=json_list, template_index=z_index, simulacrum=True)
+                json_list.append({
+                    "method": "extract_sparse_block",
+                    "input": "json_list_" + str(x_index),
+                    "output": len(json_list),
+                })
+                x_block_index = len(json_list) - 1
+                y_dense, y_dense_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
+                z_dense, z_dense_index = z.get_dense(json_list=json_list, template_index=z_index, simulacrum=True)
+                w, w_index = where_block(x.block, y_dense, z_dense, json_list=json_list, cond_index=x_block_index, lhs_index=y_dense_index, rhs_index=z_dense_index)
+                json_list.append({
+                    "method": "DenseBlock",
+                    "block": "json_list_" + str(w_index),
+                    "output": len(json_list),
+                })
+                res_index = len(json_list) - 1
+                res = DenseBlock(w)
                 # res = y.create_similar(block=where_block(x.convert_to_patches(*y.parameters()).block, y.block, z.block))
-                return res
-            block_1 = y.get_dense()
-            block_2 = z.get_dense()
-            return DenseBlock(where_block(x.block, block_1, block_2))
+                return (res, res_index) if simulacrum else res
+            block_1, block_1_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
+            block_2, block_2_index = z.get_dense(json_list=json_list, template_index=z_index, simulacrum=True)
+            json_list.append({
+                "method": "extract_sparse_block",
+                "input": "json_list_" + str(x_index),
+                "output": len(json_list),
+            })
+            x_block_index = len(json_list) - 1
+            w, w_index = where_block(x.block, block_1, block_2, json_list=json_list, cond_index=x_block_index, lhs_index=block_1_index, rhs_index=block_2_index)
+            json_list.append({
+                "method": "DenseBlock",
+                "block": "json_list_" + str(w_index),
+                "output": len(json_list),
+            })
+            res_index = len(json_list) - 1
+            res = DenseBlock(w)
+            return (res, res_index) if simulacrum else res
         elif not isinstance(y, type(z)):
-            block_1 = y 
+            block_1 = y
+            block_1_index = y_index
             block_2 = z
+            block_2_index = z_index
             flag = False
             if isinstance(y, KernelBlock):
-                block_1 = y.convert_to_patches()
+                block_1, block_1_index = y.convert_to_patches(json_list=json_list, template_index=y_index, simulacrum=True)
                 flag = True
             if isinstance(y, ConstBlock):
                 if y.block == 0 and isinstance(z, (DiagonalBlock, PatchesBlock)):
-                    block_1 = z.create_similar(torch.zeros(z.block.shape))
+                    json_list.append({
+                        "method": "torch_zeros",
+                        "size": list(z.block.shape),
+                        "output": len(json_list),
+                    })
+                    zeros_index = len(json_list) - 1
+                    block_1, block_1_index = z.create_similar(torch.zeros(z.block.shape), json_list=json_list, template_index=zeros_index, simulacrum=True)
                 else:
-                    block_1 = DenseBlock(y.get_dense())
+                    self_block, self_block_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
+                    json_list.append({
+                        "method": "DenseBlock",
+                        "block": "json_list_" + str(self_block_index),
+                        "output": len(json_list),
+                    })
+                    block_1_index = len(json_list) - 1
+                    block_1 = DenseBlock(self_block)
                 flag = True
             if isinstance(z, KernelBlock):
-                block_2 = z.convert_to_patches()
+                block_2, block_2_index = z.convert_to_patches(json_list=json_list, template_index=z_index, simulacrum=True)
                 flag = True
             if isinstance(z, ConstBlock):
                 if z.block == 0 and isinstance(y, (DiagonalBlock, PatchesBlock)):
-                    block_2 = y.create_similar(torch.zeros(y.block.shape))
+                    json_list.append({
+                        "method": "torch_zeros",
+                        "size": list(y.block.shape),
+                        "output": len(json_list),
+                    })
+                    zeros_index = len(json_list) - 1
+                    block_2, block_2_index = y.create_similar(torch.zeros(y.block.shape), json_list=json_list, template_index=zeros_index, simulacrum=True)
                 else:
-                    block_2 = DenseBlock(z.get_dense())
+                    z_block, z_block_index = z.get_dense(json_list=json_list, template_index=z_index, simulacrum=True)
+                    json_list.append({
+                        "method": "DenseBlock",
+                        "block": "json_list_" + str(z_block_index),
+                        "output": len(json_list),
+                    })
+                    block_2_index = len(json_list) - 1
+                    block_2 = DenseBlock(z_block)
                 flag = True
             if flag:
-                return sp_where_block(x, block_1, block_2)
-        block_1 = y.get_dense()
-        block_2 = z.get_dense()
-        return DenseBlock(where_block(x.block, block_1, block_2))
-    
+                res, res_index = sp_where_block(x, block_1, block_2, json_list=json_list, x_index=x_index, y_index=block_1_index, z_index=block_2_index, simulacrum=True)
+                return (res, res_index) if simulacrum else res
+        block_1, block_1_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
+        block_2, block_2_index = z.get_dense(json_list=json_list, template_index=z_index, simulacrum=True)
+        json_list.append({
+            "method": "extract_sparse_block",
+            "input": "json_list_" + str(x_index),
+            "output": len(json_list),
+        })
+        x_block_index = len(json_list) - 1
+        w, w_index = where_block(x.block, block_1, block_2, json_list=json_list, cond_index=x_block_index, lhs_index=block_1_index, rhs_index=block_2_index)
+        json_list.append({
+            "method": "DenseBlock",
+            "block": "json_list_" + str(w_index),
+            "output": len(json_list),
+        })
+        res_index = len(json_list) - 1
+        res = DenseBlock(w)
+        return (res, res_index) if simulacrum else res
+
     elif isinstance(x, RepeatBlock):
         if isinstance(y, type(z)):
             if not isinstance(y, (KernelBlock, PatchesBlock)):
                 if isinstance(y, DenseBlock):
-                    x_block = x.get_dense()
+                    json_list.append({
+                        "method": "extract_sparse_block",
+                        "input": "json_list_" + str(x_index),
+                        "output": len(json_list),
+                    })
+                    x_block_index = len(json_list) - 1
+                    json_list.append({
+                        "method": "extract_sparse_block",
+                        "input": "json_list_" + str(y_index),
+                        "output": len(json_list),
+                    })
+                    y_block_index = len(json_list) - 1
                     y_block = y.block
+                    json_list.append({
+                        "method": "extract_sparse_block",
+                        "input": "json_list_" + str(z_index),
+                        "output": len(json_list),
+                    })
+                    z_block_index = len(json_list) - 1
                     z_block = z.block
-                    res = y.create_similar(block=where_block(x.block, y_block, z_block))
+                    w, w_index = where_block(x.block, y_block, z_block, json_list=json_list, cond_index=x_block_index, lhs_index=y_block_index, rhs_index=z_block_index)
+                    res, res_index = y.create_similar(block=w, json_list=json_list, template_index=w_index, simulacrum=True)
                 elif isinstance(y, DiagonalBlock):
                     if x.repeat_dims[y.diag_index] > 1 and x.only_one_repeat:
-                        x_block = x.squeeze(y.diag_index).block
-                        y_block = y.block
-                        z_block = z.block
-                        res = y.create_similar(block=where_block(x_block, y_block, z_block))
+                        x_squeezed, x_squeezed_index = x.squeeze(y.diag_index, json_list=json_list, template_index=x_index, simulacrum=True)
                     elif x.repeat_dims[y.diag_index-1] > 1 and x.only_one_repeat:
-                        x_block = x.squeeze(y.diag_index-1).block
-                        y_block = y.block
-                        z_block = z.block
-                        res = y.create_similar(block=where_block(x_block, y_block, z_block))
+                        x_squeezed, x_squeezed_index = x.squeeze(y.diag_index-1, json_list=json_list, template_index=x_index, simulacrum=True)
+                    json_list.append({
+                        "method": "extract_sparse_block",
+                        "input": "json_list_" + str(x_squeezed_index),
+                        "output": len(json_list),
+                    })
+                    x_block_index = len(json_list) - 1
+                    x_block = x_squeezed.block
+                    json_list.append({
+                        "method": "extract_sparse_block",
+                        "input": "json_list_" + str(y_index),
+                        "output": len(json_list),
+                    })
+                    y_block_index = len(json_list) - 1
+                    y_block = y.block
+                    json_list.append({
+                        "method": "extract_sparse_block",
+                        "input": "json_list_" + str(z_index),
+                        "output": len(json_list),
+                    })
+                    z_block_index = len(json_list) - 1
+                    z_block = z.block
+                    w, w_index = where_block(x_block, y_block, z_block, json_list=json_list, cond_index=x_block_index, lhs_index=y_block_index, rhs_index=z_block_index)
+                    res, res_index = y.create_similar(block=w, json_list=json_list, template_index=w_index, simulacrum=True)
                 elif isinstance(y, ConstBlock):
-                    y_block = torch.ones(x.block.shape, device=x.block.device)*y.block 
-                    z_block = torch.ones(x.block.shape, device=x.block.device)*z.block 
-                    res = x.create_similar(block=where_block(x.block, y_block, z_block))
+                    json_list.append({
+                        "method": "torch_ones",
+                        "size": list(x.block.shape),
+                        "output": len(json_list),
+                    })
+                    y_ones_index = len(json_list) - 1
+                    json_list.append({
+                        "method": "scalar_const",
+                        "value": y.block,
+                        "output": len(json_list),
+                    })
+                    y_const_index = len(json_list) - 1
+                    json_list.append({
+                        "method": "torch_mul",
+                        "lhs": "json_list_" + str(y_ones_index),
+                        "rhs": "json_list_" + str(y_const_index),
+                        "output": len(json_list),
+                    })
+                    y_block_index = len(json_list) - 1
+                    y_block = torch.ones(x.block.shape, device=x.block.device)*y.block
+                    json_list.append({
+                        "method": "torch_ones",
+                        "size": list(x.block.shape),
+                        "output": len(json_list),
+                    })
+                    z_ones_index = len(json_list) - 1
+                    json_list.append({
+                        "method": "scalar_const",
+                        "value": z.block,
+                        "output": len(json_list),
+                    })
+                    z_const_index = len(json_list) - 1
+                    json_list.append({
+                        "method": "torch_mul",
+                        "lhs": "json_list_" + str(z_ones_index),
+                        "rhs": "json_list_" + str(z_const_index),
+                        "output": len(json_list),
+                    })
+                    z_block_index = len(json_list) - 1
+                    z_block = torch.ones(x.block.shape, device=x.block.device)*z.block
+                    json_list.append({
+                        "method": "extract_sparse_block",
+                        "input": "json_list_" + str(x_index),
+                        "output": len(json_list),
+                    })
+                    x_block_index = len(json_list) - 1
+                    w, w_index = where_block(x.block, y_block, z_block, json_list=json_list, cond_index=x_block_index, lhs_index=y_block_index, rhs_index=z_block_index)
+                    res, res_index = x.create_similar(block=w, json_list=json_list, template_index=w_index, simulacrum=True)
                     # raise Exception('Check this case')
                 else:
                     raise NotImplementedError
-                return res
+                return (res, res_index) if simulacrum else res
             if y.parameters() == z.parameters():
                 if isinstance(y, KernelBlock):
-                    y = y.convert_to_patches()
-                    z = z.convert_to_patches()
-                y = y.total_expand()
-                z = z.total_expand()
+                    y, y_index = y.convert_to_patches(json_list=json_list, template_index=y_index, simulacrum=True)
+                    z, z_index = z.convert_to_patches(json_list=json_list, template_index=z_index, simulacrum=True)
+                y, y_index = y.total_expand(json_list=json_list, template_index=y_index, simulacrum=True)
+                z, z_index = z.total_expand(json_list=json_list, template_index=z_index, simulacrum=True)
                 if x.only_one_repeat and x.repeat_dims[-1] > 1:
+                    json_list.append({
+                        "method": "extract_sparse_block",
+                        "input": "json_list_" + str(x_index),
+                        "output": len(json_list),
+                    })
+                    x_block_index = len(json_list) - 1
+                    json_list.append({
+                        "method": "torch_expand",
+                        "input": "json_list_" + str(x_block_index),
+                        "shape": list(y.block.shape),
+                        "output": len(json_list),
+                    })
+                    x_expand_index = len(json_list) - 1
                     x_block = x.block.expand(y.block.shape)
+                    json_list.append({
+                        "method": "extract_sparse_block",
+                        "input": "json_list_" + str(y_index),
+                        "output": len(json_list),
+                    })
+                    y_block_index = len(json_list) - 1
                     y_block = y.block
+                    json_list.append({
+                        "method": "extract_sparse_block",
+                        "input": "json_list_" + str(z_index),
+                        "output": len(json_list),
+                    })
+                    z_block_index = len(json_list) - 1
                     z_block = z.block
-                    res = y.create_similar(block=where_block(x_block, y_block, z_block))
+                    w, w_index = where_block(x_block, y_block, z_block, json_list=json_list, cond_index=x_expand_index, lhs_index=y_block_index, rhs_index=z_block_index)
+                    res, res_index = y.create_similar(block=w, json_list=json_list, template_index=w_index, simulacrum=True)
                 else:
-                    res = DenseBlock(where_block(x.block, y.get_dense(), z.get_dense()))
-                return res
-            block_1 = y.get_dense()
-            block_2 = z.get_dense()
-            return DenseBlock(where_block(x.block, block_1, block_2))
+                    json_list.append({
+                        "method": "extract_sparse_block",
+                        "input": "json_list_" + str(x_index),
+                        "output": len(json_list),
+                    })
+                    x_block_index = len(json_list) - 1
+                    y_dense, y_dense_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
+                    z_dense, z_dense_index = z.get_dense(json_list=json_list, template_index=z_index, simulacrum=True)
+                    w, w_index = where_block(x.block, y_dense, z_dense, json_list=json_list, cond_index=x_block_index, lhs_index=y_dense_index, rhs_index=z_dense_index)
+                    json_list.append({
+                        "method": "DenseBlock",
+                        "block": "json_list_" + str(w_index),
+                        "output": len(json_list),
+                    })
+                    res_index = len(json_list) - 1
+                    res = DenseBlock(w)
+                return (res, res_index) if simulacrum else res
+            block_1, block_1_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
+            block_2, block_2_index = z.get_dense(json_list=json_list, template_index=z_index, simulacrum=True)
+            json_list.append({
+                "method": "extract_sparse_block",
+                "input": "json_list_" + str(x_index),
+                "output": len(json_list),
+            })
+            x_block_index = len(json_list) - 1
+            w, w_index = where_block(x.block, block_1, block_2, json_list=json_list, cond_index=x_block_index, lhs_index=block_1_index, rhs_index=block_2_index)
+            json_list.append({
+                "method": "DenseBlock",
+                "block": "json_list_" + str(w_index),
+                "output": len(json_list),
+            })
+            res_index = len(json_list) - 1
+            res = DenseBlock(w)
+            return (res, res_index) if simulacrum else res
         elif not isinstance(y, type(z)):
-            block_1 = y 
+            block_1 = y
+            block_1_index = y_index
             block_2 = z
+            block_2_index = z_index
             flag = False
             if isinstance(y, KernelBlock):
-                block_1 = y.convert_to_patches()
+                block_1, block_1_index = y.convert_to_patches(json_list=json_list, template_index=y_index, simulacrum=True)
                 flag = True
             if isinstance(y, ConstBlock):
                 if y.block == 0 and isinstance(z, (DiagonalBlock, PatchesBlock)):
-                    block_1 = z.create_similar(torch.zeros(z.block.shape))
+                    json_list.append({
+                        "method": "torch_zeros",
+                        "size": list(z.block.shape),
+                        "output": len(json_list),
+                    })
+                    zeros_index = len(json_list) - 1
+                    block_1, block_1_index = z.create_similar(torch.zeros(z.block.shape), json_list=json_list, template_index=zeros_index, simulacrum=True)
                 else:
-                    block_1 = DenseBlock(y.get_dense())
+                    self_block, self_block_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
+                    json_list.append({
+                        "method": "DenseBlock",
+                        "block": "json_list_" + str(self_block_index),
+                        "output": len(json_list),
+                    })
+                    block_1_index = len(json_list) - 1
+                    block_1 = DenseBlock(self_block)
                 flag = True
             if isinstance(z, KernelBlock):
-                block_2 = z.convert_to_patches()
+                block_2, block_2_index = z.convert_to_patches(json_list=json_list, template_index=z_index, simulacrum=True)
                 flag = True
             if isinstance(z, ConstBlock):
                 if z.block == 0 and isinstance(y, (DiagonalBlock, PatchesBlock)):
-                    block_2 = y.create_similar(torch.zeros(y.block.shape))
+                    json_list.append({
+                        "method": "torch_zeros",
+                        "size": list(y.block.shape),
+                        "output": len(json_list),
+                    })
+                    zeros_index = len(json_list) - 1
+                    block_2, block_2_index = y.create_similar(torch.zeros(y.block.shape), json_list=json_list, template_index=zeros_index, simulacrum=True)
                 else:
-                    block_2 = DenseBlock(z.get_dense())
+                    z_block, z_block_index = z.get_dense(json_list=json_list, template_index=z_index, simulacrum=True)
+                    json_list.append({
+                        "method": "DenseBlock",
+                        "block": "json_list_" + str(z_block_index),
+                        "output": len(json_list),
+                    })
+                    block_2_index = len(json_list) - 1
+                    block_2 = DenseBlock(z_block)
                 flag = True
             if flag:
-                return sp_where_block(x, block_1, block_2)
-        block_1 = y.get_dense()
-        block_2 = z.get_dense()
-        x_block = x.get_dense()
-        return DenseBlock(where_block(x_block, block_1, block_2))
-    
-    
-        
+                res, res_index = sp_where_block(x, block_1, block_2, json_list=json_list, x_index=x_index, y_index=block_1_index, z_index=block_2_index, simulacrum=True)
+                return (res, res_index) if simulacrum else res
+        block_1, block_1_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
+        block_2, block_2_index = z.get_dense(json_list=json_list, template_index=z_index, simulacrum=True)
+        x_dense, x_dense_index = x.get_dense(json_list=json_list, template_index=x_index, simulacrum=True)
+        w, w_index = where_block(x_dense, block_1, block_2, json_list=json_list, cond_index=x_dense_index, lhs_index=block_1_index, rhs_index=block_2_index)
+        json_list.append({
+            "method": "DenseBlock",
+            "block": "json_list_" + str(w_index),
+            "output": len(json_list),
+        })
+        res_index = len(json_list) - 1
+        res = DenseBlock(w)
+        return (res, res_index) if simulacrum else res
+
+
+
     elif isinstance(x, DiagonalBlock):
         if isinstance(y, ConstBlock):
             if isinstance(z, ConstBlock):
-                y_dense = y.get_dense()
-                z_dense = z.get_dense()
-                y_diag = get_diagonal(y_dense, x.diag_index)
-                z_diag = get_diagonal(z_dense, x.diag_index)
-                return DiagonalBlock(where_block(x.block, y_diag, z_diag), x.total_shape, x.diag_index)
+                y_dense, y_dense_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
+                z_dense, z_dense_index = z.get_dense(json_list=json_list, template_index=z_index, simulacrum=True)
+                y_diag, y_diag_index = get_diagonal(y_dense, x.diag_index, json_list=json_list, template_index=y_dense_index)
+                z_diag, z_diag_index = get_diagonal(z_dense, x.diag_index, json_list=json_list, template_index=z_dense_index)
+                json_list.append({
+                    "method": "extract_sparse_block",
+                    "input": "json_list_" + str(x_index),
+                    "output": len(json_list),
+                })
+                x_block_index = len(json_list) - 1
+                w, w_index = where_block(x.block, y_diag, z_diag, json_list=json_list, cond_index=x_block_index, lhs_index=y_diag_index, rhs_index=z_diag_index)
+                json_list.append({
+                    "method": "DiagonalBlock",
+                    "block": "json_list_" + str(w_index),
+                    "total_shape": x.total_shape.tolist(),
+                    "diag_index": x.diag_index,
+                    "output": len(json_list),
+                })
+                res_index = len(json_list) - 1
+                res = DiagonalBlock(w, x.total_shape, x.diag_index)
+                return (res, res_index) if simulacrum else res
             elif isinstance(z, DiagonalBlock):
-                y_dense = y.get_dense()
-                y_diag = get_diagonal(y_dense, x.diag_index)
-                return DiagonalBlock(where_block(x.block, y_diag, z.block), x.total_shape, x.diag_index)
+                y_dense, y_dense_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
+                y_diag, y_diag_index = get_diagonal(y_dense, x.diag_index, json_list=json_list, template_index=y_dense_index)
+                json_list.append({
+                    "method": "extract_sparse_block",
+                    "input": "json_list_" + str(x_index),
+                    "output": len(json_list),
+                })
+                x_block_index = len(json_list) - 1
+                json_list.append({
+                    "method": "extract_sparse_block",
+                    "input": "json_list_" + str(z_index),
+                    "output": len(json_list),
+                })
+                z_block_index = len(json_list) - 1
+                z_block = z.block
+                w, w_index = where_block(x.block, y_diag, z_block, json_list=json_list, cond_index=x_block_index, lhs_index=y_diag_index, rhs_index=z_block_index)
+                json_list.append({
+                    "method": "DiagonalBlock",
+                    "block": "json_list_" + str(w_index),
+                    "total_shape": x.total_shape.tolist(),
+                    "diag_index": x.diag_index,
+                    "output": len(json_list),
+                })
+                res_index = len(json_list) - 1
+                res = DiagonalBlock(w, x.total_shape, x.diag_index)
+                return (res, res_index) if simulacrum else res
             elif isinstance(z, DenseBlock):
-                x_dense = x.get_dense()
-                y_dense = y.get_dense()
-                return DenseBlock(where_block(x_dense, y_dense, z.block))
+                x_dense, x_dense_index = x.get_dense(json_list=json_list, template_index=x_index, simulacrum=True)
+                y_dense, y_dense_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
+                json_list.append({
+                    "method": "extract_sparse_block",
+                    "input": "json_list_" + str(z_index),
+                    "output": len(json_list),
+                })
+                z_block_index = len(json_list) - 1
+                z_block = z.block
+                w, w_index = where_block(x_dense, y_dense, z_block, json_list=json_list, cond_index=x_dense_index, lhs_index=y_dense_index, rhs_index=z_block_index)
+                json_list.append({
+                    "method": "DenseBlock",
+                    "block": "json_list_" + str(w_index),
+                    "output": len(json_list),
+                })
+                res_index = len(json_list) - 1
+                res = DenseBlock(w)
+                return (res, res_index) if simulacrum else res
             else:
                 raise NotImplementedError
         elif isinstance(y, DiagonalBlock):
             if isinstance(z, ConstBlock):
-                z_dense = z.get_dense()
-                z_diag = get_diagonal(z_dense, y.diag_index)
-                return DiagonalBlock(where_block(x.block, y.block, z_diag), y.total_shape, y.diag_index)
+                z_dense, z_dense_index = z.get_dense(json_list=json_list, template_index=z_index, simulacrum=True)
+                z_diag, z_diag_index = get_diagonal(z_dense, y.diag_index, json_list=json_list, template_index=z_dense_index)
+                json_list.append({
+                    "method": "extract_sparse_block",
+                    "input": "json_list_" + str(x_index),
+                    "output": len(json_list),
+                })
+                x_block_index = len(json_list) - 1
+                json_list.append({
+                    "method": "extract_sparse_block",
+                    "input": "json_list_" + str(y_index),
+                    "output": len(json_list),
+                })
+                y_block_index = len(json_list) - 1
+                y_block = y.block
+                w, w_index = where_block(x.block, y_block, z_diag, json_list=json_list, cond_index=x_block_index, lhs_index=y_block_index, rhs_index=z_diag_index)
+                json_list.append({
+                    "method": "DiagonalBlock",
+                    "block": "json_list_" + str(w_index),
+                    "total_shape": y.total_shape.tolist(),
+                    "diag_index": y.diag_index,
+                    "output": len(json_list),
+                })
+                res_index = len(json_list) - 1
+                res = DiagonalBlock(w, y.total_shape, y.diag_index)
+                return (res, res_index) if simulacrum else res
             elif isinstance(z, DiagonalBlock):
-                return DiagonalBlock(where_block(x.block, y.block, z.block), y.total_shape, y.diag_index)
+                json_list.append({
+                    "method": "extract_sparse_block",
+                    "input": "json_list_" + str(x_index),
+                    "output": len(json_list),
+                })
+                x_block_index = len(json_list) - 1
+                json_list.append({
+                    "method": "extract_sparse_block",
+                    "input": "json_list_" + str(y_index),
+                    "output": len(json_list),
+                })
+                y_block_index = len(json_list) - 1
+                y_block = y.block
+                json_list.append({
+                    "method": "extract_sparse_block",
+                    "input": "json_list_" + str(z_index),
+                    "output": len(json_list),
+                })
+                z_block_index = len(json_list) - 1
+                z_block = z.block
+                w, w_index = where_block(x.block, y_block, z_block, json_list=json_list, cond_index=x_block_index, lhs_index=y_block_index, rhs_index=z_block_index)
+                json_list.append({
+                    "method": "DiagonalBlock",
+                    "block": "json_list_" + str(w_index),
+                    "total_shape": y.total_shape.tolist(),
+                    "diag_index": y.diag_index,
+                    "output": len(json_list),
+                })
+                res_index = len(json_list) - 1
+                res = DiagonalBlock(w, y.total_shape, y.diag_index)
+                return (res, res_index) if simulacrum else res
             elif isinstance(z, DenseBlock):
-                x_dense = x.get_dense()
-                y_dense = y.get_dense()
-                return DenseBlock(where_block(x_dense, y_dense, z.block))
+                x_dense, x_dense_index = x.get_dense(json_list=json_list, template_index=x_index, simulacrum=True)
+                y_dense, y_dense_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
+                json_list.append({
+                    "method": "extract_sparse_block",
+                    "input": "json_list_" + str(z_index),
+                    "output": len(json_list),
+                })
+                z_block_index = len(json_list) - 1
+                z_block = z.block
+                w, w_index = where_block(x_dense, y_dense, z_block, json_list=json_list, cond_index=x_dense_index, lhs_index=y_dense_index, rhs_index=z_block_index)
+                json_list.append({
+                    "method": "DenseBlock",
+                    "block": "json_list_" + str(w_index),
+                    "output": len(json_list),
+                })
+                res_index = len(json_list) - 1
+                res = DenseBlock(w)
+                return (res, res_index) if simulacrum else res
             else:
                 raise NotImplementedError
         elif isinstance(y, DenseBlock):
-            z_dense = z.get_dense()
-            x_dense = x.get_dense()
-            return DenseBlock(where_block(x_dense, y.block, z_dense))
+            z_dense, z_dense_index = z.get_dense(json_list=json_list, template_index=z_index, simulacrum=True)
+            x_dense, x_dense_index = x.get_dense(json_list=json_list, template_index=x_index, simulacrum=True)
+            json_list.append({
+                "method": "extract_sparse_block",
+                "input": "json_list_" + str(y_index),
+                "output": len(json_list),
+            })
+            y_block_index = len(json_list) - 1
+            y_block = y.block
+            w, w_index = where_block(x_dense, y_block, z_dense, json_list=json_list, cond_index=x_dense_index, lhs_index=y_block_index, rhs_index=z_dense_index)
+            json_list.append({
+                "method": "DenseBlock",
+                "block": "json_list_" + str(w_index),
+                "output": len(json_list),
+            })
+            res_index = len(json_list) - 1
+            res = DenseBlock(w)
+            return (res, res_index) if simulacrum else res
         else:
             raise NotImplementedError
-    x_dense = x.get_dense()
-    y_dense = y.get_dense()
-    z_dense = z.get_dense()
-    return DenseBlock(where_block(x_dense, y_dense, z_dense))
+    x_dense, x_dense_index = x.get_dense(json_list=json_list, template_index=x_index, simulacrum=True)
+    y_dense, y_dense_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
+    z_dense, z_dense_index = z.get_dense(json_list=json_list, template_index=z_index, simulacrum=True)
+    w, w_index = where_block(x_dense, y_dense, z_dense, json_list=json_list, cond_index=x_dense_index, lhs_index=y_dense_index, rhs_index=z_dense_index)
+    json_list.append({
+        "method": "DenseBlock",
+        "block": "json_list_" + str(w_index),
+        "output": len(json_list),
+    })
+    res_index = len(json_list) - 1
+    res = DenseBlock(w)
+    return (res, res_index) if simulacrum else res

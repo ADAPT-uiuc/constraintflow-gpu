@@ -553,6 +553,11 @@ class IrTorchMatmul(IrExpression):
         super().__init__()
         self.update_parent_child([lhsIr, rhsIr])
 
+class IrTorchWhere(IrExpression):
+    def __init__(self, condIr, lhsIr, rhsIr):
+        super().__init__()
+        self.update_parent_child([condIr, lhsIr, rhsIr])
+
 class IrTorchUnsqueeze(IrExpression):
     def __init__(self, inputIr, index):
         super().__init__()

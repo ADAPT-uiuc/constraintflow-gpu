@@ -848,6 +848,15 @@ class CodeGen(irVisitor.IRVisitor):
         lhs = self.visit(lhsIr)
         rhs = self.visit(rhsIr)
         return self.get_operator_func(node.op) + '(' + lhs + ', ' + rhs + ')'
+
+    def visitIrTorchWhere(self, node):
+        return (
+            'torch.where(' +
+            self.visit(node.children[0]) + ', ' +
+            self.visit(node.children[1]) + ', ' +
+            self.visit(node.children[2]) +
+            ')'
+        )
     
     def visitIrTensorOnes(self, node):
         if isinstance(node.total_size, str):
