@@ -118,7 +118,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop,
         IrAddDimension, IrRemoveDimension, IrAccess,
         IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff,
-        IrReduce
+        IrReduce, IrEpsilon
         # IrGetAbsElemSparseDKey, # IrGetPolyExpSparseConst,
         # IrGetPolyExpSparseMat
     )
@@ -176,6 +176,8 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         filename = f"jit_polyexp_not_stop/notstop_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrReduce):
         filename = f"jit_sum/sum_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
+    elif isinstance(expr, IrEpsilon):
+        filename = f"jit_new_eps/new_eps_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
 
     elif isinstance(expr, IrAccess) and (not expr.isMetadata):
         filename = f'jit_Abs_elem_sparse_get_elem/Abs_elem_sparse_get_elem_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
@@ -200,6 +202,10 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         lhs = expr.children[0]
         rhs = None
     elif isinstance(expr, IrGetDefaultStop):
+        cond = None
+        lhs = None
+        rhs = None
+    elif isinstance(expr, IrEpsilon):
         cond = None
         lhs = None
         rhs = None
@@ -242,6 +248,8 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
     if isinstance(expr, IrDot):
         irMetadata = expr.irMetadata
     elif isinstance(expr, IrAccess):
+        irMetadata = expr.irMetadata
+    elif isinstance(expr, IrEpsilon):
         irMetadata = expr.irMetadata
     elif isinstance(rhs, IrAst):
         irMetadata = rhs.irMetadata
@@ -1060,6 +1068,11 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             lhsIr  = output_vars[int(json_obj["y"].split("_")[-1])]
             rhsIr  = output_vars[int(json_obj["z"].split("_")[-1])]
             output = IrBlockWhereBlock(condIr, lhsIr, rhsIr)
+
+        elif json_obj["method"] == "new_eps":
+            matIr   = output_vars[int(json_obj["mat"].split("_")[-1])]
+            constIr = output_vars[int(json_obj["const"].split("_")[-1])]
+            output = IrNewEps(matIr, constIr)
 
         elif json_obj["method"] == "scalar_const":
             output = IrConst(json_obj["value"], 'Float')

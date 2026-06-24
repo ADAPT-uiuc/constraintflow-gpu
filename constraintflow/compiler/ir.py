@@ -777,7 +777,15 @@ class IrEpsilon(IrExpression):
         self.num = num
         self.irMetadata = [IrMetadataElement([IrAst.batch_size, num], 'SymExp', [1, 1], False)]
         # self.update_parent_child([IrConst(num)])
-        
+
+
+# Reconstructs the SymExpSparse produced by get_new_eps from its replayed
+# mat and const SparseTensors (the tensor_to_block expansion of IrEpsilon).
+class IrNewEps(IrExpression):
+    def __init__(self, matIr, constIr):
+        super().__init__()
+        self.update_parent_child([matIr, constIr])
+
     
 class IrPhi(IrExpression):
     def __init__(self, original_name, vars, irMetadata):

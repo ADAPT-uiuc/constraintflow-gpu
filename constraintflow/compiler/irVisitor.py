@@ -14,7 +14,10 @@ class IRVisitor:
         
         elif isinstance(node, IR.IrEpsilon):
             return self.visitIrEpsilon(node)
-        
+
+        elif isinstance(node, IR.IrNewEps):
+            return self.visitIrNewEps(node)
+
         elif isinstance(node, IR.IrPhi):
             return self.visitIrPhi(node)
         

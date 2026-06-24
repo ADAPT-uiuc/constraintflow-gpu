@@ -10,21 +10,177 @@ def get_num_eps(mat):
         num += mat.blocks[i].total_shape[-1]
     return num
 
-def get_new_eps(network, initial_shape):
+def get_new_eps(network, initial_shape, json_list=None, layer_index=None,
+                counter=None, inside_while=False, while_number=None,
+                while_iteration=None):
+    owns_capture = (json_list is None) and dummy_mode
+    if owns_capture:
+        json_list = []
+    trace = json_list is not None
+    if not trace:
+        json_list = []
+
     num = initial_shape[-1].item()
     const = SparseTensor([], [], len(initial_shape), initial_shape)
+    if trace:
+        const_idx = len(json_list)
+        json_obj: dict[str, Any] = {
+            'method': 'SparseTensor',
+            'start_indices': [],
+            'blocks': [],
+            'dims': len(initial_shape),
+            'total_size': initial_shape.tolist(),
+            'output': const_idx,
+        }
+        json_list.append(json_obj)
     start_index = torch.concat([torch.zeros(len(initial_shape), dtype=int), torch.tensor([SymExpSparse.count])])
-    mat_tensor = torch.ones(num, dtype=int) 
+
+    mat_tensor = torch.ones(num, dtype=int)
+    if trace:
+        mat_tensor_idx = len(json_list)
+        json_obj: dict[str, Any] = {
+            'method': 'torch_ones',
+            'size': [num],
+            'output': mat_tensor_idx,
+        }
+        json_list.append(json_obj)
     for i in range(len(initial_shape)-1):
         mat_tensor = mat_tensor.unsqueeze(0)
+        if trace:
+            unsqueeze_idx = len(json_list)
+            json_obj: dict[str, Any] = {
+                'method': 'torch_unsqueeze',
+                'input': 'json_list_' + str(mat_tensor_idx),
+                'index': 0,
+                'output': unsqueeze_idx,
+            }
+            json_list.append(json_obj)
+            mat_tensor_idx = unsqueeze_idx
     mat_tensor = mat_tensor.repeat(*(list(initial_shape[:-1]) + [1]))
-    mat = DiagonalBlock(mat_tensor, torch.tensor(list(initial_shape) + [num]), diag_index=len(initial_shape))
-    mat = SparseTensor([start_index], [mat], len(initial_shape)+1, torch.tensor(list(initial_shape) + [num+SymExpSparse.count]))
+    if trace:
+        repeat_idx = len(json_list)
+        json_obj: dict[str, Any] = {
+            'method': 'torch_repeat',
+            'input': 'json_list_' + str(mat_tensor_idx),
+            'repeats': [int(d) for d in initial_shape[:-1]] + [1],
+            'output': repeat_idx,
+        }
+        json_list.append(json_obj)
+        mat_tensor_idx = repeat_idx
+
+    mat_total_shape = torch.tensor(list(initial_shape) + [num])
+    mat = DiagonalBlock(mat_tensor, mat_total_shape, diag_index=len(initial_shape))
+    if trace:
+        diag_idx = len(json_list)
+        json_obj: dict[str, Any] = {
+            'method': 'DiagonalBlock',
+            'block': 'json_list_' + str(mat_tensor_idx),
+            'total_shape': mat_total_shape.tolist(),
+            'diag_index': len(initial_shape),
+            'output': diag_idx,
+        }
+        json_list.append(json_obj)
+        block_list_idx = len(json_list)
+        json_obj: dict[str, Any] = {
+            'method': 'initialise',
+            'name': 'blocks',
+            'value': '[]',
+            'output': block_list_idx,
+        }
+        json_list.append(json_obj)
+        json_obj: dict[str, Any] = {
+            'method': 'append_list',
+            'list': 'json_list_' + str(block_list_idx),
+            'value': 'json_list_' + str(diag_idx),
+            'output': len(json_list),
+        }
+        json_list.append(json_obj)
+        block_list_idx = len(json_list) - 1
+
+    mat_total_size = torch.tensor(list(initial_shape) + [num+SymExpSparse.count])
+    mat = SparseTensor([start_index], [mat], len(initial_shape)+1, mat_total_size)
+    if trace:
+        mat_idx = len(json_list)
+        json_obj: dict[str, Any] = {
+            'method': 'SparseTensor',
+            'start_indices': [start_index.tolist()],
+            'blocks': 'json_list_' + str(block_list_idx),
+            'dims': len(initial_shape)+1,
+            'total_size': mat_total_size.tolist(),
+            'end_indices': [mat.end_indices[0].tolist()],
+            'type': mat.type.__name__,
+            'dense_const': mat.dense_const,
+            'output': mat_idx,
+        }
+        json_list.append(json_obj)
+
     if network.no_sparsity:
-        dense_mat = mat.blocks[0].get_dense()
+        if trace:
+            dense_mat, dense_mat_idx = mat.blocks[0].get_dense(json_list=json_list, template_index=diag_idx, simulacrum=True)
+        else:
+            dense_mat = mat.blocks[0].get_dense()
         mat.blocks[0] = DenseBlock(dense_mat)
         mat.end_indices[0] = start_index + torch.tensor(dense_mat.shape)
+        if trace:
+            dense_block_idx = len(json_list)
+            json_obj: dict[str, Any] = {
+                'method': 'DenseBlock',
+                'block': 'json_list_' + str(dense_mat_idx),
+                'output': dense_block_idx,
+            }
+            json_list.append(json_obj)
+            block_list_idx = len(json_list)
+            json_obj: dict[str, Any] = {
+                'method': 'initialise',
+                'name': 'blocks',
+                'value': '[]',
+                'output': block_list_idx,
+            }
+            json_list.append(json_obj)
+            json_obj: dict[str, Any] = {
+                'method': 'append_list',
+                'list': 'json_list_' + str(block_list_idx),
+                'value': 'json_list_' + str(dense_block_idx),
+                'output': len(json_list),
+            }
+            json_list.append(json_obj)
+            block_list_idx = len(json_list) - 1
+            mat_idx = len(json_list)
+            json_obj: dict[str, Any] = {
+                'method': 'SparseTensor',
+                'start_indices': [start_index.tolist()],
+                'blocks': 'json_list_' + str(block_list_idx),
+                'dims': len(initial_shape)+1,
+                'total_size': mat_total_size.tolist(),
+                'end_indices': [mat.end_indices[0].tolist()],
+                'type': mat.type.__name__,
+                'dense_const': mat.dense_const,
+                'output': mat_idx,
+            }
+            json_list.append(json_obj)
+
+    if trace:
+        new_eps_idx = len(json_list)
+        json_obj: dict[str, Any] = {
+            'method': 'new_eps',
+            'mat': 'json_list_' + str(mat_idx),
+            'const': 'json_list_' + str(const_idx),
+            'output': new_eps_idx,
+        }
+        json_list.append(json_obj)
+
     SymExpSparse.count += num
+    if owns_capture:
+        write_jit_capture_file(
+            'jit_new_eps',
+            'new_eps',
+            layer_index,
+            counter,
+            inside_while,
+            while_number,
+            while_iteration,
+            json_list
+        )
     return SymExpSparse(network, mat, const)
 
 class SymExpSparse:

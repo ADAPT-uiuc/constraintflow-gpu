@@ -751,7 +751,7 @@ def assign_ttb_counter(expr):
         new_children.append(new_child)
     expr.update_parent_child(new_children)
     targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpNotStop, IrGetPolyexpStop, IrAddDimension, IrRemoveDimension, IrGetAbsElemSparseDKey, IrAccess,
-               IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff, IrReduce)
+               IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff, IrReduce, IrEpsilon)
     if isinstance(expr, targets):
         ttb_counter += 1
         expr.ttb_counter = ttb_counter

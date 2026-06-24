@@ -104,8 +104,8 @@ class CodeGen(irVisitor.IRVisitor):
         self.write('from constraintflow.lib.polyexp import PolyExpSparse')
         if reuse_mode.get_flag():
             self.write('from constraintflow.lib.symexp import SymExpSparse')
-            self.write('from constraintflow.lib.symexp import get_new_eps')
-            self.write('from constraintflow.gbcsr.op_helper import binary_to_identity_unary')
+            # self.write('from constraintflow.lib.symexp import get_new_eps')
+            # self.write('from constraintflow.gbcsr.op_helper import binary_to_identity_unary')
 
         else:
             self.write('from constraintflow.lib.symexp import *')
@@ -113,17 +113,14 @@ class CodeGen(irVisitor.IRVisitor):
             self.write('import operator')
             self.write('import torch.nn.functional as F')
             self.write('from constraintflow.gbcsr.sparse_tensor import SparseTensor')
-            self.write('from constraintflow.gbcsr.tensor_ops import *')
-            self.write('from constraintflow.gbcsr.sparse_block import SparseBlock, DenseBlock, DiagonalBlock, PatchesBlock, KernelBlock, RepeatBlock, ConstBlock, sp_where_block')
+            # self.write('from constraintflow.gbcsr.tensor_ops import *')
+            self.write('from constraintflow.gbcsr.sparse_block import SparseBlock, DenseBlock, DiagonalBlock, PatchesBlock, KernelBlock, RepeatBlock, ConstBlock')
         else:
             self.write('from constraintflow.gbcsr.sparse_tensor import SparseTensor')
         self.write('from constraintflow.lib.llist import Llist')
-        if reuse_mode.get_flag():
-            self.write('from constraintflow.gbcsr.sparse_block import *')
-            # Will remove this later. 
-            self.write("def convert_to_float(x):\n    if isinstance(x, torch.Tensor):\n        return x.float()\n    if isinstance(x, SparseTensor):\n        return x.float()")
-        else:
+        if not reuse_mode.get_flag():
             self.write('from constraintflow.gbcsr.tensor_ops import *')
+            
 
         for i, transformer_name in enumerate(node.tstore.keys()):
             self.write('class ' + transformer_name + ':')
@@ -656,7 +653,13 @@ class CodeGen(irVisitor.IRVisitor):
             for j in range(len(node.irMetadata[i].shape)):
                 shape += self.visit(node.irMetadata[i].shape[j]) + ","
         shape += ']'
-        return 'get_new_eps(abs_elem.network, torch.tensor(' + shape + '))' 
+        if node.inside_while:
+            return 'get_new_eps(abs_elem.network, torch.tensor(' + shape + '), layer_index = layer_index, counter = ' + str(node.ttb_counter) + ', inside_while = True, while_number = ' + str(node.while_number) + ', while_iteration=while_iteration) #' + str(node.ttb_counter)
+        return 'get_new_eps(abs_elem.network, torch.tensor(' + shape + '), layer_index = layer_index, counter = ' + str(node.ttb_counter) + ', inside_while = False, while_number = ' + str(node.while_number) + ') #' + str(node.ttb_counter)
+
+    def visitIrNewEps(self, node):
+        [matIr, constIr] = node.children
+        return 'SymExpSparse(abs_elem.network, ' + self.visit(matIr) + ', ' + self.visit(constIr) + ')'
     
     def visitIrPhi(self, node):
         s = 'phi(['
@@ -668,6 +671,8 @@ class CodeGen(irVisitor.IRVisitor):
         return s
     
     def visitIrConvertBoolToFloat(self, node):
+        if reuse_mode.get_flag():
+            return '('+self.visit(node.children[0])+').float()'
         return 'convert_to_float(' + self.visit(node.children[0]) + ')'
 
     def visitIrRepeat(self, node):
@@ -941,6 +946,8 @@ class CodeGen(irVisitor.IRVisitor):
         return self.visit(node.children[0]) + '.mat'
 
     def visitIrPolyExpNotStopFloat(self, node):
+        if reuse_mode.get_flag():
+            return '('+self.visit(node.children[0]) + '.unary(operator.not_)).float()'
         return 'convert_to_float(' + self.visit(node.children[0]) + '.unary(operator.not_))'
 
     def visitIrBlockPolyexpStop(self, node):
