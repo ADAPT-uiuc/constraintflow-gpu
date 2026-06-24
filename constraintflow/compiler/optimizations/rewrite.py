@@ -724,6 +724,7 @@ def hoist_split_targets(expr, inside_while, while_number):
         new_assignments += child_assignments
     expr.update_parent_child(new_children)
 
+    targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpNotStop, IrGetPolyexpStop, IrAddDimension, IrRemoveDimension, IrReduce)
     targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpNotStop, IrGetPolyexpStop, IrAddDimension, IrRemoveDimension, IrAccess,
                IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff)
     if isinstance(expr, targets):
@@ -750,6 +751,7 @@ def assign_ttb_counter(expr):
         new_child, _ = assign_ttb_counter(child)
         new_children.append(new_child)
     expr.update_parent_child(new_children)
+    targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpNotStop, IrGetPolyexpStop, IrAddDimension, IrRemoveDimension, IrReduce)
     targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpNotStop, IrGetPolyexpStop, IrAddDimension, IrRemoveDimension, IrGetAbsElemSparseDKey, IrAccess,
                IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff)
     if isinstance(expr, targets):

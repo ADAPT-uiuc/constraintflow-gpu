@@ -160,9 +160,6 @@ class IRVisitor:
         elif isinstance(node, IR.IrGetSubBlockCustomRange):
             return self.visitIrGetSubBlockCustomRange(node)
         
-        elif isinstance(node, IR.IrBinaryToUnary):
-            return self.visitIrBinaryToUnary(node)
-        
         elif isinstance(node, IR.IrEmptyList):
             return self.visitIrEmptyList(node)
         
@@ -171,6 +168,87 @@ class IRVisitor:
         
         elif isinstance(node, IR.IrConstBlock):
             return self.visitIrConstBlock(node)
+
+        elif isinstance(node, IR.IrDenseBlock):
+            return self.visitIrDenseBlock(node)
+
+        elif isinstance(node, IR.IrPatchesBlock):
+            return self.visitIrPatchesBlock(node)
+
+        elif isinstance(node, IR.IrKernelBlock):
+            return self.visitIrKernelBlock(node)
+
+        elif isinstance(node, IR.IrRepeatBlock):
+            return self.visitIrRepeatBlock(node)
+
+        elif isinstance(node, IR.IrTorchDiagonal):
+            return self.visitIrTorchDiagonal(node)
+
+        elif isinstance(node, IR.IrTorchPermute):
+            return self.visitIrTorchPermute(node)
+
+        elif isinstance(node, IR.IrTorchTranspose):
+            return self.visitIrTorchTranspose(node)
+
+        elif isinstance(node, IR.IrTorchMatmul):
+            return self.visitIrTorchMatmul(node)
+
+        elif isinstance(node, IR.IrTorchUnsqueeze):
+            return self.visitIrTorchUnsqueeze(node)
+
+        elif isinstance(node, IR.IrTorchSqueeze):
+            return self.visitIrTorchSqueeze(node)
+
+        elif isinstance(node, IR.IrTorchReshape):
+            return self.visitIrTorchReshape(node)
+
+        elif isinstance(node, IR.IrTorchView):
+            return self.visitIrTorchView(node)
+
+        elif isinstance(node, IR.IrTorchRepeat):
+            return self.visitIrTorchRepeat(node)
+
+        elif isinstance(node, IR.IrTorchExpand):
+            return self.visitIrTorchExpand(node)
+
+        elif isinstance(node, IR.IrTorchSum):
+            return self.visitIrTorchSum(node)
+
+        elif isinstance(node, IR.IrTorchZeros):
+            return self.visitIrTorchZeros(node)
+
+        elif isinstance(node, IR.IrTorchEye):
+            return self.visitIrTorchEye(node)
+
+        elif isinstance(node, IR.IrTorchFloat):
+            return self.visitIrTorchFloat(node)
+
+        elif isinstance(node, IR.IrTorchDiagEmbed):
+            return self.visitIrTorchDiagEmbed(node)
+
+        elif isinstance(node, IR.IrTorchStride):
+            return self.visitIrTorchStride(node)
+
+        elif isinstance(node, IR.IrTorchAsStrided):
+            return self.visitIrTorchAsStrided(node)
+
+        elif isinstance(node, IR.IrTorchSlice):
+            return self.visitIrTorchSlice(node)
+
+        elif isinstance(node, IR.IrFConv2d):
+            return self.visitIrFConv2d(node)
+
+        elif isinstance(node, IR.IrFConvTranspose2d):
+            return self.visitIrFConvTranspose2d(node)
+
+        elif isinstance(node, IR.IrFUnfold):
+            return self.visitIrFUnfold(node)
+
+        elif isinstance(node, IR.IrAssignToView):
+            return self.visitIrAssignToView(node)
+
+        elif isinstance(node, IR.IrDiagonalBlock):
+            return self.visitIrDiagonalBlock(node)
         
         elif isinstance(node, IR.IrBlockBinaryOp):
             return self.visitIrBlockBinaryOp(node)
@@ -183,6 +261,9 @@ class IRVisitor:
         
         elif isinstance(node, IR.IrSimpleUnary):
             return self.visitIrSimpleUnary(node)
+
+        elif isinstance(node, IR.IrLambda):
+            return self.visitIrLambda(node)
         
         elif isinstance(node, IR.IrBlockInnerProduct):
             return self.visitIrBlockInnerProduct(node)
@@ -291,6 +372,9 @@ class IRVisitor:
 
         elif isinstance(node, IR.IrSetBlockTotalShapeLastDim):
             return self.visitIrSetBlockTotalShapeLastDim(node)
+
+        elif isinstance(node, IR.IrAssignToBlock):
+            return self.visitIrAssignToBlock(node)
 
         elif isinstance(node, IR.IrBlockGetSubBlockCustomRange):
             return self.visitIrBlockGetSubBlockCustomRange(node)

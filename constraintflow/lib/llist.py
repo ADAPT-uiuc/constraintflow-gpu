@@ -33,8 +33,8 @@ class Llist:
         Metadata is neural network-specific information.
         Not certifier-specific information.
         """
-        if dummy_mode:
-            return self.get_metadata_dummy(elem, batch_size, json_list, layer_index, counter, inside_while, while_number, while_iteration)
+        # if dummy_mode:
+        #     return self.get_metadata_dummy(elem, batch_size)
         # ---- Is this true, and why? ----
         # Currently, get_metadata only supports consecutive intervals of
         # layers. Must coalesce successfully first.
@@ -333,26 +333,10 @@ class Llist:
                     #   which the neuron belongs to.
                     # block = DenseBlock(torch.ones(self.network[k].size, dtype=int)*k)
                     # block = DummyBlock(None, torch.tensor([self.network[k].size]))
-                    block = ConstBlock(k, torch.tensor([self.network[k].size]), dummy_flag=False)
-                    const_idx: int = len(json_list)
-                    json_obj: dict[str, Any] = {
-                        'method': 'ConstBlock',
-                        'block': k,
-                        'total_shape': [self.network[k].size],
-                        'output': const_idx
-                    }
-                    json_list.append(json_obj)
+                    block = ConstBlock(k, torch.tensor([self.network[k].size]))
                     # print(f'get_metadata_dummy `layer` block type: {type(block)}')
                     for i in range(len(self.initial_shape)):
-                        block = block.unsqueeze(0, False)
-                        json_obj: dict[str, Any] = {
-                            'method': 'block_unsqueeze',
-                            'input': 'json_list_' + str(const_idx),
-                            'index': 0,
-                            'output': len(json_list)
-                        }
-                        const_idx = len(json_list)
-                        json_list.append(json_obj)
+                        block = block.unsqueeze(0)
                     # print(f'get_metadata_dummy `layer` block type after unsequeeze: {type(block)}')
                     ret.append(block)
                     json_obj: dict[str, Any] = {
@@ -372,26 +356,10 @@ class Llist:
                     # block = DenseBlock(torch.ones(self.network[k].size, dtype=int)*k)
                     mat = (k == len(self.network)-1)
                     # block = DummyBlock(None, torch.tensor([self.network[k].size]))
-                    block = ConstBlock(int(mat), torch.tensor([self.network[k].size]), dummy_flag=False)
-                    const_idx: int = len(json_list)
-                    json_obj: dict[str, Any] = {
-                        'method': 'ConstBlock',
-                        'block': int(mat),
-                        'total_shape': [self.network[k].size],
-                        'output': const_idx
-                    }
-                    json_list.append(json_obj)
+                    block = ConstBlock(int(mat), torch.tensor([self.network[k].size]))
                     # print(f'get_metadata_dummy `last_layer` block type: {type(block)}')
                     for i in range(len(self.initial_shape)):
-                        block = block.unsqueeze(0, False)
-                        json_obj: dict[str, Any] = {
-                            'method': 'block_unsqueeze',
-                            'input': 'json_list_' + str(const_idx),
-                            'index': 0,
-                            'output': len(json_list)
-                        }
-                        const_idx = len(json_list)
-                        json_list.append(json_obj)
+                        block = block.unsqueeze(0)
                     # print(f'get_metadata_dummy `last_layer` block type after unsequeeze: {type(block)}')
                     ret.append(block)
                     json_obj: dict[str, Any] = {

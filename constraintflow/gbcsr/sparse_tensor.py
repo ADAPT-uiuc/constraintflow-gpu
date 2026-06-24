@@ -290,7 +290,7 @@ def find_connected_blocks(start_indices, end_indices):
         overlap_classes[block[0]] = block[1:]
     return overlap_classes
 
-def sp_tensor_from_overlap_classes(overlap_classes, start_indices, blocks, total_size, dims, dense_const, type, json_list=[], res_blocks_json_list_index=0):
+def sp_tensor_from_overlap_classes(overlap_classes, start_indices, end_indices, blocks, total_size, dims, dense_const, type, json_list=[], res_blocks_json_list_index=0):
     res_blocks = []
     json_obj = {
         "method": "initialise",
@@ -303,7 +303,7 @@ def sp_tensor_from_overlap_classes(overlap_classes, start_indices, blocks, total
     res_start_indices = []
     res_end_indices = []
     for i in overlap_classes.keys():
-        block = SparseTensor([start_indices[i]], [blocks[i]], dims, total_size)
+        block = SparseTensor([start_indices[i]], [blocks[i]], dims, total_size, [end_indices[i]])
         json_obj = {
             "method": "index_lookup",
             "input": "json_list_" + str(res_blocks_json_list_index),
@@ -331,7 +331,7 @@ def sp_tensor_from_overlap_classes(overlap_classes, start_indices, blocks, total
             "blocks": "json_list_" + str(len(json_list)-1),
             "dims": dims,
             "total_size": total_size.tolist(),
-            "end_indices": None,
+            "end_indices": [end_indices[i].tolist()],
             "type": None,
             "dense_const": None,
             "output": len(json_list),
@@ -339,7 +339,7 @@ def sp_tensor_from_overlap_classes(overlap_classes, start_indices, blocks, total
         json_list.append(json_obj)
         index_i = len(json_list)-1
         for j in overlap_classes[i]:
-            new_block = SparseTensor([start_indices[j]], [blocks[j]], dims, total_size)
+            new_block = SparseTensor([start_indices[j]], [blocks[j]], dims, total_size, [end_indices[j]])
             json_obj = {
                 "method": "index_lookup",
                 "input": "json_list_" + str(res_blocks_json_list_index),
@@ -367,7 +367,7 @@ def sp_tensor_from_overlap_classes(overlap_classes, start_indices, blocks, total
                 "blocks": "json_list_" + str(len(json_list)-1),
                 "dims": dims,
                 "total_size": total_size.tolist(),
-                "end_indices": None,
+                "end_indices": [end_indices[j].tolist()],
                 "type": None,
                 "dense_const": None,
                 "output": len(json_list),
@@ -376,6 +376,7 @@ def sp_tensor_from_overlap_classes(overlap_classes, start_indices, blocks, total
             index_j = len(json_list)-1
             
             block = block.binary(new_block, operator.add, json_list=json_list, lhs_index=index_i, rhs_index=index_j)
+            index_i = len(json_list) - 1
 
         res_start_indices += block.start_indices
         res_end_indices += block.end_indices
@@ -535,9 +536,12 @@ class SparseTensor:
         
         delete_indices = []
         for i in range(self.num_blocks):
-            if isinstance(self.blocks[i], ConstBlock):
-                if self.blocks[i].block == self.dense_const and (self.dense_const == 0.0 or self.dense_const == False):
-                    delete_indices.append(i)
+            if isinstance(self.blocks[i], ConstBlock) or (dummy_mode and self.blocks[i].block_type == 'C'):
+                block_val = self.blocks[i].block
+                if not isinstance(block_val, torch.Tensor) or (block_val.numel() == 1 and not block_val.is_meta):
+                    if block_val == self.dense_const and (self.dense_const == 0.0 or self.dense_const == False):
+                        delete_indices.append(i)
+
         delete_indices.reverse()
 
         sparse_tensor_init_time.update_total_time(time.perf_counter()-t1)
@@ -607,7 +611,11 @@ Blocks Types: "
         res += "Blocks Shapes: "
         for i in range(self.num_blocks):
             res += f"{i}-{self.blocks[i].total_shape}, "
-        return res[:-2] + '\n'
+        res = res[:-2] + '\n'
+        res += "Blocks Values:\n"
+        for i in range(self.num_blocks):
+            res += f"  {i}: {self.blocks[i].block}\n"
+        return res
 
     def expand_symexp_mat(self, symexp_count):
         assert(self.dense_const==0)
@@ -693,7 +701,7 @@ Blocks Types: "
             if trace:
                 return ret, result_json_index
             return ret
-        if isinstance(sparse_block, KernelBlock) or isinstance(sparse_block, PatchesBlock):
+        if (isinstance(sparse_block, KernelBlock) or isinstance(sparse_block, PatchesBlock)) or (dummy_mode and sparse_block.block_type in {'K', 'P'}):
             if len(sparse_block.total_shape)==4:
                 if (block_start_index[:-1] == start_index[:-1]).all() and (self.end_indices[block_id][:-1] == end_index[:-1]).all():
                     if trace:
@@ -706,26 +714,18 @@ Blocks Types: "
                         json_list.append(json_obj)
                         block_json_index = len(json_list) - 1
 
-                        json_obj = {
-                            "method": "block_create_similar",
-                            "input": "json_list_" + str(extracted_block_index),
-                            "arg": "json_list_" + str(block_json_index),
-                            "output": len(json_list)
-                        }
-                        json_list.append(json_obj)
-                        result_json_index = len(json_list) - 1
 
+                    res, res_index = sparse_block.create_similar(sparse_block.block, json_list = json_list, template_index = block_json_index, simulacrum = True)
+
+                    if trace: 
                         json_obj = {
                             "method": "block_set_total_shape_last_dim",
-                            "input": "json_list_" + str(result_json_index),
+                            "input": "json_list_" + str(res_index),
                             "value": int((end_index[-1] - start_index[-1]).item()),
                             "output": len(json_list)
                         }
                         json_list.append(json_obj)
                         result_json_index = len(json_list) - 1
-
-
-                    res = sparse_block.create_similar(sparse_block.block)
                     res.total_shape[-1] = end_index[-1] - start_index[-1]
                     extraction_mode = "kernel_or_patches"
                     if return_extraction_mode:
@@ -783,7 +783,7 @@ Blocks Types: "
     def exists_block(self, start_index, end_index):
         for i in range(self.num_blocks):
             if full_overlap([self.start_indices[i], self.end_indices[i]], [start_index, end_index]):
-                if isinstance(self.blocks[i], ConstBlock):
+                if isinstance(self.blocks[i], ConstBlock) or (dummy_mode and self.blocks[i].block_type == 'C'):
                     if self.blocks[i].block == self.dense_const and (self.dense_const == 0.0 or self.dense_const == False):
                         return False
                 return True
@@ -792,7 +792,7 @@ Blocks Types: "
     def exists_sub_block(self, start_index, end_index):
         for i in range(self.num_blocks):
             if contained([start_index, end_index], [self.start_indices[i], self.end_indices[i]]):
-                if isinstance(self.blocks[i], ConstBlock):
+                if isinstance(self.blocks[i], ConstBlock) or (dummy_mode and self.blocks[i].block_type == 'C'):
                     if self.blocks[i].block == self.dense_const and (self.dense_const == 0.0 or self.dense_const == False):
                         return False
                 return True
@@ -1151,14 +1151,7 @@ Blocks Types: "
             json_list.append(json_obj)
             block_json_index = len(json_list) - 1
 
-            json_obj = {
-                "method": "unary_block",
-                "input": "json_list_" + str(block_json_index),
-                "op": op_name,
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            result_block_json_index = len(json_list) - 1
+            cr, result_block_json_index = self.blocks[i].unary(op, json_list=json_list, template_index=block_json_index, simulacrum=True)
 
             json_obj = {
                 "method": "append_list",
@@ -1169,7 +1162,7 @@ Blocks Types: "
             json_list.append(json_obj)
             current_list_index = len(json_list) - 1
 
-            blocks.append(self.blocks[i].unary(op))
+            blocks.append(cr)
 
         json_obj = {
             "method": "SparseTensor",
@@ -1319,16 +1312,16 @@ Blocks Types: "
 
                 # checking if it can be turned into a unary operation 
                 if identity_element(op) == self.dense_const:
-                    block = binary_to_identity_unary(op)(block)
+                    unary_op, lambda_index = binary_to_identity_unary(op, json_list)
+                    block = unary_op(block)
+                    json_list.append({
+                        "method": "simple_unary",
+                        "input": "json_list_" + str(rhs_json_index),
+                        "op": "json_list_" + str(lambda_index),
+                        "output": len(json_list),
+                    })
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
 
-                    json_obj = {
-                        "method": "binary_to_identity_unary",
-                        "op": op.__name__,
-                        "unary_source": "json_list_" + str(rhs_json_index),
-                        "output": len(json_list)
-                    }
-                    json_list.append(json_obj)
                     block_json_index = len(json_list) - 1
                 elif annihilator_element(op) == self.dense_const and dense_const == self.dense_const:
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
@@ -1346,17 +1339,19 @@ Blocks Types: "
 
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
                     # Index Dependant
-                    block = temp_block.binary(block, op)
+                    before_binary_json_len = len(json_list)
 
-                    json_obj = {
-                        "method": "binary",
-                        "op": op.__name__,
-                        "lhs": "json_list_" + str(const_json_index),
-                        "rhs": "json_list_" + str(rhs_json_index),
-                        "output": len(json_list)
-                    }
-                    json_list.append(json_obj)
-                    block_json_index = len(json_list) - 1
+                    block, block_json_index = temp_block.binary(block, op, json_list = json_list,
+                    lhs_index = len(json_list) - 1,
+                    rhs_index = rhs_json_index)
+                    # json_obj = {
+                    #     "method": "binary",
+                    #     "op": op.__name__,
+                    #     "lhs": "json_list_" + str(const_json_index),
+                    #     "rhs": "json_list_" + str(rhs_json_index),
+                    #     "output": len(json_list)
+                    # }
+                    # json_list.append(json_obj)
 
                 binary_sparse_tensor_dom2.update_total_time(time.perf_counter()-start_time)
             elif len(indices[i][1]) == 0:
@@ -1390,9 +1385,7 @@ Blocks Types: "
 
 
                 if identity_element(op) == sp_tensor.dense_const:
-                    block_operation = {"operation":"binary_with_identity_rhs", "block_shape": block.total_shape}
                     binary_fixed_costs.update_total_time(time.perf_counter()-start)
-
                     # raise Exception("NOT IMPLEMENTED")
                     pass 
                 elif annihilator_element(op) == sp_tensor.dense_const and dense_const == sp_tensor.dense_const:
@@ -1411,17 +1404,19 @@ Blocks Types: "
 
                     binary_fixed_costs.update_total_time(time.perf_counter()-start_time)
                     # Index Dependant
-                    block = block.binary(temp_block, op)
+                    before_binary_json_len = len(json_list)
+                    block, block_json_index = block.binary(temp_block, op, json_list = json_list,
+                    lhs_index = block_json_index,
+                    rhs_index = const_json_index)
 
-                    json_obj = {
-                        "method": "binary",
-                        "op": op.__name__,
-                        "lhs": "json_list_" + str(lhs_json_index),
-                        "rhs": "json_list_" + str(const_json_index),
-                        "output": len(json_list)
-                    }
-                    json_list.append(json_obj)
-                    block_json_index = len(json_list) - 1
+                    # json_obj = {
+                    #     "method": "binary",
+                    #     "op": op.__name__,
+                    #     "lhs": "json_list_" + str(lhs_json_index),
+                    #     "rhs": "json_list_" + str(const_json_index),
+                    #     "output": len(json_list)
+                    # }
+                    # json_list.append(json_obj)
 
                 binary_sparse_tensor_dom1.update_total_time(time.perf_counter()-start_time)
             else:
@@ -1449,7 +1444,10 @@ Blocks Types: "
                 
                 binary_sparse_tensor_overlap_expenses.update_total_time(time.perf_counter()-start_time)
                 # Index Dependant
-                block = block_1.binary(block_2, op)
+                before_binary_json_len = len(json_list)
+                block, block_json_index = block_1.binary(block_2, op, json_list = json_list,
+                lhs_index = lhs_json_index,
+                rhs_index = rhs_json_index)
                 binary_sparse_tensor_overlap.update_total_time(time.perf_counter()-start_time)
 
 
@@ -1477,20 +1475,16 @@ Blocks Types: "
 
                 # json_list.append(json_obj_2)
 
-                json_obj = {
-                    "method": "binary",
-                    "op": op.__name__,
-                    "lhs": "json_list_" + str(lhs_json_index),
-                    "rhs": "json_list_" + str(rhs_json_index),
-                    "output": len(json_list)
-                }
-                json_list.append(json_obj)
-                block_json_index = len(json_list) - 1
+                # json_obj = {
+                #     "method": "binary",
+                #     "op": op.__name__,
+                #     "lhs": "json_list_" + str(lhs_json_index),
+                #     "rhs": "json_list_" + str(rhs_json_index),
+                #     "output": len(json_list)
+                # }
+                # json_list.append(json_obj)
             
             start = time.perf_counter()
-            if isinstance(block, ConstBlock) and block.block == dense_const:
-                binary_fixed_costs.update_total_time(time.perf_counter()-start)
-                continue
             res_blocks.append(block)
 
             json_obj = {
@@ -1589,13 +1583,7 @@ Blocks Types: "
                     json_list.append(json_obj)
                     block_json_index = len(json_list) - 1
 
-                    json_obj = {
-                        "method": "any",
-                        "input": "json_list_" + str(block_json_index),
-                        "output": len(json_list),
-                    }
-                    json_list.append(json_obj)
-                    any_json_index = len(json_list) - 1
+                    block_any, any_json_index = self.blocks[i].any(json_list=json_list, template_index=block_json_index, simulacrum=True)
 
                     json_obj = {
                         "method": "simple_binary",
@@ -1607,9 +1595,13 @@ Blocks Types: "
                     json_list.append(json_obj)
                     acc_json_list_index = len(json_list) - 1
 
-                if self.blocks[i].any():
-                    res = True
-                    break
+                    if block_any:
+                        res = True
+                        break
+                else:
+                    if self.blocks[i].any():
+                        res = True
+                        break
         return res
     
     def float(self):
@@ -1695,8 +1687,6 @@ Blocks Types: "
                         if full_overlap([self.start_indices[i][-1:], self.end_indices[i][-1:]], [sp_tensor.start_indices[j][-2:-1], sp_tensor.end_indices[j][-2:-1]]):
                             matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
                             # Store i, j
-                            block = self.blocks[i].matmul_equal_dims(sp_tensor.blocks[j])
-                            
                             json_obj = {
                                 "method": "extract_block",
                                 "input": "json_list_" + str(lhs_index),
@@ -1715,13 +1705,12 @@ Blocks Types: "
                             json_list.append(json_obj)
                             rhs_block_json_index = len(json_list) - 1
 
-                            json_obj = {
-                                "method": "matmul_equal_dims",
-                                "lhs": "json_list_" + str(lhs_block_json_index),
-                                "rhs": "json_list_" + str(rhs_block_json_index),
-                                "output": len(json_list)
-                            }
-                            json_list.append(json_obj)
+                            block, block_json_index = self.blocks[i].matmul_equal_dims(
+                                sp_tensor.blocks[j],
+                                json_list=json_list,
+                                lhs_index=lhs_block_json_index,
+                                rhs_index=rhs_block_json_index,
+                            )
 
 
                         elif contained([self.start_indices[i][-1:], self.end_indices[i][-1:]], [sp_tensor.start_indices[j][-2:-1], sp_tensor.end_indices[j][-2:-1]]):    
@@ -1738,9 +1727,6 @@ Blocks Types: "
                             )
                             matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
                             # Store i, and block_1 parameters
-                            block = self.blocks[i].matmul_equal_dims(block_1)
-                            
-
                             json_obj = {
                                 "method": "extract_block",
                                 "input": "json_list_" + str(lhs_index),
@@ -1750,14 +1736,12 @@ Blocks Types: "
                             json_list.append(json_obj)
                             lhs_block_json_index = len(json_list) - 1
 
-                            json_obj = {
-                                "method": "matmul_equal_dims",
-                                "lhs": "json_list_" + str(lhs_block_json_index),
-                                "rhs": "json_list_" + str(rhs_block_json_index),
-                                "output": len(json_list)
-                            }
-                            json_list.append(json_obj)
-
+                            block, block_json_index = self.blocks[i].matmul_equal_dims(
+                                block_1,
+                                json_list=json_list,
+                                lhs_index=lhs_block_json_index,
+                                rhs_index=rhs_block_json_index,
+                            )
                             
                         elif contained([sp_tensor.start_indices[j][-2:-1], sp_tensor.end_indices[j][-2:-1]], [self.start_indices[i][-1:], self.end_indices[i][-1:]]):    
                             start_index = torch.concat((self.start_indices[i][:-1], sp_tensor.start_indices[j][-2:-1]))
@@ -1773,9 +1757,6 @@ Blocks Types: "
                             )
                             matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
                             # Store block_1 parameters and j
-                            block = block_1.matmul_equal_dims(sp_tensor.blocks[j])
-                            
-
                             json_obj = {
                                 "method": "extract_block",
                                 "input": "json_list_" + str(rhs_index),
@@ -1785,20 +1766,19 @@ Blocks Types: "
                             json_list.append(json_obj)
                             rhs_block_json_index = len(json_list) - 1
 
-                            json_obj = {
-                                "method": "matmul_equal_dims",
-                                "lhs": "json_list_" + str(lhs_block_json_index),
-                                "rhs": "json_list_" + str(rhs_block_json_index),
-                                "output": len(json_list)
-                            }
-                            json_list.append(json_obj)
+                            block, block_json_index = block_1.matmul_equal_dims(
+                                sp_tensor.blocks[j],
+                                json_list=json_list,
+                                lhs_index=lhs_block_json_index,
+                                rhs_index=rhs_block_json_index,
+                            )
                         start = time.perf_counter()
                         blocks.append(block)
 
                         json_obj = {
                             "method": "append_list",
                             "list": "json_list_" + str(res_blocks_json_list_index),
-                            "value": "json_list_" + str(len(json_list)-1),
+                            "value": "json_list_" + str(block_json_index),
                             "output": len(json_list)
                         }
                         json_list.append(json_obj)
@@ -1839,8 +1819,6 @@ Blocks Types: "
                             block_1 = self.blocks[i]
                             matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)    
                             # Store i, j
-                            block = block_1.matmul_unequal_dims(sp_tensor.blocks[j])
-                            
                             json_obj = {
                                 "method": "extract_block",
                                 "input": "json_list_" + str(lhs_index),
@@ -1859,13 +1837,12 @@ Blocks Types: "
                             json_list.append(json_obj)
                             rhs_block_json_index = len(json_list) - 1
 
-                            json_obj = {
-                                "method": "matmul_unequal_dims",
-                                "lhs": "json_list_" + str(lhs_block_json_index),
-                                "rhs": "json_list_" + str(rhs_block_json_index),
-                                "output": len(json_list)
-                            }
-                            json_list.append(json_obj)
+                            block, block_json_index = block_1.matmul_unequal_dims(
+                                sp_tensor.blocks[j],
+                                json_list=json_list,
+                                lhs_index=lhs_block_json_index,
+                                rhs_index=rhs_block_json_index,
+                            )
                         elif contained([self.start_indices[i][-1:], self.end_indices[i][-1:]], [sp_tensor.start_indices[j][-1:], sp_tensor.end_indices[j][-1:]]):
                             start_index = torch.concat((sp_tensor.start_indices[j][:-1], self.start_indices[i][-1:]))
                             end_index = torch.concat((sp_tensor.end_indices[j][:-1], self.end_indices[i][-1:]))
@@ -1880,9 +1857,6 @@ Blocks Types: "
                             )
                             matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
                             # Store i, and sp_tensor parameters
-                            block = self.blocks[i].matmul_unequal_dims(block_1)
-                            
-
                             json_obj = {
                                 "method": "extract_block",
                                 "input": "json_list_" + str(lhs_index),
@@ -1892,13 +1866,12 @@ Blocks Types: "
                             json_list.append(json_obj)
                             lhs_block_json_index = len(json_list) - 1
 
-                            json_obj = {
-                                "method": "matmul_unequal_dims",
-                                "lhs": "json_list_" + str(lhs_block_json_index),
-                                "rhs": "json_list_" + str(rhs_block_json_index),
-                                "output": len(json_list)
-                            }
-                            json_list.append(json_obj)
+                            block, block_json_index = self.blocks[i].matmul_unequal_dims(
+                                block_1,
+                                json_list=json_list,
+                                lhs_index=lhs_block_json_index,
+                                rhs_index=rhs_block_json_index,
+                            )
                         elif contained([sp_tensor.start_indices[j][-1:], sp_tensor.end_indices[j][-1:]], [self.start_indices[i][-1:], self.end_indices[i][-1:]]):
                             start_index = torch.concat((self.start_indices[i][:-1], sp_tensor.start_indices[j][-1:]))
                             end_index = torch.concat((self.end_indices[i][:-1], sp_tensor.end_indices[j][-1:]))
@@ -1912,7 +1885,6 @@ Blocks Types: "
                                 lhs_index=lhs_index,
                             )
                             matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
-                            block = block_1.matmul_unequal_dims(sp_tensor.blocks[j])
                             # Store i, and block_1 parameters
                             
                             json_obj = {
@@ -1924,13 +1896,12 @@ Blocks Types: "
                             json_list.append(json_obj)
                             rhs_block_json_index = len(json_list) - 1
 
-                            json_obj = {
-                                "method": "matmul_unequal_dims",
-                                "lhs": "json_list_" + str(lhs_block_json_index),
-                                "rhs": "json_list_" + str(rhs_block_json_index),
-                                "output": len(json_list)
-                            }
-                            json_list.append(json_obj)
+                            block, block_json_index = block_1.matmul_unequal_dims(
+                                sp_tensor.blocks[j],
+                                json_list=json_list,
+                                lhs_index=lhs_block_json_index,
+                                rhs_index=rhs_block_json_index,
+                            )
                         
                         start = time.perf_counter()
                         blocks.append(block)
@@ -1938,7 +1909,7 @@ Blocks Types: "
                         json_obj = {
                             "method": "append_list",
                             "list": "json_list_" + str(res_blocks_json_list_index),
-                            "value": "json_list_" + str(len(json_list)-1),
+                            "value": "json_list_" + str(block_json_index),
                             "output": len(json_list)
                         }
                         json_list.append(json_obj)
@@ -1959,7 +1930,7 @@ Blocks Types: "
 
         start = time.perf_counter()
         overlap_classes = find_connected_blocks(start_indices, end_indices)
-        res = sp_tensor_from_overlap_classes(overlap_classes, start_indices, blocks, res_total_size, len(res_total_size), self.dense_const, self.type, json_list, res_blocks_json_list_index)
+        res = sp_tensor_from_overlap_classes(overlap_classes, start_indices, end_indices, blocks, res_total_size, len(res_total_size), self.dense_const, self.type, json_list, res_blocks_json_list_index)
         matmul_sparse_tensor_expenses.update_total_time(time.perf_counter()-start)
         
         return res
@@ -2057,9 +2028,7 @@ Blocks Types: "
             json_list.append(json_obj)
             blocks_json_list_index = len(json_list) - 1
         for i in range(self.num_blocks):
-            blocks.append(self.blocks[i].squeeze(index))
-            start_indices.append(torch.concat([self.start_indices[i][:index], self.start_indices[i][index+1:]]))
-            end_indices.append(torch.concat([self.end_indices[i][:index], self.end_indices[i][index+1:]]))
+
             if trace:
                 json_obj = {
                     "method": "extract_block",
@@ -2069,22 +2038,21 @@ Blocks Types: "
                 }
                 json_list.append(json_obj)
 
-                json_obj = {
-                    "method": "block_squeeze",
-                    "input": "json_list_" + str(len(json_list)-1),
-                    "index": index,
-                    "output": len(json_list)
-                }
-                json_list.append(json_obj)
-
+            block, block_index = self.blocks[i].squeeze(index, json_list=json_list, template_index=len(json_list)-1, simulacrum=True)
+            blocks.append(block)
+            if trace:
                 json_obj = {
                     "method": "append_list",
                     "list": "json_list_" + str(blocks_json_list_index),
-                    "value": "json_list_" + str(len(json_list)-1),
+                    "value": "json_list_" + str(block_index),
                     "output": len(json_list)
                 }
                 json_list.append(json_obj)
                 blocks_json_list_index = len(json_list) - 1
+            
+            start_indices.append(torch.concat([self.start_indices[i][:index], self.start_indices[i][index+1:]]))
+            end_indices.append(torch.concat([self.end_indices[i][:index], self.end_indices[i][index+1:]]))
+            
         if trace:
             json_obj = {
                 "method": "SparseTensor",
@@ -2132,9 +2100,6 @@ Blocks Types: "
             json_list.append(json_obj)
             blocks_json_list_index = len(json_list) - 1
         for i in range(self.num_blocks):
-            blocks.append(self.blocks[i].unsqueeze(index))
-            start_indices.append(torch.concat([self.start_indices[i][:index], torch.tensor([0]), self.start_indices[i][index:]]))
-            end_indices.append(torch.concat([self.end_indices[i][:index], torch.tensor([1]), self.end_indices[i][index:]]))
             if trace:
                 json_obj = {
                     "method": "extract_block",
@@ -2144,22 +2109,20 @@ Blocks Types: "
                 }
                 json_list.append(json_obj)
 
-                json_obj = {
-                    "method": "block_unsqueeze",
-                    "input": "json_list_" + str(len(json_list)-1),
-                    "index": index,
-                    "output": len(json_list)
-                }
-                json_list.append(json_obj)
-
+            block, block_index = self.blocks[i].unsqueeze(index, json_list=json_list, template_index=len(json_list)-1, simulacrum=True)
+            blocks.append(block)
+            start_indices.append(torch.concat([self.start_indices[i][:index], torch.tensor([0]), self.start_indices[i][index:]]))
+            end_indices.append(torch.concat([self.end_indices[i][:index], torch.tensor([1]), self.end_indices[i][index:]]))
+            if trace:
                 json_obj = {
                     "method": "append_list",
                     "list": "json_list_" + str(blocks_json_list_index),
-                    "value": "json_list_" + str(len(json_list)-1),
+                    "value": "json_list_" + str(block_index),
                     "output": len(json_list)
                 }
                 json_list.append(json_obj)
                 blocks_json_list_index = len(json_list) - 1
+
         if trace:
             json_obj = {
                 "method": "SparseTensor",
@@ -2217,20 +2180,12 @@ Blocks Types: "
             }
             json_list.append(json_obj)
 
-            json_obj = {
-                "method": "repeat",
-                "input": "json_list_" + str(len(json_list)-1),
-                "repeat_dims": repeat_dims.tolist(),
-                "output": len(json_list),
-                'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}',
-                'debug_caller': f'{inspect.stack()[1].filename}:{inspect.stack()[1].function}',
-            }
-            json_list.append(json_obj)
-            blocks.append(self.blocks[i].repeat(repeat_dims))
+            block, block_index = self.blocks[i].repeat(repeat_dims, json_list=json_list, template_index=len(json_list)-1, simulacrum=True)
+            blocks.append(block)
             json_obj = {
                 "method": "append_list",
                 "list": "json_list_" + str(blocks_json_list_index),
-                "value": "json_list_" + str(len(json_list)-1),
+                "value": "json_list_" + str(block_index),
                 "output": len(json_list)
             }
             json_list.append(json_obj)
@@ -2262,7 +2217,7 @@ Blocks Types: "
         blocks_json_list_index = len(json_list) - 1
         clamp_sparse_tensor_expense.update_total_time(time.perf_counter()-start_time)
         for i in range(self.num_blocks):
-            cr = self.blocks[i].clamp(const, min_true)
+            
             json_obj = {
                 "method": "extract_block",
                 "input": "json_list_" + str(lhs_index),
@@ -2270,20 +2225,14 @@ Blocks Types: "
                 "output": len(json_list)
             }
             json_list.append(json_obj)
+            block_json_index = len(json_list) - 1
 
-            json_obj = {
-                "method": "block_clamp",
-                "input": "json_list_" + str(len(json_list)-1),
-                "const": const,
-                "min_true": min_true,
-                "output": len(json_list)
-            }
-            json_list.append(json_obj)
+            cr, cr_index = self.blocks[i].clamp(const, min_true, json_list=json_list, template_index=block_json_index, simulacrum=True)
 
             json_obj = {
                 "method": "append_list",
                 "list": "json_list_" + str(blocks_json_list_index),
-                "value": "json_list_" + str(len(json_list)-1),
+                "value": "json_list_" + str(cr_index),
                 "output": len(json_list)
             }
             json_list.append(json_obj)
@@ -2307,19 +2256,55 @@ Blocks Types: "
         return SparseTensor(self.start_indices, blocks, self.dims, self.total_size, self.end_indices, self.type, self.dense_const)
 
             
-    def sum(self, dim):
+    def sum(self, dim, json_list=None, lhs_index=-1, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None):
+        start_time = time.perf_counter()
+        owns_capture = json_list is None and dummy_mode
+        if owns_capture:
+            json_list = [{"method": "noop", "input": "lhs", "output": 0}]
+            lhs_index = 0
+        trace = json_list is not None
+        if not trace:
+            json_list = []
+        total_size = torch.concat([self.total_size[:dim], self.total_size[dim+1:]])
         start_indices = []
         end_indices = []
         blocks = []
-        total_size = torch.concat([self.total_size[:dim], self.total_size[dim+1:]])
+        if trace:
+            json_list.append({
+                "method": "initialise",
+                "name": "blocks",
+                "value": "[]",
+                "output": len(json_list),
+            })
+            blocks_json_list_index = len(json_list) - 1
+        else:
+            blocks_json_list_index = 0
         for i in range(self.num_blocks):
             start_indices.append(torch.concat([self.start_indices[i][:dim], self.start_indices[i][dim+1:]]))
             end_indices.append(torch.concat([self.end_indices[i][:dim], self.end_indices[i][dim+1:]]))
-            blocks.append(self.blocks[i].sum(dim))
-
-        
+            if trace:
+                json_list.append({
+                    "method": "extract_block",
+                    "input": "json_list_" + str(lhs_index),
+                    "index": i,
+                    "output": len(json_list),
+                })
+            block, block_index = self.blocks[i].sum(dim, json_list=json_list, template_index=len(json_list)-1, simulacrum=True)
+            blocks.append(block)
+            if trace:
+                json_list.append({
+                    "method": "append_list",
+                    "list": "json_list_" + str(blocks_json_list_index),
+                    "value": "json_list_" + str(block_index),
+                    "output": len(json_list),
+                })
+                blocks_json_list_index = len(json_list) - 1
         overlap_classes = find_connected_blocks(start_indices, end_indices)
-        res = sp_tensor_from_overlap_classes(overlap_classes, start_indices, blocks, total_size, self.dims-1, self.dense_const, self.type)
+        res = sp_tensor_from_overlap_classes(overlap_classes, start_indices, end_indices, blocks, total_size, self.dims-1, self.dense_const, self.type,
+                                             json_list=json_list, res_blocks_json_list_index=blocks_json_list_index)
+        if owns_capture:
+            write_jit_capture_file("jit_sum", "sum", layer_index, counter, inside_while, while_number, while_iteration, json_list)
+        sum_time.update_total_time(time.perf_counter() - start_time)
         return res
     
 def sparse_max(x:SparseTensor, y:SparseTensor, json_list=[], x_json_index=-1, y_json_index=-1):

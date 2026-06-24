@@ -52,7 +52,6 @@ def _run_cli(program_file: str, network: str, dataset: str, extra_args: list[str
         dataset,
         *extra_args,
     ]
-
     if compile:
         cmd.append("--compile")
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
@@ -108,46 +107,21 @@ def test(
                     raise e
                 baseline_lbs.append(baseline_lb)
                 baseline_ubs.append(baseline_ub)
-            try:
-                simulacrum_lb, simulacrum_ub = _run_cli(program_file, network, dataset, ["--simulacrum", "--eps", str(eps), "--batch-size", str(batch_size)])
-            except AssertionError as e:
-                typer.echo(f"Program File: {program_file}")
-                typer.echo(f"Simulacrum run failed")
-                typer.echo(f"AssertionError: {e}")
-                typer.echo(f"Program file: {program_file}")
-                typer.echo(f"Network: {network}")
-                typer.echo(f"Dataset: {dataset}")
-                typer.echo(f"Batch size: {batch_size}")
-                typer.echo(f"Eps: {eps}")
-                raise e
+            
             reuse_lbs, reuse_ubs = [], []
-            for i, eps in enumerate(epss):
-                if i==0:
-                    try:
-                        reuse_lb, reuse_ub = _run_cli(program_file, network, dataset, ["--reuse", "--eps", str(eps), "--batch-size", str(batch_size)])
-                    except AssertionError as e:
-                        typer.echo(f"Program File: {program_file}")
-                        typer.echo(f"Reuse run failed")
-                        typer.echo(f"AssertionError: {e}")
-                        typer.echo(f"Program file: {program_file}")
-                        typer.echo(f"Network: {network}")
-                        typer.echo(f"Dataset: {dataset}")
-                        typer.echo(f"Batch size: {batch_size}")
-                        typer.echo(f"Eps: {eps}")
-                        raise e
-                else:
-                    try:
-                        reuse_lb, reuse_ub = _run_cli(program_file, network, dataset, ["--eps", str(eps), "--batch-size", str(batch_size)], compile=False)
-                    except AssertionError as e:
-                        typer.echo(f"Program File: {program_file}")
-                        typer.echo(f"Reuse run failed")
-                        typer.echo(f"AssertionError: {e}")
-                        typer.echo(f"Program file: {program_file}")
-                        typer.echo(f"Network: {network}")
-                        typer.echo(f"Dataset: {dataset}")
-                        typer.echo(f"Batch size: {batch_size}")
-                        typer.echo(f"Eps: {eps}")
-                        raise e
+            for eps in epss:
+                try:
+                    reuse_lb, reuse_ub = _run_cli(program_file, network, dataset, ["--dense", "--eps", str(eps), "--batch-size", str(batch_size)], compile=False)
+                except AssertionError as e:
+                    typer.echo(f"Program File: {program_file}")
+                    typer.echo(f"Dense run failed")
+                    typer.echo(f"AssertionError: {e}")
+                    typer.echo(f"Program file: {program_file}")
+                    typer.echo(f"Network: {network}")
+                    typer.echo(f"Dataset: {dataset}")
+                    typer.echo(f"Batch size: {batch_size}")
+                    typer.echo(f"Eps: {eps}")
+                    raise e
                 reuse_lbs.append(reuse_lb)
                 reuse_ubs.append(reuse_ub)
 
