@@ -15,6 +15,8 @@ from constraintflow.compiler.optimizations import copyPropagation
 from constraintflow.compiler.optimizations import dce
 from constraintflow.compiler.optimizations import cse
 from constraintflow.compiler.optimizations import rewrite
+from constraintflow.compiler.optimizations import subexp_inlining
+from constraintflow.compiler.optimizations import constant_folding
 from constraintflow.lib.globals import *
 
 
@@ -68,6 +70,10 @@ def compile(inputfile, output_path):
 
     if reuse_mode.get_flag():
         tensor_to_block.tensor_to_block(ir)
+        # copyPropagation.copy_proagate(ir)
+        # subexp_inlining.inline_subexp(ir)
+        # constant_folding.constant_fold(ir)
+        # copyPropagation.copy_proagate(ir)
 
     codeGen.CodeGen(output_path).visit(ir)
 

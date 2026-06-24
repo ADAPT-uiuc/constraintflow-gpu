@@ -4,7 +4,7 @@ from constraintflow.compiler.optimizations import uses
 
 def get_vars_expr(expr):
     vars = set()
-    if isinstance(expr, int):
+    if isinstance(expr, (int, float, list)):
         pass
     elif isinstance(expr, IrVar):
         vars.add(expr)
