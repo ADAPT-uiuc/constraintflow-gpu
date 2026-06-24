@@ -1,5 +1,7 @@
 import builtins
-
+from pprint import pprint
+import inspect
+from typing import Any
 import torch
 import math
 import copy
@@ -257,7 +259,7 @@ def intersection_block(block_1, block_2):
     block_2_end = block_2[1]
     res_start = torch.max(block_1_start, block_2_start)
     res_end = torch.min(block_1_end, block_2_end)
-
+    # print(res_start, res_end)
     
     return res_start, res_end
 
@@ -641,6 +643,7 @@ Blocks Types: "
 
     # NOTE: Use at your own risk. It does not create a copy.
     def get_sub_block_custom_range(self, start_index, end_index, block_id, tensor=True, return_extraction_mode=False, json_list=None, lhs_index=-1):
+        assert json_list != None
         start_time = time.perf_counter()
         trace = json_list is not None
         if not trace:
@@ -808,33 +811,111 @@ Blocks Types: "
         #     raise Exception('No Block Found')
         return res, res_start_indices, res_end_indices
     
-    def get_sparse_custom_range(self, start_index, end_index):
+    def get_sparse_custom_range(self, start_index, end_index, json_list=None, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None, lhs_index=-1):
+        owns_capture = json_list is None and dummy_mode
+        if json_list is None:
+            json_list = []
+        if dummy_mode and not owns_capture:
+            assert lhs_index != -1
+
         start_time = time.perf_counter()
         new_index = [start_index, end_index]
         blocks = []
         res_start_indices = []
         res_end_indices = []
+        block_list_in_json_idx: int = len(json_list)
+        json_obj: dict[str, Any] = {
+            'method': 'initialise',
+            'name': 'ret_blocks',
+            'value': '[]',
+            'output': block_list_in_json_idx
+        }
+        json_list.append(json_obj)
         for i in range(self.num_blocks):
             if contained([self.start_indices[i], self.end_indices[i]], new_index):
                 intersection_start_indices, intersection_end_indices = intersection_block([self.start_indices[i], self.end_indices[i]], new_index)
                 res_start_indices.append(intersection_start_indices)
                 res_end_indices.append(intersection_end_indices)
                 blocks.append(self.blocks[i])
+                block_i_idx = len(json_list)
+                json_obj: dict[str, Any] = {
+                    'method': 'extract_block',
+                    'input': 'json_list_' + str(lhs_index),
+                    'index': i,
+                    'output': block_i_idx
+                }
+                json_list.append(json_obj)
+                json_obj: dict[str, Any] = {
+                    'method': 'append_list',
+                    'list': 'json_list_' + str(block_list_in_json_idx),
+                    'value': 'json_list_' + str(block_i_idx),
+                    'output': len(json_list)
+                }
+                block_list_in_json_idx = len(json_list)
+                json_list.append(json_obj)
             elif block_overlap([self.start_indices[i], self.end_indices[i]], new_index):
+                raise NotImplementedError
                 intersection_start_indices, intersection_end_indices = intersection_block([self.start_indices[i], self.end_indices[i]], new_index)
                 res_start_indices.append(intersection_start_indices)
                 res_end_indices.append(intersection_end_indices)
                 src_start_indices = intersection_start_indices - self.start_indices[i]
                 src_end_indices = intersection_end_indices - self.start_indices[i]
                 src_block = self.blocks[i].get_dense()[tuple(get_slice(src_start_indices, src_end_indices))]
+                block_i_idx = len(json_list)
+                json_obj: dict[str, Any] = {
+                    'method': 'extract_block',
+                    'input': 'json_list_' + str(lhs_index),
+                    'index': i,
+                    'output': block_i_idx
+                }
+                json_list.append(json_obj)
+                dense_idx = len(json_list)
+                json_obj: dict[str, Any] = {
+                    'method': 'block_get_dense',
+                    'input': 'json_list_' + str(block_i_idx),
+                    'output': dense_idx
+                }
+                json_list.append(json_obj)
+                src_block_idx = len(json_list)
                 blocks.append(DenseBlock(src_block))
         end_time = time.perf_counter()
         get_sparse_range_time.update_total_time(end_time-start_time)
-        return SparseTensor(res_start_indices, blocks, self.dims, self.total_size, res_end_indices, type=self.type, dense_const=self.dense_const)
+        ret_st = SparseTensor(res_start_indices, blocks, self.dims, self.total_size, res_end_indices, type=self.type, dense_const=self.dense_const)
+        json_obj: dict[str, Any] = {
+            'method': 'SparseTensor',
+            'start_indices': [tensor_to_list(x) for x in res_start_indices],
+            'blocks': 'json_list_' + str(block_list_in_json_idx),
+            'dims': self.dims,
+            'total_size': self.total_size.tolist(),
+            'end_indices': [tensor_to_list(x) for x in res_end_indices],
+            'type': self.type.__name__,
+            'dense_const': self.dense_const,
+            'output': len(json_list),
+            'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
+        }
+        json_list.append(json_obj)
+        if owns_capture:
+            write_jit_capture_file(
+                'jit_SparseTensor_get_sparse_custom_range',
+                'SparseTensor_get_sparse_custom_range',
+                layer_index,
+                counter,
+                inside_while,
+                while_number,
+                while_iteration,
+                json_list
+            )
+        return ret_st if (not dummy_mode) or owns_capture else (ret_st, len(json_list)-1)
     
 
 
-    def reduce_size(self, start_index, end_index, total_size):
+    def reduce_size(self, start_index, end_index, total_size, json_list=None, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None, lhs_index=-1):
+        owns_capture = json_list is None and dummy_mode
+        if json_list is None:
+            json_list = []
+        if dummy_mode:
+            assert lhs_index != -1
+            assert not owns_capture
         start_time = time.perf_counter()
         start_indices = []
         end_indices = []
@@ -844,7 +925,26 @@ Blocks Types: "
             end_indices.append((self.end_indices[i]-start_index))
         end_time = time.perf_counter()
         reduce_size_time.update_total_time(end_time-start_time)
-        return SparseTensor(start_indices, self.blocks, self.dims, total_size, end_indices, type=self.type, dense_const=self.dense_const) 
+        ret_st = SparseTensor(start_indices, self.blocks, self.dims, total_size, end_indices, type=self.type, dense_const=self.dense_const)
+        json_obj: dict[str, Any] = {
+            'method': 'get_sparse_tensor_blocks',
+            'input': 'json_list_' + str(lhs_index),
+            'output': len(json_list)
+        }
+        json_list.append(json_obj)
+        json_obj: dict[str, Any] = {
+            'method': 'SparseTensor',
+            'start_indices': [tensor_to_list(x) for x in start_indices],
+            'blocks': 'json_list_' + str(len(json_list) - 1),
+            'dims': self.dims,
+            'total_size': total_size.tolist(),
+            'end_indices': [tensor_to_list(x) for x in end_indices],
+            'type': self.type.__name__,
+            'dense_const': self.dense_const,
+            'output': len(json_list)
+        }
+        json_list.append(json_obj)
+        return ret_st if not dummy_mode else (ret_st, len(json_list) - 1)
 
     def increase_size(self, start_index, new_total_size):
         assert((self.total_size + start_index <= new_total_size).all())
@@ -2014,6 +2114,8 @@ Blocks Types: "
         trace = json_list is not None
         if not trace:
             json_list = []
+        if trace and not owns_capture:
+            assert lhs_index != -1
         dims = self.dims+1
         total_size = torch.concat([self.total_size[:index], torch.tensor([1]), self.total_size[index:]])
         total_size = total_size.type(torch.int64)
@@ -2079,7 +2181,18 @@ Blocks Types: "
         return result
         
     
-    def repeat(self, repeat_dims, json_list=[], lhs_index=-1):
+    def repeat(self, repeat_dims, json_list=None, lhs_index=-1):
+        # if json_list is not None:
+        # print('repeat:')
+        # caller = inspect.stack()[1]
+        # fun = caller.function
+        # file = caller.filename
+        # line = caller.lineno
+        # print(f'repeat called as non-owner by {file}:{fun}:{line}')
+        # print('----------------------------------')
+        # pprint(inspect.stack())
+        if json_list is None:
+            json_list = []
         total_size = self.total_size * repeat_dims
         start_indices = []
         end_indices = []
@@ -2108,7 +2221,9 @@ Blocks Types: "
                 "method": "repeat",
                 "input": "json_list_" + str(len(json_list)-1),
                 "repeat_dims": repeat_dims.tolist(),
-                "output": len(json_list)
+                "output": len(json_list),
+                'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}',
+                'debug_caller': f'{inspect.stack()[1].filename}:{inspect.stack()[1].function}',
             }
             json_list.append(json_obj)
             blocks.append(self.blocks[i].repeat(repeat_dims))

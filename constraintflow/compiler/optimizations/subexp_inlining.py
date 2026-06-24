@@ -83,6 +83,8 @@ def get_vars_expr_occurrences(expr) -> list[IrVar]:
     if isinstance(expr, IrVar):
         return [expr]
     vars: list[IrVar] = []
+    if expr is None:
+        return vars
     for child in expr.children:
         vars.extend(get_vars_expr_occurrences(child))
     return vars
