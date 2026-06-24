@@ -100,15 +100,22 @@ class CodeGen(irVisitor.IRVisitor):
         self.write('import json')
         self.write('import os')
         self.write('import torch')
+        self.write('import operator')
         self.write('from constraintflow.lib.polyexp import PolyExpSparse')
-        self.write('from constraintflow.lib.symexp import *')
+        if reuse_mode.get_flag():
+            self.write('from constraintflow.lib.symexp import SymExpSparse')
+            self.write('from constraintflow.lib.symexp import get_new_eps')
+            self.write('from constraintflow.gbcsr.op_helper import binary_to_identity_unary')
+
+        else:
+            self.write('from constraintflow.lib.symexp import *')
         if reuse_mode.get_flag():
             self.write('from constraintflow.gbcsr.sparse_tensor import SparseTensor')
         else:
             self.write('from constraintflow.gbcsr.sparse_tensor import SparseTensor')
         self.write('from constraintflow.lib.llist import Llist')
         if reuse_mode.get_flag():
-            self.write('from constraintflow.gbcsr.sparse_block import DenseBlock')
+            self.write('from constraintflow.gbcsr.sparse_block import *')
             # Will remove this later. 
             self.write("def convert_to_float(x):\n    if isinstance(x, torch.Tensor):\n        return x.float()\n    if isinstance(x, SparseTensor):\n        return x.float()")
         else:
@@ -855,13 +862,15 @@ class CodeGen(irVisitor.IRVisitor):
 
     def visitIrExtractPolyCoeff(self, node):
         [inputIr] = node.children
+        while_iteration = 'while_iteration' if node.inside_while else 'None'
         return self.visit(inputIr) + '.get_mat(abs_elem' \
-            + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=' + str(node.inside_while) + ', while_number=' + str(node.while_number) + ', while_iteration=None)'
+            + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=' + str(node.inside_while) + ', while_number=' + str(node.while_number) + ', while_iteration=' + while_iteration + ')'
     
     def visitIrExtractSymCoeff(self, node):
         [inputIr] = node.children
+        while_iteration = 'while_iteration' if node.inside_while else 'None'
         return self.visit(inputIr) + '.get_mat(SymExpSparse.count' \
-            + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=' + str(node.inside_while) + ', while_number=' + str(node.while_number) + ', while_iteration=None)'
+            + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=' + str(node.inside_while) + ', while_number=' + str(node.while_number) + ', while_iteration=' + while_iteration + ')'
 
     def visitIrExtractPolyConst(self, node, ):
         [inputIr] = node.children
@@ -900,12 +909,13 @@ class CodeGen(irVisitor.IRVisitor):
 
     def visitIrAccess(self, node):
         [lhsIr] = node.children
+        while_iteration = 'while_iteration' if node.inside_while else 'None'
         if not node.isMetadata:
             return 'abs_elem.get_elem(\'' + node.elem + '\', ' + self.visit(lhsIr) \
-                + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=' + str(node.inside_while) + ', while_number=' + str(node.while_number) + ', while_iteration=None)'
+                + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=' + str(node.inside_while) + ', while_number=' + str(node.while_number) + ', while_iteration=' + while_iteration + ')'
         else:
             return self.visit(lhsIr) + '.get_metadata(\'' + node.elem + '\', batch_size' \
-                + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=' + str(node.inside_while) + ', while_number=' + str(node.while_number) + ', while_iteration=None)'
+                + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=' + str(node.inside_while) + ', while_number=' + str(node.while_number) + ', while_iteration=' + while_iteration + ')'
         
     def visitIrReduce(self, node):
         [inputIr] = node.children
@@ -914,11 +924,12 @@ class CodeGen(irVisitor.IRVisitor):
 
     def visitIrMapCoeff(self, node):
         [inputIr] = node.children
+        while_iteration = 'while_iteration' if node.inside_while else 'None'
         if inputIr.irMetadata[-1].type == 'PolyExp':    
             return self.visit(inputIr) + '.get_mat(abs_elem' \
-                + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=' + str(node.inside_while) + ', while_number=' + str(node.while_number) + ', while_iteration=None)'
+                + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=' + str(node.inside_while) + ', while_number=' + str(node.while_number) + ', while_iteration=' + while_iteration + ')'
         return self.visit(inputIr) + '.get_mat(SymExpSparse.count' \
-                + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=' + str(node.inside_while) + ', while_number=' + str(node.while_number) + ', while_iteration=None)'
+                + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=' + str(node.inside_while) + ', while_number=' + str(node.while_number) + ', while_iteration=' + while_iteration + ')'
 
     def visitIrMapNeuron(self, node):
         if node.dims:

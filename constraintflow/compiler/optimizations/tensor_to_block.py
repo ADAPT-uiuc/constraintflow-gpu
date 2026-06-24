@@ -726,6 +726,12 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             else:
                 raise Exception("NOT IMPLEMENTED")
             output = IrGetSymExpSparseMat(input_ir)
+        elif json_obj["method"] == "expand_symexp_mat":
+            if "json_list_" in json_obj["input"]:
+                input_ir = output_vars[int(json_obj["input"].split("_")[-1])]
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrExpandSymExp(input_ir)
         elif json_obj["method"] == "get_kth_layer_bias":
             output = IrGetKthLayerNetworkParam(json_obj["input"], "bias")
         elif json_obj["method"] == "get_kth_layer_weight":
