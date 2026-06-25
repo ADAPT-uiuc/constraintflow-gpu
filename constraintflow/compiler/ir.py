@@ -436,11 +436,15 @@ class IrVar(IrExpression):
         return self.hash_str
     
 class IrSparseTensor(IrExpression):
-    def __init__(self, start_indices, blocksIr, dims, total_size, end_indices=None, type=None, dense_const=None):
+    def __init__(self, start_indices, blocksIr, dims, total_size, end_indices=None, type=None, dense_const=None, resolved=False):
         super().__init__()
         self.start_indices = start_indices
         self.dims = dims
         self.total_size = total_size
+        # resolved => the trace captured the post-construction fields
+        # (end_indices, post-check_dense dense_const, int total_size), so codegen
+        # can emit the branch-free SparseTensor reuse path.
+        self.resolved = resolved
         if end_indices is not None:
             self.end_indices = end_indices
         if type is not None:
