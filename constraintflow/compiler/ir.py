@@ -1833,6 +1833,26 @@ class IrDel(IrStatement):
         super().__init__()
         self.var_names = var_names
 
+# Function-per-file wrapping of tensor_to_block expansions.
+# Each captured JSON file (a straight-line block of ttb_var assignments) is
+# emitted as a module-level function instead of being inlined into flow(), so
+# its intermediates are frame-locals that get freed on return (lower peak memory
+# and a much smaller flow() function).
+class IrTtbFuncDef(IrStatement):
+    def __init__(self, func_name, body, return_var):
+        super().__init__()
+        self.func_name = func_name      # str, e.g. 'ttb_func_0'
+        self.body = body                # list[IrStatement]: the ttb_var assignments
+        self.return_var = return_var    # IrVar: output_vars[-1] of the expansion
+        self.params = None              # list[str]: filled in by codeGen (free-var analysis)
+
+# The call that replaces an inlined expansion at its original site.
+class IrTtbCall(IrExpression):
+    def __init__(self, funcdef, irMetadata=None):
+        super().__init__()
+        self.funcdef = funcdef          # IrTtbFuncDef this call dispatches to
+        self.irMetadata = irMetadata if irMetadata is not None else []
+
 class IrBlock(IrAst):
     def __init__(self, ir_list = [], jump = None, inner_jump = None, loopBack = None):
         super().__init__()

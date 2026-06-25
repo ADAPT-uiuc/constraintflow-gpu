@@ -1,11 +1,27 @@
+import ast
+import builtins
+import io
 import json
 import operator
 import os
 
-from . import irVisitor 
+from . import irVisitor
 import copy
-from .ir import * 
+from .ir import *
 from constraintflow.lib.globals import reuse_mode
+
+
+# Names available in the generated transformers.py module scope. Any other name
+# loaded inside a wrapped ttb function (and not assigned there) is a free
+# variable that must be threaded in as a parameter. Over-including a global here
+# is harmless; under-including one only risks an extra (still-resolvable) param.
+TTB_MODULE_GLOBALS = {
+    'torch', 'operator', 'math', 'F', 'gc', 'json', 'os',
+    'PolyExpSparse', 'SymExpSparse', 'SparseTensor', 'SparseBlock', 'DenseBlock',
+    'DiagonalBlock', 'PatchesBlock', 'KernelBlock', 'RepeatBlock', 'ConstBlock',
+    'Llist', 'sp_where_block', 'get_new_eps', 'binary_to_identity_unary', 'dummy_mode',
+}
+TTB_KNOWN_GLOBALS = set(dir(builtins)) | TTB_MODULE_GLOBALS
 
 class CodeGen(irVisitor.IRVisitor):
     def __init__(self,folder):
@@ -120,7 +136,11 @@ class CodeGen(irVisitor.IRVisitor):
         self.write('from constraintflow.lib.llist import Llist')
         if not reuse_mode.get_flag():
             self.write('from constraintflow.gbcsr.tensor_ops import *')
-            
+
+        # Module-level functions for the per-file ttb expansions (memory: their
+        # locals are freed on return instead of living in the giant flow frame).
+        self.write('\n')
+        self.emit_ttb_funcdefs(node)
 
         for i, transformer_name in enumerate(node.tstore.keys()):
             self.write('class ' + transformer_name + ':')
@@ -248,12 +268,71 @@ class CodeGen(irVisitor.IRVisitor):
         # self.counter += 1
 
     # For the del statements
-    # Currently not used. 
+    # Currently not used.
     def visitIrDel(self, node):
         # self.write('del ' + ', '.join(node.var_names))
         # self.write('gc.collect()')
         # self.write('torch.cuda.empty_cache()')
         pass
+
+    # ---- Function-per-file ttb expansions -------------------------------
+
+    def _render_ttb_body(self, funcdef):
+        """Render a wrapped expansion's body + return to a source string.
+
+        Captures the normal codeGen output into a buffer so we can both analyse
+        it for free variables and emit it verbatim. Lines are indented one level
+        (the function body)."""
+        saved_file, saved_indent = self.file, self.indent
+        self.file = io.StringIO()
+        self.indent = 1
+        try:
+            for stmt in funcdef.body:
+                self.visit(stmt)
+            self.write('return ' + str(self.visit(funcdef.return_var)))
+            return self.file.getvalue()
+        finally:
+            self.file, self.indent = saved_file, saved_indent
+
+    def _ttb_free_vars(self, body_src):
+        """Free identifiers in a function body: loaded but neither assigned
+        locally nor available as a module global/builtin. These become params."""
+        tree = ast.parse('def _ttb_f():\n' + body_src)
+        assigned, loaded = set(), set()
+        for n in ast.walk(tree.body[0]):
+            if isinstance(n, ast.Name):
+                if isinstance(n.ctx, ast.Store):
+                    assigned.add(n.id)
+                elif isinstance(n.ctx, ast.Load):
+                    loaded.add(n.id)
+            elif isinstance(n, ast.arg):
+                # lambda/comprehension-bound names (e.g. `lambda x: ...`) are
+                # local, not free.
+                assigned.add(n.arg)
+        return sorted(loaded - assigned - TTB_KNOWN_GLOBALS)
+
+    def emit_ttb_funcdefs(self, node):
+        """Emit every wrapped expansion as a module-level function. Must run
+        before the transformer classes so each IrTtbCall can read funcdef.params."""
+        funcdefs = getattr(node, 'ttb_funcdefs', None)
+        if not funcdefs:
+            return
+        for funcdef in funcdefs:
+            body_src = self._render_ttb_body(funcdef)
+            funcdef.params = self._ttb_free_vars(body_src)
+            self.indent = 0
+            self.write('def ' + funcdef.func_name + '(' + ', '.join(funcdef.params) + '):')
+            self.write_expr(body_src, flag=False)
+            self.write('', True)
+
+    def visitIrTtbFuncDef(self, node):
+        # Emitted at module scope via emit_ttb_funcdefs, not in the normal walk.
+        pass
+
+    def visitIrTtbCall(self, node):
+        funcdef = node.funcdef
+        params = funcdef.params if funcdef.params is not None else []
+        return funcdef.func_name + '(' + ', '.join(params) + ')'
 
     def visitIrBreak(self, node):
         self.write('break')
