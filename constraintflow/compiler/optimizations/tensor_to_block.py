@@ -9,9 +9,37 @@ from constraintflow.gbcsr.sparse_tensor import get_operator_func
 
 counter = -1
 def get_var():
-    global counter 
+    global counter
     counter += 1
     return 'ttb_var_' + str(counter)
+
+
+# Registry of per-file functions produced while wrapping ttb expansions.
+# Populated by wrap_expansion, consumed by codeGen (emitted at module scope).
+ttb_funcdefs = []
+ttb_func_counter = -1
+
+
+def wrap_expansion(result_expr, new_assignments):
+    """Turn an inlined ttb expansion into a call to a freshly-minted function.
+
+    ``new_assignments`` is the straight-line block of ttb_var assignments for one
+    captured JSON file; ``result_expr`` is its final value (output_vars[-1]).
+    Instead of inlining the block (which keeps every intermediate alive in the
+    giant flow() frame), we wrap it in a module-level function whose locals are
+    freed on return, and replace the site with a call. The def is registered for
+    module-scope emission by codeGen. If there is nothing to wrap (no expansion),
+    returns ``result_expr`` unchanged.
+    """
+    if not new_assignments:
+        return result_expr
+    global ttb_func_counter
+    ttb_func_counter += 1
+    func_name = 'ttb_func_' + str(ttb_func_counter)
+    funcdef = IrTtbFuncDef(func_name, new_assignments, result_expr)
+    ttb_funcdefs.append(funcdef)
+    metadata = getattr(result_expr, 'irMetadata', None)
+    return IrTtbCall(funcdef, copy_metadata(metadata) if metadata else None)
 
 def get_var_while(name, while_iteration):
     return name + '_iter_' + str(while_iteration)
@@ -1395,37 +1423,16 @@ def tensor_to_block_block(block, layer_index, ir_list = None, while_iteration=No
         l = ir_list[index]
         if isinstance(l, IrAssignment):
             new_expr, new_assignments = convert_to_ir_ttb(l.children[1], layer_index, while_iteration)
-            new_children = [l.children[0], new_expr]
-            l.update_parent_child(new_children)
-            for j in range(len(new_assignments)):
-                ir_list.insert(index, new_assignments[j])
-                index += 1
-            # Create the IR node for the del statements
-            del_stmt = make_ttb_del_statement(new_assignments)
-            if del_stmt is not None:
-                ir_list.insert(index + 1, del_stmt)
-                index += 1
+            # Wrap the expansion in a module-level function (memory: its locals
+            # are freed on return) and replace the site with a call.
+            call_expr = wrap_expansion(new_expr, new_assignments)
+            l.update_parent_child([l.children[0], call_expr])
         elif isinstance(l, IrTransRetBasic):
             new_children = []
-            new_assignments = []
             for child in l.children:
                 new_expr, new_assignments_inner = convert_to_ir_ttb(child, layer_index, while_iteration)
-                new_children.append(new_expr)
-                new_assignments += new_assignments_inner
+                new_children.append(wrap_expansion(new_expr, new_assignments_inner))
             l.update_parent_child(new_children)
-            for j in range(len(new_assignments)):
-                ir_list.insert(index, new_assignments[j])
-                index += 1
-            
-            # We want to collect the var names that are used in the return expression, so that we can 
-            # exclude them from the del statements
-            keep_var_names = set()
-            for child in new_children:
-                keep_var_names |= collect_ir_var_names(child)
-            del_stmt = make_ttb_del_statement(new_assignments, keep_var_names=keep_var_names)
-            if del_stmt is not None:
-                ir_list.insert(index, del_stmt)
-                index += 1
         index += 1
 
 
@@ -1538,6 +1545,9 @@ def tensor_to_block_cfg(cfg, layer_index):
 def tensor_to_block(ir):
     # TODO: DEBUG THE FOLLOWING LINE
     # uses.populate_uses_defs(ir)
+    global ttb_funcdefs, ttb_func_counter
+    ttb_funcdefs = []
+    ttb_func_counter = -1
     filename = f"jit_layers/layers.json"
     with open(filename, 'r') as f:
         json_obj = json.load(f)
@@ -1557,5 +1567,8 @@ def tensor_to_block(ir):
                 cfg = deepcopy_cfg_with_fresh_identifiers(transformerIr.cfg)
                 unroll_while(cfg, layer_index)
                 new_cfgs[layer_index] = cfg
-            
+
             transformerIr.layerwise_cfgs = new_cfgs
+
+    # Expose the per-file functions so codeGen can emit them at module scope.
+    ir.ttb_funcdefs = ttb_funcdefs
