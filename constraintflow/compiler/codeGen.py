@@ -66,6 +66,80 @@ class CodeGen(irVisitor.IRVisitor):
         if flag:
             self.file.write('\n')
 
+    def emit_reuse_sparsetensor(self):
+        # Emit a self-contained, reuse-mode SparseTensor. __init__ is the
+        # branch-free reconstruction: pure attribute binding, no end_indices
+        # loop, no check_dense, no asserts, no profiling. The trace already
+        # resolved every field, so codegen feeds them back verbatim. Extra
+        # kwargs (reuse/json_list/...) are accepted and ignored so generated
+        # `SparseTensor(..., reuse=True)` calls bind without change.
+        #
+        # A few structure-preserving methods that codegen emits directly
+        # (rather than via traced/reused ops) are included so the local class
+        # is self-sufficient. Inputs always carry an already-resolved
+        # dense_const, so these stay correct without re-running check_dense.
+        lines = [
+            'class SparseTensor:',
+            '\tdef __init__(self, start_indices, blocks, dims, total_size, end_indices=None, type=float, dense_const=0.0, reuse=True, json_list=None, blocks_index=None, start_indices_repr=None):',
+            '\t\tself.start_indices = start_indices',
+            '\t\tself.blocks = blocks',
+            '\t\tself.total_size = total_size.int()',
+            '\t\tself.dims = dims',
+            '\t\tself.num_blocks = len(start_indices)',
+            '\t\tself.type = type',
+            '\t\tself.dense_const = dense_const',
+            '\t\tself.end_indices = end_indices',
+            '',
+            '\tdef copy(self):',
+            '\t\treturn SparseTensor([i.clone() for i in self.start_indices], [b.copy() for b in self.blocks], self.dims, self.total_size, [i.clone() for i in self.end_indices], type=self.type, dense_const=self.dense_const)',
+            '',
+            '\tdef float(self):',
+            '\t\treturn SparseTensor(self.start_indices, [b.float() for b in self.blocks], self.dims, self.total_size, self.end_indices, float, float(self.dense_const))',
+            '',
+            '\tdef check_dense(self):',
+            '\t\tt = 0',
+            '\t\tfor i in range(self.num_blocks):',
+            '\t\t\ts = 1',
+            '\t\t\tfor d in list(self.blocks[i].total_shape):',
+            '\t\t\t\ts = s * d',
+            '\t\t\tt = t + s',
+            '\t\ttotal = 1',
+            '\t\tfor d in list(self.total_size):',
+            '\t\t\ttotal = total * d',
+            '\t\treturn not (t < total)',
+            '',
+            '\tdef any(self):',
+            '\t\tif not self.check_dense():',
+            '\t\t\tif self.dense_const == True:',
+            '\t\t\t\treturn True',
+            '\t\t\tif self.type != bool and self.dense_const != 0.0:',
+            '\t\t\t\treturn True',
+            '\t\tfor i in range(self.num_blocks):',
+            '\t\t\tif self.blocks[i].any():',
+            '\t\t\t\treturn True',
+            '\t\treturn False',
+            '',
+            '\tdef unary(self, op):',
+            '\t\tif op == operator.not_:',
+            '\t\t\tdense_const = not self.dense_const',
+            '\t\telif op == operator.neg:',
+            '\t\t\tdense_const = -self.dense_const',
+            '\t\telse:',
+            '\t\t\tdense_const = 1 / (1 + math.exp(-self.dense_const))',
+            '\t\tres = SparseTensor(self.start_indices, [b.unary(op) for b in self.blocks], self.dims, self.total_size, self.end_indices, type=self.type, dense_const=dense_const)',
+            '\t\tif res.num_blocks > 0 and res.check_dense():',
+            '\t\t\tif res.type == float:',
+            '\t\t\t\tres.dense_const = 0.0',
+            '\t\t\telif res.type == bool:',
+            '\t\t\t\tres.dense_const = False',
+            '\t\treturn res',
+        ]
+        saved_indent = self.indent
+        self.indent = 0
+        for ln in lines:
+            self.write(ln)
+        self.indent = saved_indent
+
 
     def open(self, file):
         self.file.close()
@@ -101,6 +175,7 @@ class CodeGen(irVisitor.IRVisitor):
         self.write('import os')
         self.write('import torch')
         self.write('import operator')
+        self.write('import math')
         self.write('from constraintflow.lib.polyexp import PolyExpSparse')
         if reuse_mode.get_flag():
             self.write('from constraintflow.lib.symexp import SymExpSparse')
@@ -112,7 +187,9 @@ class CodeGen(irVisitor.IRVisitor):
         if reuse_mode.get_flag():
             self.write('import operator')
             self.write('import torch.nn.functional as F')
-            self.write('from constraintflow.gbcsr.sparse_tensor import SparseTensor')
+            # SparseTensor is defined locally in reuse mode (branch-free
+            # constructor) instead of imported from the library.
+            self.emit_reuse_sparsetensor()
             # self.write('from constraintflow.gbcsr.tensor_ops import *')
             self.write('from constraintflow.gbcsr.sparse_block import SparseBlock, DenseBlock, DiagonalBlock, PatchesBlock, KernelBlock, RepeatBlock, ConstBlock')
         else:
@@ -374,6 +451,12 @@ class CodeGen(irVisitor.IRVisitor):
             kwargs.append(f"type={self.visit(node.type)}")
         if hasattr(node, "dense_const"):
             kwargs.append(f"dense_const={self.visit(node.dense_const)}")
+
+        # A resolved op carries the post-construction fields, so replay can take
+        # the branch-free reuse path instead of re-running __init__'s loops,
+        # check_dense, dead delete pass and profiling.
+        if getattr(node, "resolved", False) and hasattr(node, "end_indices") and hasattr(node, "type") and hasattr(node, "dense_const"):
+            kwargs.append("reuse=True")
 
         return "SparseTensor(" + ", ".join(args + kwargs) + ")"
 
@@ -736,9 +819,15 @@ class CodeGen(irVisitor.IRVisitor):
             if i<len(node.children)-1:
                 repeat_dims += ', '
         if inputIr.irMetadata[-1].isConst:
-            ret = 'SparseTensor([], [], 0, torch.tensor([]), dense_const=' + str(self.visit(inputIr)) + ', type= type(' + str(self.visit(inputIr)) + '))'
-        else:
-            ret = str(self.visit(inputIr))
+            # Broadcasting a scalar const to shape [repeat_dims] is just an
+            # empty-block const tensor of that shape, so emit it directly
+            # instead of building it via .unsqueeze()/.repeat() method calls
+            # (which the reuse-mode local SparseTensor does not implement).
+            const_expr = str(self.visit(inputIr))
+            ret = ('SparseTensor([], [], ' + str(size) + ', torch.tensor([' + repeat_dims + ']), '
+                   'end_indices=[], type=type(' + const_expr + '), dense_const=' + const_expr + ', reuse=True)')
+            return ret
+        ret = str(self.visit(inputIr))
         for i in range(size):
             ret += '.unsqueeze(' + str(i) + ')'
         ret += '.repeat(torch.tensor([' + repeat_dims + ']))'

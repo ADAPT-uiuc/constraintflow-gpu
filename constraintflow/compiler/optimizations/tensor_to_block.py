@@ -318,6 +318,8 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             if "dense_const" in json_obj and json_obj["dense_const"] is not None:
                 kwargs["dense_const"] = json_obj["dense_const"]
 
+            kwargs["resolved"] = json_obj.get("resolved", False)
+
             output = IrSparseTensor(*args, **kwargs)
         
         elif json_obj["method"] == "initialise":

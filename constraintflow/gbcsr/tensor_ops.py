@@ -337,9 +337,9 @@ def where(x, y, z, layer_index = None, counter = None, inside_while = False, whi
 
     elif isinstance(x, bool):
         x1 = const_to_sparse(x, total_size)
-        json_list.append({"method": "SparseTensor", "start_indices": [], "blocks": [],
-                      "dims": len(total_size), "total_size": total_size.tolist(),
-                      "type": "bool", "dense_const": x, "output": len(json_list)})
+        json_list.append({"method": "SparseTensor", "resolved": True, "start_indices": [], "blocks": [],
+                      "dims": len(total_size), "total_size": x1.total_size.tolist(), "end_indices": [],
+                      "type": "bool", "dense_const": x1.dense_const, "output": len(json_list)})
         x_json_index = len(json_list)-1
 
     else:
@@ -351,9 +351,9 @@ def where(x, y, z, layer_index = None, counter = None, inside_while = False, whi
         y_json_index = len(json_list)-1
     elif isinstance(y, float):
         y1 = const_to_sparse(y, total_size)
-        json_list.append({"method": "SparseTensor", "start_indices": [], "blocks": [],
-                      "dims": len(total_size), "total_size": total_size.tolist(),
-                      "type": "float", "dense_const": y, "output": len(json_list)})
+        json_list.append({"method": "SparseTensor", "resolved": True, "start_indices": [], "blocks": [],
+                      "dims": len(total_size), "total_size": y1.total_size.tolist(), "end_indices": [],
+                      "type": "float", "dense_const": y1.dense_const, "output": len(json_list)})
         y_json_index = len(json_list)-1
     else:
         y1 = y
@@ -365,9 +365,9 @@ def where(x, y, z, layer_index = None, counter = None, inside_while = False, whi
         z_json_index = len(json_list)-1
     elif isinstance(z, float):
         z1 = const_to_sparse(z, total_size)
-        json_list.append({"method": "SparseTensor", "start_indices": [], "blocks": [],
-                      "dims": len(total_size), "total_size": total_size.tolist(),
-                      "type": "float", "dense_const": z, "output": len(json_list)})
+        json_list.append({"method": "SparseTensor", "resolved": True, "start_indices": [], "blocks": [],
+                      "dims": len(total_size), "total_size": z1.total_size.tolist(), "end_indices": [],
+                      "type": "float", "dense_const": z1.dense_const, "output": len(json_list)})
         z_json_index = len(json_list)-1
     else:
         z1 = z
@@ -547,19 +547,19 @@ def get_default_stop(shape, abs_elem, batch_size, curr_size, poly_size, layer_in
             json_list.append(json_obj)
             current_list_index = len(json_list) - 1
     
+    temp = SparseTensor(res_start_indices, res, len(shape), torch.tensor(shape), res_end_indices, type=bool, dense_const=True)
     json_list.append({
         "method": "SparseTensor",
+        "resolved": True,
         "start_indices": [si.tolist() for si in res_start_indices],
         "blocks": f"json_list_{current_list_index}",
-        "end_indices": [ei.tolist() for ei in res_end_indices],
+        "end_indices": [tensor_to_list(ei) for ei in temp.end_indices],
         "dims": len(shape),
-        "total_size": list(shape),
-        "type": "bool",
-        "dense_const": True,
+        "total_size": tensor_to_list(temp.total_size),
+        "type": temp.type.__name__,
+        "dense_const": temp.dense_const,
         "output": len(json_list)
     })
-    
-    temp = SparseTensor(res_start_indices, res, len(shape), torch.tensor(shape), res_end_indices, type=bool, dense_const=True)
     if dummy_mode:
         if layer_index is not None and counter is not None:
             os.makedirs("jit_defaultstop", exist_ok=True)
@@ -604,6 +604,7 @@ def get_max_priority(sp_tensor, active_vertices: SparseTensor, layer_index=None,
     json_list = []
     json_list.append({"method": "initialise", "value": "[]", "output": 0})
     current_list_index = 0
+    res = SparseTensor(res_start_indices, res_blocks, sp_tensor.dims, sp_tensor.total_size, end_indices=res_end_indices, type=bool, dense_const=False)
     if dummy_mode:
         for i in range(len(res_blocks)):
             json_list.append({
@@ -622,13 +623,14 @@ def get_max_priority(sp_tensor, active_vertices: SparseTensor, layer_index=None,
             current_list_index = len(json_list) - 1
         json_list.append({
             "method": "SparseTensor",
+            "resolved": True,
             "start_indices": [si.tolist() for si in res_start_indices],
             "blocks": f"json_list_{current_list_index}",
-            "end_indices": [ei.tolist() for ei in res_end_indices],
+            "end_indices": [tensor_to_list(ei) for ei in res.end_indices],
             "dims": sp_tensor.dims,
-            "total_size": sp_tensor.total_size.tolist(),
-            "type": "bool",
-            "dense_const": False,
+            "total_size": tensor_to_list(res.total_size),
+            "type": res.type.__name__,
+            "dense_const": res.dense_const,
             "output": len(json_list),
         })
         if dummy_mode:
@@ -636,7 +638,7 @@ def get_max_priority(sp_tensor, active_vertices: SparseTensor, layer_index=None,
             capture_path = f"jit_priority/priority_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
             with open(capture_path, 'w') as f:
                 json.dump(json_list, f, indent=4)
-    return SparseTensor(res_start_indices, res_blocks, sp_tensor.dims, sp_tensor.total_size, end_indices=res_end_indices, type=bool, dense_const=False)
+    return res
 
 def filter_trav_exp_stop(trav_exp, stop, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None):
     stop_float = convert_to_float(stop)
@@ -680,12 +682,14 @@ def filter_trav_exp_not_stop(trav_exp, stop, layer_index=None, counter=None, ins
         polyexp_not_stop_const = SparseTensor([], [], trav_exp.const.dims, trav_exp.const.total_size, type=float, dense_const=0)
         json_obj = {
             "method": "SparseTensor",
+            "resolved": True,
             "start_indices": [],
             "blocks": [],
             "dims": trav_exp.const.dims,
-            "total_size": trav_exp.const.total_size.tolist(),
+            "total_size": tensor_to_list(polyexp_not_stop_const.total_size),
+            "end_indices": [],
             "type": "float",
-            "dense_const": 0,
+            "dense_const": polyexp_not_stop_const.dense_const,
             "output": len(json_list),
         }
         json_list.append(json_obj)
