@@ -39,7 +39,9 @@ def wrap_expansion(result_expr, new_assignments):
     funcdef = IrTtbFuncDef(func_name, new_assignments, result_expr)
     ttb_funcdefs.append(funcdef)
     metadata = getattr(result_expr, 'irMetadata', None)
-    return IrTtbCall(funcdef, copy_metadata(metadata) if metadata else None)
+    call = IrTtbCall(funcdef, copy_metadata(metadata) if metadata else None)
+    funcdef.call = call     # back-ref so finalize_ttb_params can set call.children
+    return call
 
 def get_var_while(name, while_iteration):
     return name + '_iter_' + str(while_iteration)

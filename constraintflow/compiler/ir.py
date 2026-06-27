@@ -1844,9 +1844,15 @@ class IrTtbFuncDef(IrStatement):
         self.func_name = func_name      # str, e.g. 'ttb_func_0'
         self.body = body                # list[IrStatement]: the ttb_var assignments
         self.return_var = return_var    # IrVar: output_vars[-1] of the expansion
-        self.params = None              # list[str]: filled in by codeGen (free-var analysis)
+        self.params = None              # list[str]: free vars; filled by finalize_ttb_params
+        self.call = None                # IrTtbCall: the (unique) call site of this def
 
 # The call that replaces an inlined expansion at its original site.
+# Its children are the argument expressions, one per funcdef param (initially an
+# IrVar per param name; see CodeGen.finalize_ttb_params). Keeping the args in
+# children -- the field every IR pass traverses -- is what lets def-use analysis
+# (subexp_inlining) see the call's real dependencies and fold single-use values
+# into the call.
 class IrTtbCall(IrExpression):
     def __init__(self, funcdef, irMetadata=None):
         super().__init__()

@@ -68,13 +68,18 @@ def compile(inputfile, output_path):
 
     replay = reuse_mode.get_flag()
 
+    cg = codeGen.CodeGen(output_path)
+
     if reuse_mode.get_flag():
         tensor_to_block.tensor_to_block(ir)
-        # copyPropagation.copy_proagate(ir)
-        # subexp_inlining.inline_subexp(ir)
+        # Compute funcdef params + call argument children, then inline single-use
+        # intermediates both inside the lifted ttb functions and inside the
+        # concrete transformer methods (folding one ttb_func call into the next).
+        cg.finalize_ttb_params(ir)
+        subexp_inlining.inline_subexp(ir)
         # constant_folding.constant_fold(ir)
         # copyPropagation.copy_proagate(ir)
 
-    codeGen.CodeGen(output_path).visit(ir)
+    cg.visit(ir)
 
     return True

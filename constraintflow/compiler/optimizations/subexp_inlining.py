@@ -90,12 +90,44 @@ def get_vars_expr_occurrences(expr) -> list[IrVar]:
     return vars
 
 
+def collect_op_var_names(expr) -> set:
+    """Names of IrVars that appear in an ``op`` position (outside ``children``).
+
+    Some nodes -- e.g. IrSimpleUnary -- carry an operand in ``self.op`` rather
+    than in children; visitIrSimpleUnary renders it as ``(op)(operand)``. Such a
+    variable is invisible to the children-based def-use walk, so without this it
+    would look dead (wrongly deleted) and, because the inliner only substitutes
+    children, an expression folded into ``op`` would also break codeGen (it
+    requires op to be an IrVar or a known string). We therefore *pin* every such
+    name: never inlined, never deleted -- leaving its assignment intact.
+    """
+    names: set = set()
+    if expr is None or isinstance(expr, (int, float, list)):
+        return names
+    op = getattr(expr, 'op', None)
+    if isinstance(op, IrVar):
+        names.add(op.name)
+    if isinstance(expr, IrVar):
+        return names
+    for child in expr.children:
+        names |= collect_op_var_names(child)
+    return names
+
+
 def indices_to_delete_and_replace_single_use(block: IrBlock):
     instructions: list[IrStatement] = block.children
     current_vars_def_index: dict[str, int] = {}
     uses_instr_count: dict[str, list[int]] = {}
     to_delete_indices: list[int] = []
     name_to_var: dict[str, IrVar] = {}
+    # Variables used in an op position (outside children); never inline/delete.
+    pinned: set = set()
+    for instr in instructions:
+        if isinstance(instr, IrAssignment):
+            pinned |= collect_op_var_names(instr.children[1])
+        elif isinstance(instr, IrTransRetBasic):
+            for c in instr.children:
+                pinned |= collect_op_var_names(c)
     for i in range(len(instructions)):
         if isinstance(instructions[i], IrDel):
             continue
@@ -122,7 +154,8 @@ def indices_to_delete_and_replace_single_use(block: IrBlock):
             defined_var = instructions[i].children[0]
             name_to_var[defined_var.name] = defined_var
             assert isinstance(defined_var, IrVar)
-            if defined_var.name in current_vars_def_index.keys():
+            if (defined_var.name in current_vars_def_index.keys()
+                    and defined_var.name not in pinned):
                 if len(uses_instr_count[defined_var.name]) == 1:
                     use_instr_index = uses_instr_count[defined_var.name][0]
                     bottom_def = recursively_find_def_expr(
@@ -141,6 +174,8 @@ def indices_to_delete_and_replace_single_use(block: IrBlock):
             uses_instr_count[defined_var.name] = []
     
     for var in current_vars_def_index.keys():
+        if var in pinned:
+            continue
         if var in uses_instr_count.keys() and len(uses_instr_count[var]) == 1:
             use_instr_index = uses_instr_count[var][0]
             bottom_def = recursively_find_def_expr(
@@ -167,6 +202,21 @@ def inline_subexp_block(block: IrBlock) -> None:
             del block.children[i]
 
 
+def inline_subexp_funcdef(funcdef) -> None:
+    """private
+    Inline single-use intermediates inside one wrapped-expansion function
+    (an IrTtbFuncDef). The body is straight-line and SSA, so this is the easy
+    case. We append a sentinel return node so that `return <return_var>` counts
+    as the final use of return_var -- a single-use return value then folds into
+    the return expression like any other single-use intermediate.
+    """
+    sentinel = IrTransRetBasic([funcdef.return_var])
+    fake_block = IrBlock(funcdef.body + [sentinel])
+    inline_subexp_block(fake_block)
+    funcdef.body = fake_block.children[:-1]
+    funcdef.return_var = fake_block.children[-1].children[0]
+
+
 def inline_subexp_cfg(cfg: Graph) -> None:
     """
     private
@@ -189,7 +239,15 @@ def inline_subexp(ir: IrProgram) -> None:
     - `ir` is already optimized to block level.
     - Every abstract OP tranformer in `ir` has no control flow (i.e., only one
         block in its CFG).
+    - For wrapped (function-per-expansion) IR: tensor_to_block has run and
+        CodeGen.finalize_ttb_params has populated funcdef.params and the
+        IrTtbCall argument children, so this pass sees each call's dependencies.
     """
+    # Inline inside the lifted per-expansion functions (straight-line, SSA).
+    for funcdef in getattr(ir, 'ttb_funcdefs', None) or []:
+        inline_subexp_funcdef(funcdef)
+    # Inline inside the concrete transformer methods (Affine/Relu), where the
+    # win is folding one ttb_func call into the next via its argument children.
     for transformer in ir.tstore.keys():
         for i in range(len(ir.tstore[transformer])):
             transformer_ir = ir.tstore[transformer][i]
