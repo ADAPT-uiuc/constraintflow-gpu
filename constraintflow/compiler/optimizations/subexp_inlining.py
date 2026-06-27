@@ -114,6 +114,38 @@ def collect_op_var_names(expr) -> set:
     return names
 
 
+def _index_var_occurrences(index) -> list:
+    """IrVars appearing in a trace index. An index is a list of items: a slice
+    list ``[a, b]``, a plain int/str, or an IR expression (see
+    CodeGen.renderTraceIndex). ``get_vars_expr_occurrences`` treats a list as a
+    leaf, so we descend the index structure explicitly."""
+    vars: list = []
+    if not index:
+        return vars
+    for item in index:
+        if isinstance(item, list):
+            for sub in item:
+                vars.extend(get_vars_expr_occurrences(sub))
+        elif isinstance(item, (int, str)):
+            continue
+        else:
+            vars.extend(get_vars_expr_occurrences(item))
+    return vars
+
+
+def assigntoview_var_names(instr) -> set:
+    """All variable names an IrAssignToView (`target[index] = value`) touches:
+    the mutated target, the value, and the index. The statement mutates `target`
+    in place, so every one of these is pinned -- inlining a definition past an
+    in-place mutation, or deleting one of these as 'dead', would be unsound."""
+    names: set = set()
+    for c in (instr.children[0], instr.children[1]):
+        names |= {v.name for v in get_vars_expr_occurrences(c)}
+        names |= collect_op_var_names(c)
+    names |= {v.name for v in _index_var_occurrences(instr.index)}
+    return names
+
+
 def indices_to_delete_and_replace_single_use(block: IrBlock):
     instructions: list[IrStatement] = block.children
     current_vars_def_index: dict[str, int] = {}
@@ -128,6 +160,9 @@ def indices_to_delete_and_replace_single_use(block: IrBlock):
         elif isinstance(instr, IrTransRetBasic):
             for c in instr.children:
                 pinned |= collect_op_var_names(c)
+        elif isinstance(instr, IrAssignToView):
+            # In-place mutation: pin everything it touches (see helper).
+            pinned |= assigntoview_var_names(instr)
     for i in range(len(instructions)):
         if isinstance(instructions[i], IrDel):
             continue
@@ -140,6 +175,14 @@ def indices_to_delete_and_replace_single_use(block: IrBlock):
             for j in range(len(instructions[i].children)):
                 temp.extend(
                     get_vars_expr_occurrences(instructions[i].children[j]))
+        elif isinstance(instructions[i], IrAssignToView):
+            # `target[index] = value`: not a fresh definition. Record every
+            # variable read (target, value, index) as a use; all are pinned
+            # above, so none is deleted or inlined around this mutation.
+            temp = []
+            temp.extend(get_vars_expr_occurrences(instructions[i].children[0]))
+            temp.extend(get_vars_expr_occurrences(instructions[i].children[1]))
+            temp.extend(_index_var_occurrences(instructions[i].index))
         else:
             assert False, f'Unexpected instruction type: {type(instructions[i])}'
         used_vars = [var.name for var in temp]
