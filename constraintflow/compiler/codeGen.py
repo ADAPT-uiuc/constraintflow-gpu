@@ -1,6 +1,6 @@
-import ast
 import builtins
 import io
+import symtable
 import json
 import operator
 import os
@@ -295,31 +295,72 @@ class CodeGen(irVisitor.IRVisitor):
             self.file, self.indent = saved_file, saved_indent
 
     def _ttb_free_vars(self, body_src):
-        """Free identifiers in a function body: loaded but neither assigned
-        locally nor available as a module global/builtin. These become params."""
-        tree = ast.parse('def _ttb_f():\n' + body_src)
-        assigned, loaded = set(), set()
-        for n in ast.walk(tree.body[0]):
-            if isinstance(n, ast.Name):
-                if isinstance(n.ctx, ast.Store):
-                    assigned.add(n.id)
-                elif isinstance(n.ctx, ast.Load):
-                    loaded.add(n.id)
-            elif isinstance(n, ast.arg):
-                # lambda/comprehension-bound names (e.g. `lambda x: ...`) are
-                # local, not free.
-                assigned.add(n.arg)
-        return sorted(loaded - assigned - TTB_KNOWN_GLOBALS)
+        """Free identifiers in a function body: referenced but not bound locally,
+        and not a module global/builtin. These become params.
 
-    def emit_ttb_funcdefs(self, node):
-        """Emit every wrapped expansion as a module-level function. Must run
-        before the transformer classes so each IrTtbCall can read funcdef.params."""
+        Uses ``symtable`` instead of ``ast.parse`` + ``ast.walk``: the C compiler
+        builds a compact symbol table (one entry per name, no Python AST node
+        objects) and classifies each name as referenced / assigned / parameter,
+        which is exactly what we need -- much cheaper at the ~1k-funcdef scale.
+        Nested scopes (lambdas/comprehensions) are recursed so a name used only
+        inside a lambda still counts as referenced, while that lambda's own
+        parameters count as bound (local), not free."""
+        table = symtable.symtable('def _ttb_f():\n' + body_src, '<ttb>', 'exec')
+        # The module's children may include synthetic scopes on some Python
+        # versions, so select the function scope by name rather than index.
+        fn_scope = next(c for c in table.get_children() if c.get_name() == '_ttb_f')
+        referenced, bound = set(), set()
+
+        def walk(scope):
+            for sym in scope.get_symbols():
+                if sym.is_referenced():
+                    referenced.add(sym.get_name())
+                if sym.is_assigned() or sym.is_parameter():
+                    bound.add(sym.get_name())
+            for child in scope.get_children():
+                walk(child)
+
+        walk(fn_scope)
+        return sorted(referenced - bound - TTB_KNOWN_GLOBALS)
+
+    def finalize_ttb_params(self, node):
+        """Compute every funcdef's parameter list and expose each call's
+        dependencies to the IR, so the def-use-based inliner (subexp_inlining)
+        can run between this and codeGen.
+
+        For each funcdef: render its body, derive the free variables (params),
+        then give its call one argument child per param -- an ``IrVar(name)``.
+        Those children live in ``call.children``, the field every IR pass walks,
+        so def-use analysis now sees exactly what the call consumes. A single-use
+        data-flow argument can then be folded into the call (its IrVar child is
+        replaced by the folded expression); ambient args (abs_elem, layer_index,
+        ...) have no in-block definition, so the inliner leaves them as bare
+        names. Params/children are built in the same order and stay positionally
+        aligned, so visitIrTtbCall can render children directly against the def
+        signature. Must run after tensor_to_block and before inline_subexp."""
         funcdefs = getattr(node, 'ttb_funcdefs', None)
         if not funcdefs:
             return
         for funcdef in funcdefs:
             body_src = self._render_ttb_body(funcdef)
             funcdef.params = self._ttb_free_vars(body_src)
+            if funcdef.call is not None:
+                funcdef.call.update_parent_child(
+                    [IrVar(p, []) for p in funcdef.params])
+
+    def emit_ttb_funcdefs(self, node):
+        """Emit every wrapped expansion as a module-level function. Must run
+        before the transformer classes so each IrTtbCall can read funcdef.params.
+        Params are precomputed by finalize_ttb_params (free vars are stable under
+        the body inlining that happens in between), so we only re-render the
+        now-inlined body here."""
+        funcdefs = getattr(node, 'ttb_funcdefs', None)
+        if not funcdefs:
+            return
+        for funcdef in funcdefs:
+            if funcdef.params is None:
+                funcdef.params = self._ttb_free_vars(self._render_ttb_body(funcdef))
+            body_src = self._render_ttb_body(funcdef)
             self.indent = 0
             self.write('def ' + funcdef.func_name + '(' + ', '.join(funcdef.params) + '):')
             self.write_expr(body_src, flag=False)
@@ -331,8 +372,14 @@ class CodeGen(irVisitor.IRVisitor):
 
     def visitIrTtbCall(self, node):
         funcdef = node.funcdef
-        params = funcdef.params if funcdef.params is not None else []
-        return funcdef.func_name + '(' + ', '.join(params) + ')'
+        # Render the argument children (set by finalize_ttb_params, possibly
+        # folded by inline_subexp). They are positionally aligned with the def's
+        # params. Fall back to bare param names if children were never populated.
+        if node.children:
+            args = [str(self.visit(c)) for c in node.children]
+        else:
+            args = list(funcdef.params) if funcdef.params is not None else []
+        return funcdef.func_name + '(' + ', '.join(args) + ')'
 
     def visitIrBreak(self, node):
         self.write('break')
