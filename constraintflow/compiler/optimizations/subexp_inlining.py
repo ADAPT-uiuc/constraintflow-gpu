@@ -10,8 +10,6 @@ from __future__ import annotations
 from constraintflow.compiler.ir import *
 from constraintflow.compiler.optimizations import uses
 from constraintflow.compiler.representations import Graph
-from constraintflow.compiler.optimizations.tensor_to_block import \
-    replace_all_occurrences_expr
 from constraintflow.compiler.optimizations.loopInvariantCodeMotion import \
     get_vars_expr
 
@@ -36,6 +34,39 @@ from constraintflow.compiler.optimizations.loopInvariantCodeMotion import \
 #         instructions[use_instr_index].update_parent_child(new_children)
 #     else:
 #         assert False
+
+
+def get_generalized_children(expr) -> list[IrExpression]:
+    ret: list[IrExpression] = []
+    if isinstance(expr, IrSimpleUnary) and isinstance(expr.op, IrVar):
+        ret.append(expr.op)
+        ret.extend(expr.children)
+    else:
+        ret.extend(expr.children)
+    return ret
+
+
+def replace_all_occurrences_expr(expr, var_map: dict[str, IrExpression]):
+    if isinstance(expr, IrVar) and expr.name in var_map.keys(): 
+        return var_map[expr.name]
+    if isinstance(expr, (int, float)):
+        return expr
+    if expr is None:
+        return expr
+    if isinstance(expr, list):
+        return [replace_all_occurrences_expr(x, var_map) for x in expr]
+    has_generalized_op_child = (
+        isinstance(expr, IrSimpleUnary) and isinstance(expr.op, IrVar))
+    generalized_children = get_generalized_children(expr)
+    for i in range(len(generalized_children)):
+        new_child = replace_all_occurrences_expr(generalized_children[i], var_map)
+        if has_generalized_op_child and i == 0:
+            expr.op = new_child
+        elif has_generalized_op_child and i != 0:
+            expr.children[i - 1] = new_child
+        else:
+            expr.children[i] = new_child
+    return expr
 
 
 def replace_var_with_expr(             
@@ -78,14 +109,19 @@ def recursively_find_def_expr(
 
 
 def get_vars_expr_occurrences(expr) -> list[IrVar]:
-    if isinstance(expr, (int, float, list)):
+    if isinstance(expr, (int, float)):
         return []
     if isinstance(expr, IrVar):
         return [expr]
+    if isinstance(expr, list):
+        vars: list[IrVar] = []
+        for x in expr:
+            vars.extend(get_vars_expr_occurrences(x))
+        return vars
     vars: list[IrVar] = []
     if expr is None:
         return vars
-    for child in expr.children:
+    for child in get_generalized_children(expr):
         vars.extend(get_vars_expr_occurrences(child))
     return vars
 

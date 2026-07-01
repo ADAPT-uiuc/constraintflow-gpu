@@ -829,7 +829,7 @@ class CodeGen(irVisitor.IRVisitor):
         
     def visitIrSimpleUnary(self, node):
         op = node.op
-        if isinstance(op, IrVar):
+        if isinstance(op, (IrVar, IrLambda)):
             return '(' + self.visit(op) + ')(' + self.visit(node.children[0]) + ')'
         if op == '-':
             op_str = 'operator.neg'
