@@ -9,12 +9,7 @@ so folding the value frees the intermediate's memory earlier.
 from __future__ import annotations
 import bisect
 from constraintflow.compiler.ir import *
-from constraintflow.compiler.optimizations import uses
 from constraintflow.compiler.representations import Graph
-from constraintflow.compiler.optimizations.loopInvariantCodeMotion import \
-    get_vars_expr
-from constraintflow.compiler.optimizations.tensor_to_block import \
-    get_profiled_branch
 
 
 def get_generalized_children(expr) -> list[IrExpression]:
@@ -287,99 +282,19 @@ def inline_subexp_block(block: IrBlock) -> None:
     inline_fixpoint(block.children)
 
 
-def live_block_order(cfg: Graph, layer_index):
-    """
-    Reconstruct the straight-line execution order of live blocks, mirroring
-    `codeGen.visitIrBlock` (the source of truth for emission order): start at the
-    entry block, emit it, follow the taken `inner_jump` branch, then the `jump`
-    successor. `visited` (on block identity) dedups merge blocks, as codegen does.
-
-    A len-3 `inner_jump` is resolved with the profiled branch recorded during
-    simulacrum (`get_profiled_branch`), so the order matches the stream codegen
-    emits under `--reuse`.
-
-    Returns the live blocks in execution order, or None when the live path has
-    control flow we cannot linearize (an unresolved profiled branch, a plain `if`,
-    or a while loop -- the last should already be unrolled by `tensor_to_block`).
-    Callers treat None as "skip".
-    """
-    order: list[IrBlock] = []
-    visited: set[int] = set()
-    ok = True
-
-    def visit(block):
-        nonlocal ok
-        if block is None or not ok or id(block) in visited:
-            return
-        visited.add(id(block))
-        order.append(block)
-        if block.inner_jump is not None:
-            if len(block.inner_jump) == 3:
-                taken = get_profiled_branch(layer_index, block.block_id)
-                if taken == 'then':
-                    visit(block.inner_jump[1])
-                elif taken == 'else':
-                    visit(block.inner_jump[2])
-                else:
-                    ok = False
-                    return
-            else:
-                # A plain conditional (`if(cond): ...`) or a while loop: codegen
-                # emits these guarded, so they are not unconditionally on the
-                # live path and cannot be flattened into a linear stream.
-                ok = False
-                return
-        if block.jump is not None:
-            visit(block.jump[1])
-
-    visit(cfg.ir[cfg.entry_node])
-    return order if ok else None
-
-
-def inline_subexp_cfg(cfg: Graph, layer_index=None) -> None:
+def inline_subexp_cfg(cfg: Graph) -> None:
     """
     private
     Inline single-use temporaries within one transformer CFG.
 
-    A single-block CFG (e.g. `deeppoly`) is inlined directly. A multi-block CFG
-    (e.g. `zid`, whose ternaries lower to profiled branches) is linearized along
-    the profiled live path, inlined as one flat sequence, then the survivors are
-    written back to their originating blocks. Block boundaries and jumps are
-    untouched, so codegen emits the same structure minus the folded temporaries.
+    Reuse-mode per-layer CFGs are collapsed to a single straight-line block by
+    `tensor_to_block` (control flow resolved along the profiled live path), so
+    the common case is inlined directly. A CFG that still has control flow (e.g.
+    an unsupported transformer op that was not specialized) has no linearizable
+    live path here and is left unchanged.
     """
     if len(cfg.nodes) == 1:
         inline_subexp_block(cfg.ir[cfg.nodes[0]])
-        return
-
-    if layer_index is None:
-        # Non-layerwise CFG with control flow: no profiled branch data to
-        # resolve the live path, so leave it unchanged (preserve old behavior).
-        return
-
-    order = live_block_order(cfg, layer_index)
-    if order is None:
-        return
-
-    flat: list[IrStatement] = []
-    owners: list[IrBlock] = []
-    for block in order:
-        for instr in block.children:
-            flat.append(instr)
-            owners.append(block)
-
-    while True:
-        to_delete_indices = indices_to_delete_and_replace_single_use(flat)
-        if len(to_delete_indices) == 0:
-            break
-        for i in sorted(set(to_delete_indices), reverse=True):
-            del flat[i]
-            del owners[i]
-
-    survivors: dict[int, list[IrStatement]] = {}
-    for instr, owner in zip(flat, owners):
-        survivors.setdefault(id(owner), []).append(instr)
-    for block in order:
-        block.children[:] = survivors.get(id(block), [])
 
 
 def inline_subexp(ir: IrProgram) -> None:
@@ -387,15 +302,15 @@ def inline_subexp(ir: IrProgram) -> None:
     public
     Requires:
     - `ir` is already optimized to block level.
-    - While loops have been unrolled (multi-block CFGs may still contain
-        profiled branches, which are linearized along the recorded live path).
+    - `tensor_to_block` has run: per-layer CFGs are collapsed to a single
+      straight-line block, with control flow resolved along the profiled live
+      path.
     """
     for transformer in ir.tstore.keys():
         for i in range(len(ir.tstore[transformer])):
             transformer_ir = ir.tstore[transformer][i]
             if transformer_ir.layerwise_cfgs is not None:
-                for layer_index, cfg in transformer_ir.layerwise_cfgs.items():
-                    inline_subexp_cfg(cfg, layer_index)
+                for cfg in transformer_ir.layerwise_cfgs.values():
+                    inline_subexp_cfg(cfg)
             else:
-                cfg: Graph = transformer_ir.cfg
-                inline_subexp_cfg(cfg)
+                inline_subexp_cfg(transformer_ir.cfg)
