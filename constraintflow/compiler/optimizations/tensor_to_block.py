@@ -1548,6 +1548,63 @@ def tensor_to_block_cfg(cfg, layer_index):
         block = cfg.ir[node]
         tensor_to_block_block(block, layer_index)
 
+
+def collapse_cfg_to_single_block(cfg, layer_index):
+    """
+    Resolve all control flow in a per-layer reuse CFG into a single
+    straight-line block. Starting at the entry block we walk the profiled live
+    path -- exactly the order codegen emits -- pruning each profiled branch to
+    its taken arm, and concatenate every visited block's instructions into the
+    entry block. Afterwards the CFG has one node with no `jump`/`inner_jump`, so
+    downstream passes (subexp_inlining, codegen) see a flat instruction stream.
+
+    Reuse requires control flow to be fully resolved by the profile: any block
+    whose control flow does not collapse to a single successor -- an unprofiled
+    ternary, a plain `if`, or a `while` that was not unrolled -- is a hard error
+    rather than a fallback to a runtime branch.
+    """
+    order = []
+    visited = set()
+
+    def visit(block):
+        if block is None or id(block) in visited:
+            return
+        visited.add(id(block))
+        order.append(block)
+        if block.inner_jump is not None:
+            if len(block.inner_jump) == 3:
+                taken = get_profiled_branch(layer_index, block.block_id)
+                if taken == 'then':
+                    visit(block.inner_jump[1])
+                elif taken == 'else':
+                    visit(block.inner_jump[2])
+                else:
+                    raise RuntimeError(
+                        f'reuse: profiled branch at block {block.block_id} '
+                        f'(layer {layer_index}) is unresolved; cannot linearize')
+            else:
+                raise RuntimeError(
+                    f'reuse: unresolvable control flow at layer {layer_index} '
+                    f'(a plain `if` or an un-unrolled `while`); reuse requires '
+                    f'fully profiled/unrolled control flow')
+        if block.jump is not None:
+            visit(block.jump[1])
+
+    entry_block = cfg.ir[cfg.entry_node]
+    visit(entry_block)
+
+    entry_block.children = [
+        instr for block in order for instr in block.children]
+    entry_block.inner_jump = None
+    entry_block.jump = None
+
+    entry = cfg.entry_node
+    cfg.nodes = [entry]
+    cfg.ir = {entry: entry_block}
+    cfg.successors = {entry: []}
+    cfg.predecessors = {entry: []}
+
+
 def tensor_to_block(ir):
     # TODO: DEBUG THE FOLLOWING LINE
     # uses.populate_uses_defs(ir)
@@ -1569,6 +1626,7 @@ def tensor_to_block(ir):
             for j, layer_index in enumerate(layer_indices):
                 cfg = deepcopy_cfg_with_fresh_identifiers(transformerIr.cfg)
                 unroll_while(cfg, layer_index)
+                collapse_cfg_to_single_block(cfg, layer_index)
                 new_cfgs[layer_index] = cfg
-            
+
             transformerIr.layerwise_cfgs = new_cfgs
