@@ -261,6 +261,11 @@ def run(
     network_file = get_network(network, network_format, dataset)
     X, y = get_dataset(batch_size, dataset, train=train)
     
+    is_cuda = device_mode.get_device() == "cuda"
+    if is_cuda:
+        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.synchronize()
+
     start_time = time.perf_counter()
     lb, ub = run(
         network_file,
@@ -273,12 +278,17 @@ def run(
         print_intermediate_results=print_intermediate_results,
         no_sparsity=no_sparsity,
     )
+    if is_cuda:
+        torch.cuda.synchronize()
     end_time = time.perf_counter()
     total_time = end_time - start_time
 
     typer.echo(f"Lower bounds: {lb}")
     typer.echo(f"Upper bounds: {ub}")
     typer.echo(f"Total time: {total_time:.2f} seconds")
+    if is_cuda:
+        peak_bytes = torch.cuda.max_memory_allocated()
+        typer.echo(f"Peak GPU memory: {peak_bytes} bytes")
     # if eps == 0:
     #     assert(lb == ub).all(), "Bounds should be equal when eps=0"
 

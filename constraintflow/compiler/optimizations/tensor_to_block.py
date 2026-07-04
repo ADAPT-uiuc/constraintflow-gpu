@@ -364,7 +364,14 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
 
             op_ref = json_obj.get("op", json_obj.get("operation"))
             if isinstance(op_ref, str) and "json_list_" in op_ref:
-                op_ref = output_vars[int(op_ref.split("_")[-1])]
+                op_idx = int(op_ref.split("_")[-1])
+                # Inline lambdas directly rather than referencing their ttb_var;
+                # see the apply_lambda note below for why the reference would be
+                # dropped by subexp_inlining.
+                if json_list[op_idx]["method"] == "lambda":
+                    op_ref = IrLambda(json_list[op_idx]["op"])
+                else:
+                    op_ref = output_vars[op_idx]
             output = IrSimpleUnary(inputIr, op_ref)
 
         elif json_obj["method"] == "apply_lambda":
@@ -382,7 +389,13 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             lambda_obj = json_list[int(json_obj["op"].split("_")[-1])]
             if lambda_obj["method"] != "lambda":
                 raise Exception("NOT IMPLEMENTED")
-            output = IrSimpleUnary(inputIr, output_vars[int(json_obj["op"].split("_")[-1])])
+            # Inline the lambda directly as the op instead of referencing the
+            # ttb_var it was assigned to. IrSimpleUnary stores op outside of
+            # .children, so a variable reference here is invisible to the
+            # .children-based def/use analysis in subexp_inlining, which would
+            # then delete the lambda's definition while codegen still emits the
+            # reference (NameError). An inline IrLambda has no separate def.
+            output = IrSimpleUnary(inputIr, IrLambda(lambda_obj["op"]))
 
         elif json_obj["method"] == "torch_sigmoid":
             input_ref = json_obj.get("block", json_obj.get("input"))
