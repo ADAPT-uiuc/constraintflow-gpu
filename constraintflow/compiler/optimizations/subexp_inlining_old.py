@@ -7,7 +7,6 @@ This opt prevents the delay of the release of the intermediate value's memory.
 """
 
 from __future__ import annotations
-import bisect
 from constraintflow.compiler.ir import *
 from constraintflow.compiler.optimizations import uses
 from constraintflow.compiler.representations import Graph
@@ -93,64 +92,20 @@ def replace_var_with_expr(
         assert False
 
 
-def compute_def_indices(
-        instructions: list[IrStatement]) -> dict[str, list[int]]:
-    """For each variable, the ascending list of statement indices that assign
-    it. On a straight-line block (no branches/merges) this is all the
-    reaching-definition information we need: the definition reaching any point
-    is simply the nearest preceding one."""
-    def_indices: dict[str, list[int]] = {}
-    for idx, instr in enumerate(instructions):
-        if isinstance(instr, IrAssignment):
-            lhs = instr.children[0]
-            if isinstance(lhs, IrVar):
-                def_indices.setdefault(lhs.name, []).append(idx)
-    return def_indices
-
-
-def reaching_def_index(
-        def_indices: dict[str, list[int]], name: str, point: int):
-    """Index of the definition of `name` immediately preceding `point`
-    (strictly earlier), or None if `name` has no definition in the block
-    (i.e. it is a block-external value such as a transformer parameter)."""
-    idxs = def_indices.get(name)
-    if not idxs:
-        return None
-    j = bisect.bisect_left(idxs, point) - 1
-    return idxs[j] if j >= 0 else None
-
-
-def redefined_between(
-        def_indices: dict[str, list[int]], name: str, lo: int, hi: int) -> bool:
-    """True iff `name` is assigned at some index in the open interval (lo, hi)."""
-    idxs = def_indices.get(name)
-    if not idxs:
-        return False
-    k = bisect.bisect_right(idxs, lo)
-    return k < len(idxs) and idxs[k] < hi
-
-
-def resolve_value(
-        instructions: list[IrStatement], def_indices: dict[str, list[int]],
-        var: IrVar, point: int):
-    """
-    Return (expr, def_index): an expression equal to `var`'s value at `point`,
-    together with the index of the statement whose RHS that expression is
-    (or -1 when the value is a block-external variable / parameter).
-
-    Copy chains (`t = a; a = expr`) are followed through *reaching* definitions:
-    the value of `var` at `point` equals the value of its RHS variable at
-    `var`'s own definition site, and so on. Because each hop moves to a strictly
-    earlier index, this terminates, and it binds to the correct definition even
-    for reassigned variables.
-    """
-    d = reaching_def_index(def_indices, var.name, point)
-    if d is None:
-        return var, -1
-    rhs = instructions[d].children[1]
-    if isinstance(rhs, IrVar):
-        return resolve_value(instructions, def_indices, rhs, d)
-    return rhs, d
+def recursively_find_def_expr(
+        instructions: list[IrStatement], var: IrVar,
+        current_vars_def_index: dict[str, int]) -> IrExpression:
+    var_name = var.name
+    if var_name not in current_vars_def_index.keys():
+        return var
+    immediate_def_index = current_vars_def_index[var_name]
+    assert isinstance(instructions[immediate_def_index], IrAssignment)
+    immediate_def_expr = instructions[immediate_def_index].children[1]
+    if not isinstance(immediate_def_expr, IrVar):
+        return immediate_def_expr
+    else:
+        return recursively_find_def_expr(
+            instructions, immediate_def_expr, current_vars_def_index)
 
 
 def get_vars_expr_occurrences(expr) -> list[IrVar]:
@@ -171,86 +126,8 @@ def get_vars_expr_occurrences(expr) -> list[IrVar]:
     return vars
 
 
-def is_safe_to_inline(
-        def_indices: dict[str, list[int]], expr, def_index: int,
-        use_index: int) -> bool:
-    """
-    Moving `expr` (originally evaluated at `def_index`) to `use_index` is
-    value-preserving iff none of the variables it reads is reassigned in the
-    open interval (def_index, use_index) -- i.e. the definition of each read
-    variable reaching the use is the same one that reached the original site.
-
-    The interval is open at both ends: `def_index` defines the temporary and
-    only reads `expr`'s variables (it does not reassign them), and at
-    `use_index` the RHS is evaluated before that statement's own assignment, so
-    a reassignment there does not affect `expr`.
-    """
-    for var in get_vars_expr_occurrences(expr):
-        if redefined_between(def_indices, var.name, def_index, use_index):
-            return False
-    return True
-
-
-def is_trivial(expr) -> bool:
-    """A leaf that is free to recompute: a bare variable reference or a literal.
-    Only such expressions may be folded into more than one use site -- copying
-    anything heavier would duplicate real work."""
-    return isinstance(expr, (IrVar, IrConst))
-
-
-def copy_leaf(expr):
-    """Fresh copy of a trivial leaf, so folding one value into several use sites
-    never leaves them sharing a single node object. Non-leaves are returned
-    unchanged (they are only ever inlined into a single site)."""
-    if isinstance(expr, IrVar):
-        return IrVar(expr.name, expr.irMetadata)
-    if isinstance(expr, IrConst):
-        return IrConst(expr.const, expr.irMetadata[-1].type)
-    return expr
-
-
-def try_inline_definition(
-        instructions: list[IrStatement], def_indices: dict[str, list[int]],
-        var: IrVar, def_stmt_index: int, use_indices: list[int],
-        to_delete_indices: list[int]) -> None:
-    """
-    Fold `var`'s definition (at `def_stmt_index`, whose uses since that
-    definition are `use_indices`) into its use sites:
-
-      - 0 uses  -> the definition is dead; delete it.
-      - 1 use   -> inline if the move is value-preserving.
-      - >1 uses -> only if the resolved value is a trivial leaf (a constant or a
-                   bare variable), which is free to duplicate; inline into every
-                   use where the move is safe, and delete the definition only if
-                   *all* uses were inlined (otherwise it is still live).
-
-    `resolve_value` returns the bottom of the copy chain, so a trivial result is
-    always either a literal or a block-external variable -- both always safe to
-    duplicate -- whereas an alias that bottoms out in a heavy expression is
-    (correctly) not treated as trivial.
-    """
-    if not use_indices:
-        to_delete_indices.append(def_stmt_index)
-        return
-    inline_expr, value_def_index = resolve_value(
-        instructions, def_indices, var, use_indices[0])
-    if len(use_indices) > 1 and not is_trivial(inline_expr):
-        return
-    inlined_all = True
-    for use_index in use_indices:
-        if is_safe_to_inline(def_indices, inline_expr, value_def_index,
-                             use_index):
-            replace_var_with_expr(
-                instructions, use_index, copy_leaf(inline_expr), var)
-        else:
-            inlined_all = False
-    if inlined_all:
-        to_delete_indices.append(def_stmt_index)
-
-
 def indices_to_delete_and_replace_single_use(block: IrBlock):
     instructions: list[IrStatement] = block.children
-    def_indices: dict[str, list[int]] = compute_def_indices(instructions)
     current_vars_def_index: dict[str, int] = {}
     uses_instr_count: dict[str, list[int]] = {}
     to_delete_indices: list[int] = []
@@ -282,19 +159,36 @@ def indices_to_delete_and_replace_single_use(block: IrBlock):
             name_to_var[defined_var.name] = defined_var
             assert isinstance(defined_var, IrVar)
             if defined_var.name in current_vars_def_index.keys():
-                try_inline_definition(
-                    instructions, def_indices, defined_var,
-                    current_vars_def_index[defined_var.name],
-                    uses_instr_count[defined_var.name], to_delete_indices)
+                if len(uses_instr_count[defined_var.name]) == 1:
+                    use_instr_index = uses_instr_count[defined_var.name][0]
+                    bottom_def = recursively_find_def_expr(
+                        instructions, defined_var, current_vars_def_index)
+                    replace_var_with_expr(
+                        instructions, use_instr_index,
+                        bottom_def,
+                        defined_var)
+                    to_delete_indices.append(
+                        current_vars_def_index[defined_var.name])
+                    
+                elif len(uses_instr_count[defined_var.name]) == 0:
+                    to_delete_indices.append(
+                        current_vars_def_index[defined_var.name])
             current_vars_def_index[defined_var.name] = i
             uses_instr_count[defined_var.name] = []
     
     for var in current_vars_def_index.keys():
-        try_inline_definition(
-            instructions, def_indices, name_to_var[var],
-            current_vars_def_index[var],
-            uses_instr_count.get(var, []), to_delete_indices)
-
+        if var in uses_instr_count.keys() and len(uses_instr_count[var]) == 1:
+            use_instr_index = uses_instr_count[var][0]
+            bottom_def = recursively_find_def_expr(
+                        instructions, name_to_var[var], current_vars_def_index)
+            replace_var_with_expr(
+                instructions, use_instr_index,
+                bottom_def, name_to_var[var])
+            to_delete_indices.append(current_vars_def_index[var])
+        elif (var not in uses_instr_count.keys()
+              or len(uses_instr_count[var]) == 0):
+            to_delete_indices.append(current_vars_def_index[var])
+    
     return to_delete_indices
                 
 

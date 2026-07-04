@@ -71,7 +71,7 @@ def compile(inputfile, output_path):
     if reuse_mode.get_flag():
         tensor_to_block.tensor_to_block(ir)
         # copyPropagation.copy_proagate(ir)
-        # subexp_inlining.inline_subexp(ir)
+        subexp_inlining.inline_subexp(ir)
         # constant_folding.constant_fold(ir)
         # copyPropagation.copy_proagate(ir)
 
