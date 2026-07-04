@@ -1,9 +1,9 @@
 """
-Based on def-use analysis on non-SSA IR.
-If an intermediate variable is only used once, we inline its definition at the
-    use site and remove the intermediate variable.
-Normally in Python, a variable is released only at the end of the function.
-This opt prevents the delay of the release of the intermediate value's memory.
+Def-use based subexpression inlining on non-SSA IR.
+
+If an intermediate variable is used exactly once, inline its definition at the
+use site and delete the variable. Python releases locals only at function end,
+so folding the value frees the intermediate's memory earlier.
 """
 
 from __future__ import annotations
@@ -13,28 +13,8 @@ from constraintflow.compiler.optimizations import uses
 from constraintflow.compiler.representations import Graph
 from constraintflow.compiler.optimizations.loopInvariantCodeMotion import \
     get_vars_expr
-
-
-# def replace_var_with_expr(             
-#         instructions: list[IrStatement], use_instr_index: int,
-#         def_instr_index: int, var_name: str) -> None:
-#     if isinstance(instructions[use_instr_index], IrAssignment):
-#         new_expr = replace_all_occurrences_expr(
-#             instructions[use_instr_index].children[1],
-#             {var_name: instructions[def_instr_index].children[1]})
-#         new_children = [instructions[def_instr_index].children[0], new_expr]
-#         instructions[use_instr_index].update_parent_child(new_children)
-#     elif isinstance(
-#         instructions[use_instr_index], IrTransRetBasic):
-#         new_children = []
-#         for j in range(len(instructions[use_instr_index].children)):
-#             new_expr = replace_all_occurrences_expr(
-#             instructions[use_instr_index].children[j],
-#             {var_name: instructions[def_instr_index].children[1]})
-#             new_children.append(new_expr)
-#         instructions[use_instr_index].update_parent_child(new_children)
-#     else:
-#         assert False
+from constraintflow.compiler.optimizations.tensor_to_block import \
+    get_profiled_branch
 
 
 def get_generalized_children(expr) -> list[IrExpression]:
@@ -95,10 +75,9 @@ def replace_var_with_expr(
 
 def compute_def_indices(
         instructions: list[IrStatement]) -> dict[str, list[int]]:
-    """For each variable, the ascending list of statement indices that assign
-    it. On a straight-line block (no branches/merges) this is all the
-    reaching-definition information we need: the definition reaching any point
-    is simply the nearest preceding one."""
+    """Map each variable to the ascending list of statement indices that assign
+    it. On a straight-line block the reaching definition at any point is just
+    the nearest preceding one."""
     def_indices: dict[str, list[int]] = {}
     for idx, instr in enumerate(instructions):
         if isinstance(instr, IrAssignment):
@@ -110,9 +89,8 @@ def compute_def_indices(
 
 def reaching_def_index(
         def_indices: dict[str, list[int]], name: str, point: int):
-    """Index of the definition of `name` immediately preceding `point`
-    (strictly earlier), or None if `name` has no definition in the block
-    (i.e. it is a block-external value such as a transformer parameter)."""
+    """Index of the definition of `name` strictly before `point`, or None if
+    `name` is never defined in the block (e.g. a transformer parameter)."""
     idxs = def_indices.get(name)
     if not idxs:
         return None
@@ -135,14 +113,12 @@ def resolve_value(
         var: IrVar, point: int):
     """
     Return (expr, def_index): an expression equal to `var`'s value at `point`,
-    together with the index of the statement whose RHS that expression is
-    (or -1 when the value is a block-external variable / parameter).
+    and the index of the statement whose RHS it is (-1 for a block-external
+    variable).
 
-    Copy chains (`t = a; a = expr`) are followed through *reaching* definitions:
-    the value of `var` at `point` equals the value of its RHS variable at
-    `var`'s own definition site, and so on. Because each hop moves to a strictly
-    earlier index, this terminates, and it binds to the correct definition even
-    for reassigned variables.
+    Copy chains (`t = a; a = expr`) are followed through reaching definitions.
+    Each hop moves to a strictly earlier index, so this terminates and binds to
+    the correct definition even for reassigned variables.
     """
     d = reaching_def_index(def_indices, var.name, point)
     if d is None:
@@ -175,15 +151,11 @@ def is_safe_to_inline(
         def_indices: dict[str, list[int]], expr, def_index: int,
         use_index: int) -> bool:
     """
-    Moving `expr` (originally evaluated at `def_index`) to `use_index` is
-    value-preserving iff none of the variables it reads is reassigned in the
-    open interval (def_index, use_index) -- i.e. the definition of each read
-    variable reaching the use is the same one that reached the original site.
-
-    The interval is open at both ends: `def_index` defines the temporary and
-    only reads `expr`'s variables (it does not reassign them), and at
-    `use_index` the RHS is evaluated before that statement's own assignment, so
-    a reassignment there does not affect `expr`.
+    Moving `expr` from `def_index` to `use_index` preserves its value iff none
+    of the variables it reads is reassigned in the open interval
+    (def_index, use_index). Both ends are open: `def_index` only reads those
+    variables, and at `use_index` the RHS is evaluated before that statement's
+    own assignment.
     """
     for var in get_vars_expr_occurrences(expr):
         if redefined_between(def_indices, var.name, def_index, use_index):
@@ -192,16 +164,16 @@ def is_safe_to_inline(
 
 
 def is_trivial(expr) -> bool:
-    """A leaf that is free to recompute: a bare variable reference or a literal.
-    Only such expressions may be folded into more than one use site -- copying
-    anything heavier would duplicate real work."""
+    """A leaf that is free to recompute: a bare variable or a literal. Only
+    these may be folded into more than one use site; copying anything heavier
+    would duplicate real work."""
     return isinstance(expr, (IrVar, IrConst))
 
 
 def copy_leaf(expr):
-    """Fresh copy of a trivial leaf, so folding one value into several use sites
-    never leaves them sharing a single node object. Non-leaves are returned
-    unchanged (they are only ever inlined into a single site)."""
+    """Fresh copy of a trivial leaf so folding into several use sites never
+    leaves them sharing one node object. Non-leaves (only ever inlined into a
+    single site) are returned unchanged."""
     if isinstance(expr, IrVar):
         return IrVar(expr.name, expr.irMetadata)
     if isinstance(expr, IrConst):
@@ -214,20 +186,18 @@ def try_inline_definition(
         var: IrVar, def_stmt_index: int, use_indices: list[int],
         to_delete_indices: list[int]) -> None:
     """
-    Fold `var`'s definition (at `def_stmt_index`, whose uses since that
-    definition are `use_indices`) into its use sites:
+    Fold `var`'s definition (at `def_stmt_index`, with uses `use_indices`) into
+    its use sites:
 
-      - 0 uses  -> the definition is dead; delete it.
+      - 0 uses  -> dead definition; delete it.
       - 1 use   -> inline if the move is value-preserving.
-      - >1 uses -> only if the resolved value is a trivial leaf (a constant or a
-                   bare variable), which is free to duplicate; inline into every
-                   use where the move is safe, and delete the definition only if
-                   *all* uses were inlined (otherwise it is still live).
+      - >1 uses -> only if the resolved value is a trivial leaf (free to
+                   duplicate); inline into every safe use, and delete the
+                   definition only if all uses were inlined.
 
-    `resolve_value` returns the bottom of the copy chain, so a trivial result is
-    always either a literal or a block-external variable -- both always safe to
-    duplicate -- whereas an alias that bottoms out in a heavy expression is
-    (correctly) not treated as trivial.
+    `resolve_value` follows the copy chain to the bottom, so a trivial result is
+    always a literal or a block-external variable (both safe to duplicate); an
+    alias bottoming out in a heavy expression is correctly not trivial.
     """
     if not use_indices:
         to_delete_indices.append(def_stmt_index)
@@ -248,8 +218,8 @@ def try_inline_definition(
         to_delete_indices.append(def_stmt_index)
 
 
-def indices_to_delete_and_replace_single_use(block: IrBlock):
-    instructions: list[IrStatement] = block.children
+def indices_to_delete_and_replace_single_use(
+        instructions: list[IrStatement]):
     def_indices: dict[str, list[int]] = compute_def_indices(instructions)
     current_vars_def_index: dict[str, int] = {}
     uses_instr_count: dict[str, list[int]] = {}
@@ -299,29 +269,117 @@ def indices_to_delete_and_replace_single_use(block: IrBlock):
                 
 
 
-def inline_subexp_block(block: IrBlock) -> None:
-    """private"""
+def inline_fixpoint(instructions: list[IrStatement]) -> None:
+    """Iterate the delete/replace pass to a fixpoint over a straight-line
+    instruction list. Uses are mutated in place; deleted definitions are removed
+    from `instructions` in place, so a caller holding the list sees them."""
     while True:
-        to_delete_indices = indices_to_delete_and_replace_single_use(block)
+        to_delete_indices = indices_to_delete_and_replace_single_use(
+            instructions)
         if len(to_delete_indices) == 0:
             break
         for i in sorted(set(to_delete_indices), reverse=True):
-            del block.children[i]
+            del instructions[i]
 
 
-def inline_subexp_cfg(cfg: Graph) -> None:
+def inline_subexp_block(block: IrBlock) -> None:
+    """private"""
+    inline_fixpoint(block.children)
+
+
+def live_block_order(cfg: Graph, layer_index):
+    """
+    Reconstruct the straight-line execution order of live blocks, mirroring
+    `codeGen.visitIrBlock` (the source of truth for emission order): start at the
+    entry block, emit it, follow the taken `inner_jump` branch, then the `jump`
+    successor. `visited` (on block identity) dedups merge blocks, as codegen does.
+
+    A len-3 `inner_jump` is resolved with the profiled branch recorded during
+    simulacrum (`get_profiled_branch`), so the order matches the stream codegen
+    emits under `--reuse`.
+
+    Returns the live blocks in execution order, or None when the live path has
+    control flow we cannot linearize (an unresolved profiled branch, a plain `if`,
+    or a while loop -- the last should already be unrolled by `tensor_to_block`).
+    Callers treat None as "skip".
+    """
+    order: list[IrBlock] = []
+    visited: set[int] = set()
+    ok = True
+
+    def visit(block):
+        nonlocal ok
+        if block is None or not ok or id(block) in visited:
+            return
+        visited.add(id(block))
+        order.append(block)
+        if block.inner_jump is not None:
+            if len(block.inner_jump) == 3:
+                taken = get_profiled_branch(layer_index, block.block_id)
+                if taken == 'then':
+                    visit(block.inner_jump[1])
+                elif taken == 'else':
+                    visit(block.inner_jump[2])
+                else:
+                    ok = False
+                    return
+            else:
+                # A plain conditional (`if(cond): ...`) or a while loop: codegen
+                # emits these guarded, so they are not unconditionally on the
+                # live path and cannot be flattened into a linear stream.
+                ok = False
+                return
+        if block.jump is not None:
+            visit(block.jump[1])
+
+    visit(cfg.ir[cfg.entry_node])
+    return order if ok else None
+
+
+def inline_subexp_cfg(cfg: Graph, layer_index=None) -> None:
     """
     private
-    Currently, we assume that the IR we apply on has no control flow.
-    So we do not need to deal with `jump` and `inner_jump` of IrBlock here.
-    This is ineed the case in the current lowered-to-block IR.
-    This function should be amenable to future extension to control flow.
+    Inline single-use temporaries within one transformer CFG.
+
+    A single-block CFG (e.g. `deeppoly`) is inlined directly. A multi-block CFG
+    (e.g. `zid`, whose ternaries lower to profiled branches) is linearized along
+    the profiled live path, inlined as one flat sequence, then the survivors are
+    written back to their originating blocks. Block boundaries and jumps are
+    untouched, so codegen emits the same structure minus the folded temporaries.
     """
-    # assert len(cfg.nodes) == 1
-    if len(cfg.nodes) != 1:
+    if len(cfg.nodes) == 1:
+        inline_subexp_block(cfg.ir[cfg.nodes[0]])
         return
-    block = cfg.ir[cfg.nodes[0]]
-    inline_subexp_block(block)
+
+    if layer_index is None:
+        # Non-layerwise CFG with control flow: no profiled branch data to
+        # resolve the live path, so leave it unchanged (preserve old behavior).
+        return
+
+    order = live_block_order(cfg, layer_index)
+    if order is None:
+        return
+
+    flat: list[IrStatement] = []
+    owners: list[IrBlock] = []
+    for block in order:
+        for instr in block.children:
+            flat.append(instr)
+            owners.append(block)
+
+    while True:
+        to_delete_indices = indices_to_delete_and_replace_single_use(flat)
+        if len(to_delete_indices) == 0:
+            break
+        for i in sorted(set(to_delete_indices), reverse=True):
+            del flat[i]
+            del owners[i]
+
+    survivors: dict[int, list[IrStatement]] = {}
+    for instr, owner in zip(flat, owners):
+        survivors.setdefault(id(owner), []).append(instr)
+    for block in order:
+        block.children[:] = survivors.get(id(block), [])
 
 
 def inline_subexp(ir: IrProgram) -> None:
@@ -329,15 +387,15 @@ def inline_subexp(ir: IrProgram) -> None:
     public
     Requires:
     - `ir` is already optimized to block level.
-    - Every abstract OP tranformer in `ir` has no control flow (i.e., only one
-        block in its CFG).
+    - While loops have been unrolled (multi-block CFGs may still contain
+        profiled branches, which are linearized along the recorded live path).
     """
     for transformer in ir.tstore.keys():
         for i in range(len(ir.tstore[transformer])):
             transformer_ir = ir.tstore[transformer][i]
             if transformer_ir.layerwise_cfgs is not None:
-                for cfg in transformer_ir.layerwise_cfgs.values():
-                    inline_subexp_cfg(cfg)
+                for layer_index, cfg in transformer_ir.layerwise_cfgs.items():
+                    inline_subexp_cfg(cfg, layer_index)
             else:
                 cfg: Graph = transformer_ir.cfg
                 inline_subexp_cfg(cfg)
