@@ -1464,18 +1464,11 @@ def remove_while(layer_index, num_iterations, cfg, root_node, first_while_node, 
     tensor_to_block_block(exit_block, layer_index)
 
 
-    # Recycle the ttb_var namespace across unrolled iterations. Trying to see if this works or not.
-    global counter
-    snapshot = counter
-    max_counter = counter
     ir_list = root_block.children
     for i in range(num_iterations):
-        counter = snapshot
         combined_list = copy.deepcopy(first_while_block.children + second_while_block.children)
         tensor_to_block_block(None, layer_index=layer_index, ir_list=combined_list, while_iteration=i)
-        max_counter = max(max_counter, counter)
         ir_list += combined_list
-    counter = max_counter
 
     ir_list += exit_block.children
 

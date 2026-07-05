@@ -8,6 +8,7 @@ so folding the value frees the intermediate's memory earlier.
 
 from __future__ import annotations
 import bisect
+import heapq
 from constraintflow.compiler.ir import *
 from constraintflow.compiler.representations import Graph
 
@@ -314,3 +315,115 @@ def inline_subexp(ir: IrProgram) -> None:
                     inline_subexp_cfg(cfg)
             else:
                 inline_subexp_cfg(transformer_ir.cfg)
+
+
+# Liveness-based name recycling (linear-scan register allocation).
+#
+# tensor_to_block gives every temporary a unique name, and Python only frees a
+# local at function return, so temporaries inlining could not fold pile up (peak
+# = sum of all of them). Reusing a name instead frees the previous tensor on
+# rebind (refcount drop -- no del/gc). This pass runs after inline_subexp and
+# renames single-def temporaries onto the smallest pool that respects liveness,
+# so peak drops to the max simultaneously-live set.
+
+
+def _temp_liveness(instructions, prefix):
+    """
+    Per temporary named with `prefix`, return its def index, last-use index, and
+    every IrVar node naming it (def + uses, so the caller can rename in place).
+    Names assigned more than once go in `multi_def` (no single live interval) and
+    are left alone.
+    """
+    def_pos: dict[str, int] = {}
+    last_use: dict[str, int] = {}
+    nodes: dict[str, list] = {}
+    multi_def: set[str] = set()
+    for i, instr in enumerate(instructions):
+        # Uses before the def: the RHS is evaluated before the LHS binds.
+        if isinstance(instr, IrAssignment):
+            occ = get_vars_expr_occurrences(instr.children[1])
+        elif isinstance(instr, IrTransRetBasic):
+            occ = []
+            for child in instr.children:
+                occ.extend(get_vars_expr_occurrences(child))
+        else:
+            occ = []
+        for v in occ:
+            if v.name.startswith(prefix):
+                nodes.setdefault(v.name, []).append(v)
+                last_use[v.name] = i
+        if isinstance(instr, IrAssignment):
+            lhs = instr.children[0]
+            if isinstance(lhs, IrVar) and lhs.name.startswith(prefix):
+                if lhs.name in def_pos:
+                    multi_def.add(lhs.name)
+                else:
+                    def_pos[lhs.name] = i
+                nodes.setdefault(lhs.name, []).append(lhs)
+    return def_pos, last_use, nodes, multi_def
+
+
+def recycle_temp_names_block(
+        instructions, prefix="ttb_var_", pool_prefix="ttb_r_") -> dict[str, str]:
+    """
+    Linear-scan register allocation over a straight-line block: rename single-def
+    `prefix` temporaries onto a minimal pool (`pool_prefix`0, 1, ...), reusing a
+    name only after its occupant's last use. Returns the applied name map.
+
+    Reusing a name only after its occupant is dead never clobbers a live value.
+    Aliasing is safe too: reuse just drops that binding; a block still referenced
+    elsewhere (e.g. `.blocks[k]` held by a survivor) stays alive through it.
+    """
+    # Drop inert `del` markers (codegen emits nothing for them) so they can't pin
+    # a recycled name.
+    instructions[:] = [ins for ins in instructions if not isinstance(ins, IrDel)]
+
+    def_pos, last_use, nodes, multi_def = _temp_liveness(instructions, prefix)
+    names = sorted(
+        (n for n in def_pos if n not in multi_def), key=lambda n: def_pos[n])
+
+    free: list[int] = []                # reusable pool indices (min-heap)
+    active: list[tuple[int, int]] = []  # (last_use_index, pool_index) still live
+    next_idx = 0
+    rename: dict[str, str] = {}
+    for name in names:
+        p = def_pos[name]
+        survivors = []
+        for end, idx in active:
+            if end < p:                 # occupant dead before this def
+                heapq.heappush(free, idx)
+            else:
+                survivors.append((end, idx))
+        active = survivors
+        idx = heapq.heappop(free) if free else next_idx
+        if idx == next_idx:
+            next_idx += 1
+        rename[name] = pool_prefix + str(idx)
+        active.append((last_use.get(name, p), idx))
+
+    for name, new_name in rename.items():
+        for node in nodes[name]:
+            node.name = new_name
+    return rename
+
+
+def recycle_temp_names_cfg(cfg: Graph) -> None:
+    """private"""
+    if len(cfg.nodes) == 1:
+        recycle_temp_names_block(cfg.ir[cfg.nodes[0]].children)
+
+
+def recycle_temp_names(ir: IrProgram) -> None:
+    """
+    public
+    Run after `inline_subexp` on the collapsed per-layer blocks; recycles the
+    temporaries it left behind so their tensors free on rebind.
+    """
+    for transformer in ir.tstore.keys():
+        for i in range(len(ir.tstore[transformer])):
+            transformer_ir = ir.tstore[transformer][i]
+            if transformer_ir.layerwise_cfgs is not None:
+                for cfg in transformer_ir.layerwise_cfgs.values():
+                    recycle_temp_names_cfg(cfg)
+            else:
+                recycle_temp_names_cfg(transformer_ir.cfg)
