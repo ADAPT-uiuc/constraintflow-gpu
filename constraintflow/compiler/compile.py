@@ -72,6 +72,7 @@ def compile(inputfile, output_path):
         tensor_to_block.tensor_to_block(ir)
         # copyPropagation.copy_proagate(ir)
         subexp_inlining.inline_subexp(ir)
+        subexp_inlining.recycle_temp_names(ir)
         # constant_folding.constant_fold(ir)
         # copyPropagation.copy_proagate(ir)
 
