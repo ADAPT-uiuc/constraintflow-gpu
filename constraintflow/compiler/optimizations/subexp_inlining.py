@@ -65,8 +65,24 @@ def replace_var_with_expr(
             {var_name: replace_expr})
             new_children.append(new_expr)
         instructions[use_instr_index].update_parent_child(new_children)
+    elif isinstance(instructions[use_instr_index], IrAssignToView):
+        new_children = []
+        for j in range(len(instructions[use_instr_index].children)):
+            new_expr = replace_all_occurrences_expr(
+            instructions[use_instr_index].children[j],
+            {var_name: replace_expr})
+            new_children.append(new_expr)
+        instructions[use_instr_index].update_parent_child(new_children)
+    elif isinstance(instructions[use_instr_index], IrAssignToBlock):
+        new_children = []
+        for j in range(len(instructions[use_instr_index].children)):
+            new_expr = replace_all_occurrences_expr(
+            instructions[use_instr_index].children[j],
+            {var_name: replace_expr})
+            new_children.append(new_expr)
+        instructions[use_instr_index].update_parent_child(new_children)
     else:
-        assert False
+        assert False, f'Unexpected instruction type: {type(instructions[use_instr_index])}'
 
 
 def compute_def_indices(
@@ -229,6 +245,16 @@ def indices_to_delete_and_replace_single_use(
         if isinstance(instructions[i], IrAssignment):
             temp = get_vars_expr_occurrences(instructions[i].children[1])
         elif isinstance(instructions[i], IrTransRetBasic):
+            temp = []
+            for j in range(len(instructions[i].children)):
+                temp.extend(
+                    get_vars_expr_occurrences(instructions[i].children[j]))
+        elif isinstance(instructions[i], IrAssignToView):
+            temp = []
+            for j in range(len(instructions[i].children)):
+                temp.extend(
+                    get_vars_expr_occurrences(instructions[i].children[j]))
+        elif isinstance(instructions[i], IrAssignToBlock):
             temp = []
             for j in range(len(instructions[i].children)):
                 temp.extend(
