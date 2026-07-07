@@ -3128,8 +3128,8 @@ class PatchesBlock(SparseBlock):
         json_obj = {
             "method": "torch_zeros",
             "size": (int(batch_size), output_channel, output_x, output_y, input_channel, (input_x + padding[2] + padding[3]) * (input_y + padding[0] + padding[1])),
-            "device": "json_list_" + str(pieces_index) + ".device",
-            "dtype": "json_list_" + str(pieces_index) + ".dtype",
+            "device": "device_mode.get_device()",
+            "dtype": str(pieces.dtype),
             "output": len(json_list),
         }
         json_list.append(json_obj)
@@ -3166,13 +3166,13 @@ class PatchesBlock(SparseBlock):
         json_obj = {
             "method": "torch_reshape",
             "input": "json_list_" + str(pieces_index),
-            "shape": "(*json_list_" + str(pieces_index) + ".shape[:2], -1, *json_list_" + str(pieces_index) + ".shape[4:])",
+            "shape": [int(d) for d in pieces.shape[:2]] + [-1] + [int(d) for d in pieces.shape[4:]],
             "output": len(json_list),
         }
         json_list.append(json_obj)
         matrix_strided[:,:,second_indices,third_indices,second_indices,third_indices,:,:,:] = pieces.reshape(*pieces.shape[:2], -1, *pieces.shape[4:])
-        second_indices_expr = "torch.div(torch.arange(" + str(output_x * output_y) + ", device=json_list_" + str(pieces_current_index) + ".device), " + str(output_y) + ', rounding_mode="trunc")'
-        third_indices_expr = "torch.fmod(torch.arange(" + str(output_x * output_y) + ", device=json_list_" + str(pieces_current_index) + ".device), " + str(output_y) + ")"
+        second_indices_expr = "torch.div(torch.arange(" + str(output_x * output_y) + ", device=device_mode.get_device()), " + str(output_y) + ', rounding_mode="trunc")'
+        third_indices_expr = "torch.fmod(torch.arange(" + str(output_x * output_y) + ", device=device_mode.get_device()), " + str(output_y) + ")"
         json_obj = {
             "method": "assign_to_view",
             "input": "json_list_" + str(matrix_strided_index),
@@ -3203,7 +3203,7 @@ class PatchesBlock(SparseBlock):
         json_obj = {
             "method": "torch_reshape",
             "input": "json_list_" + str(len(json_list) - 1),
-            "shape": "(json_list_" + str(len(json_list) - 1) + ".shape[0], json_list_" + str(len(json_list) - 1) + ".shape[1], -1)",
+            "shape": [int(A_matrix.shape[0]), int(A_matrix.shape[1]), -1],
             "output": len(json_list),
         }
         json_list.append(json_obj)

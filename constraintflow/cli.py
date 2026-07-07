@@ -199,7 +199,7 @@ def run(
     batch_size: int = typer.Option(1, help="Batch size"),
     eps: float = typer.Option(0.01, help="Epsilon"),
     train: bool = typer.Option(False, help="Run on training dataset"),
-    print_intermediate_results: bool = True,
+    print_intermediate_results: bool = False,
     no_sparsity: bool = typer.Option(False, help="Disable sparsity optimizations"),
     device: str = typer.Option("cpu", help="Device mode: cpu, gpu (CUDA), or gpumac (Apple MPS)"),
     output_path: str = typer.Option("output/", help="Path where compiled program is stored"),

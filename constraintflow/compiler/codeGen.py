@@ -101,6 +101,7 @@ class CodeGen(irVisitor.IRVisitor):
         self.write('import os')
         self.write('import torch')
         self.write('import operator')
+        self.write('from constraintflow.lib.globals import device_mode')
         self.write('from constraintflow.lib.polyexp import PolyExpSparse')
         if reuse_mode.get_flag():
             self.write('from constraintflow.lib.symexp import SymExpSparse')
