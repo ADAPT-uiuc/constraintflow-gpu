@@ -26,6 +26,11 @@ debug_flag4 = Flag()
 dummy_mode = Flag()
 reuse_mode = Flag()
 dense_default_mode = Flag()
+# When set (via --no-barriers), subexp_inlining folds every single-use temporary
+# unconditionally: the storage-class/redefinition safety analysis in
+# is_safe_to_inline is skipped. Fewer materialized intermediates => lower peak
+# memory, but the transform is no longer guaranteed value-preserving.
+no_barriers = Flag()
 # dummy_mode = False
 # reuse_mode = False
 
