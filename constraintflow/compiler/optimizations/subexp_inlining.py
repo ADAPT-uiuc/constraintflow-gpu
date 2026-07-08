@@ -99,6 +99,98 @@ def compute_def_indices(
     return def_indices
 
 
+# Storage-class alias analysis, so the in-place-write barrier blocks only folds
+# whose value depends on the mutated storage. Node types that allocate fresh
+# storage; everything else is assumed to alias its inputs (sound default).
+_FRESH_NODE_TYPES = (
+    IrTorchZeros, IrTorchEye, IrTensorOnes,
+    IrTorchMatmul, IrBlockInnerProduct,
+    IrSimpleBinary, IrBlockBinaryOp,
+    IrTorchSum, IrTorchRepeat, IrTensorRepeat,
+    IrTorchDiagEmbed, IrTorchWhere, IrBlockWhereBlock,
+    IrTensorClamp, IrBlockClamp, IrConvertBoolToFloat,
+    IrFConv2d, IrFConvTranspose2d, IrFUnfold,
+    IrConstBlock, IrTorchStride, IrBlockGetDims,
+    IrBlockAll, IrBlockAny, IrBlockCopy, IrBlockCreateSimilar,
+    IrGetKthLayerNetworkParam, IrEmptyList,
+)
+
+
+class _UnionFind:
+    """Union-find over variable names with path-halving and union-by-size"""
+
+    def __init__(self):
+        self.parent: dict[str, str] = {}
+        self.size: dict[str, int] = {}
+
+    def find(self, x: str) -> str:
+        parent = self.parent
+        if x not in parent:
+            parent[x] = x
+            self.size[x] = 1
+            return x
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:            # path-halving
+            parent[x], x = root, parent[x]
+        return root
+
+    def union(self, a: str, b: str) -> None:
+        ra, rb = self.find(a), self.find(b)
+        if ra == rb:
+            return
+        if self.size[ra] < self.size[rb]:   # attach smaller tree under larger
+            ra, rb = rb, ra
+        self.parent[rb] = ra
+        self.size[ra] += self.size[rb]
+
+
+def expr_base_vars(expr) -> list[IrVar]:
+    """Variables whose storage `expr`'s result may alias: none for a FRESH node,
+    else the vars it is built from (view/wrapper/accessor/unknown all alias)."""
+    if isinstance(expr, IrVar):
+        return [expr]
+    if expr is None or isinstance(expr, (int, float, IrConst)):
+        return []
+    if isinstance(expr, list):
+        out: list[IrVar] = []
+        for x in expr:
+            out.extend(expr_base_vars(x))
+        return out
+    if isinstance(expr, _FRESH_NODE_TYPES):
+        return []
+    out = []
+    for child in get_generalized_children(expr):
+        out.extend(expr_base_vars(child))
+    return out
+
+
+def compute_storage_classes(instructions: list[IrStatement]):
+    """Return (class_of, mutations_by_class): each variable's storage-class
+    representative, and per class the ascending indices of in-place writes that
+    mutate it."""
+    uf = _UnionFind()
+    for instr in instructions:
+        if isinstance(instr, IrAssignment):
+            lhs = instr.children[0]
+            if isinstance(lhs, IrVar):
+                uf.find(lhs.name)
+                for bv in expr_base_vars(instr.children[1]):
+                    uf.union(lhs.name, bv.name)
+    # Indices are appended in ascending order (enumerate), so lists stay sorted.
+    mutations_by_class: dict[str, list[int]] = {}
+    for idx, instr in enumerate(instructions):
+        if isinstance(instr, (IrAssignToView, IrAssignToBlock)):
+            for bv in expr_base_vars(instr.children[0]):
+                rep = uf.find(bv.name)
+                idxs = mutations_by_class.setdefault(rep, [])
+                if not idxs or idxs[-1] != idx:
+                    idxs.append(idx)
+    class_of = {name: uf.find(name) for name in uf.parent}
+    return class_of, mutations_by_class
+
+
 def reaching_def_index(
         def_indices: dict[str, list[int]], name: str, point: int):
     """Index of the definition of `name` strictly before `point`, or None if
@@ -114,6 +206,18 @@ def redefined_between(
         def_indices: dict[str, list[int]], name: str, lo: int, hi: int) -> bool:
     """True iff `name` is assigned at some index in the open interval (lo, hi)."""
     idxs = def_indices.get(name)
+    if not idxs:
+        return False
+    k = bisect.bisect_right(idxs, lo)
+    return k < len(idxs) and idxs[k] < hi
+
+
+def mutated_between(
+        mutations_by_class: dict[str, list[int]], class_rep: str,
+        lo: int, hi: int) -> bool:
+    """True iff storage class `class_rep` is written in place at some index in
+    the open interval (lo, hi)."""
+    idxs = mutations_by_class.get(class_rep)
     if not idxs:
         return False
     k = bisect.bisect_right(idxs, lo)
@@ -160,17 +264,31 @@ def get_vars_expr_occurrences(expr) -> list[IrVar]:
 
 
 def is_safe_to_inline(
-        def_indices: dict[str, list[int]], expr, def_index: int,
-        use_index: int) -> bool:
+        def_indices: dict[str, list[int]], class_of: dict[str, str],
+        mutations_by_class: dict[str, list[int]], var: IrVar, expr,
+        def_index: int, use_index: int) -> bool:
     """
-    Moving `expr` from `def_index` to `use_index` preserves its value iff none
-    of the variables it reads is reassigned in the open interval
-    (def_index, use_index). Both ends are open: `def_index` only reads those
-    variables, and at `use_index` the RHS is evaluated before that statement's
-    own assignment.
+    Moving `var`'s value `expr` from `def_index` to `use_index` (open interval)
+    preserves it iff no variable `expr` reads is reassigned there, and no in-place
+    write there mutates a storage class the value depends on -- either `var`'s own
+    class (the value *is* that storage: the alias case, keyed on `var` so it holds
+    even after `resolve_value` collapses the chain to a var-free `torch.zeros`) or
+    the class of a variable `expr` reads.
     """
-    for var in get_vars_expr_occurrences(expr):
-        if redefined_between(def_indices, var.name, def_index, use_index):
+    if True:
+        relevant_classes: set[str] = set()
+        cv = class_of.get(var.name)
+        if cv is not None:
+            relevant_classes.add(cv)
+        for v in get_vars_expr_occurrences(expr):
+            cv = class_of.get(v.name)
+            if cv is not None:
+                relevant_classes.add(cv)
+        for rep in relevant_classes:
+            if mutated_between(mutations_by_class, rep, def_index, use_index):
+                return False
+    for v in get_vars_expr_occurrences(expr):
+        if redefined_between(def_indices, v.name, def_index, use_index):
             return False
     return True
 
@@ -195,6 +313,7 @@ def copy_leaf(expr):
 
 def try_inline_definition(
         instructions: list[IrStatement], def_indices: dict[str, list[int]],
+        class_of: dict[str, str], mutations_by_class: dict[str, list[int]],
         var: IrVar, def_stmt_index: int, use_indices: list[int],
         to_delete_indices: list[int]) -> None:
     """
@@ -220,8 +339,8 @@ def try_inline_definition(
         return
     inlined_all = True
     for use_index in use_indices:
-        if is_safe_to_inline(def_indices, inline_expr, value_def_index,
-                             use_index):
+        if is_safe_to_inline(def_indices, class_of, mutations_by_class, var,
+                             inline_expr, value_def_index, use_index):
             replace_var_with_expr(
                 instructions, use_index, copy_leaf(inline_expr), var)
         else:
@@ -233,6 +352,7 @@ def try_inline_definition(
 def indices_to_delete_and_replace_single_use(
         instructions: list[IrStatement]):
     def_indices: dict[str, list[int]] = compute_def_indices(instructions)
+    class_of, mutations_by_class = compute_storage_classes(instructions)
     current_vars_def_index: dict[str, int] = {}
     uses_instr_count: dict[str, list[int]] = {}
     to_delete_indices: list[int] = []
@@ -275,16 +395,16 @@ def indices_to_delete_and_replace_single_use(
             assert isinstance(defined_var, IrVar)
             if defined_var.name in current_vars_def_index.keys():
                 try_inline_definition(
-                    instructions, def_indices, defined_var,
-                    current_vars_def_index[defined_var.name],
+                    instructions, def_indices, class_of, mutations_by_class,
+                    defined_var, current_vars_def_index[defined_var.name],
                     uses_instr_count[defined_var.name], to_delete_indices)
             current_vars_def_index[defined_var.name] = i
             uses_instr_count[defined_var.name] = []
-    
+
     for var in current_vars_def_index.keys():
         try_inline_definition(
-            instructions, def_indices, name_to_var[var],
-            current_vars_def_index[var],
+            instructions, def_indices, class_of, mutations_by_class,
+            name_to_var[var], current_vars_def_index[var],
             uses_instr_count.get(var, []), to_delete_indices)
 
     return to_delete_indices

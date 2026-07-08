@@ -22,6 +22,7 @@ class Flow:
         self.batch_size = abs_elem.batch_size
         self.print_intermediate_results = print_intermediate_results
         self.no_sparsity = no_sparsity
+        self.logfile = open("flow_log_1.txt", "w")
 
     def flow(self):
         begin_time = time.time()
@@ -159,7 +160,6 @@ class Flow:
                                     block_id = block_ids[i]
                                     block = self.abs_elem.d[key].mat.blocks[block_id]
                                     if p==0:
-                                        
                                         start_indices.append(torch.tensor([0, new_start_index, block_start_indices[i][2]]))
                                         end_indices.append(torch.tensor([self.batch_size, new_start_index+self.model[par].size, block_end_indices[i][2]]))
                                         blocks.append(block)
@@ -201,20 +201,23 @@ class Flow:
 
 
             if self.print_intermediate_results:
+                self.logfile.write(f"Layer {tmp+1}: {layer.type}\n")
                 print(tmp+1, layer.type, layer.shape)
                 print(time.time()-t_time)
                 print('---------------------------')
                 lb = (abs_shape[0].get_dense())
                 ub = (abs_shape[1].get_dense())
+                self.logfile.write(f'l: {lb}\n')
+                self.logfile.write(f'u: {ub}\n')
                 print(f'l: {lb}')
                 print(f'u: {ub}')
-                if len(abs_shape) > 3:
-                    L = (abs_shape[2].mat)
-                    U = (abs_shape[3].mat)
-                    print(f'L: {L}')
-                    print(f'U: {U}')
-                elif len(abs_shape) > 2 and hasattr(abs_shape[2], 'mat'):
-                    print(f'Z: {abs_shape[2].mat}')
+                # if len(abs_shape) > 3:
+                #     L = (abs_shape[2].mat)
+                #     U = (abs_shape[3].mat)
+                #     print(f'L: {L}')
+                #     print(f'U: {U}')
+                # elif len(abs_shape) > 2 and hasattr(abs_shape[2], 'mat'):
+                #     print(f'Z: {abs_shape[2].mat}')
         lb = (abs_shape[0].get_dense())
         ub = (abs_shape[1].get_dense())
 
