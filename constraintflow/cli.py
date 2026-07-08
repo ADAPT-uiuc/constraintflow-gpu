@@ -5,9 +5,11 @@ argv = sys.argv[1:]
 globals.dummy_mode.set_flag() if "--simulacrum" in argv else globals.dummy_mode.reset_flag()
 globals.reuse_mode.set_flag() if "--reuse" in argv else globals.reuse_mode.reset_flag()
 globals.dense_default_mode.set_flag() if "--dense" in argv else globals.dense_default_mode.reset_flag()
+globals.no_barriers.set_flag() if "--no-barriers" in argv else globals.no_barriers.reset_flag()
 
 print(f'dummy_mode in cli: {globals.dummy_mode}')
 print(f'reuse_mode in cli: {globals.reuse_mode}')
+print(f'no_barriers in cli: {globals.no_barriers}')
 
 
 
@@ -208,6 +210,7 @@ def run(
     simulacrum: bool = typer.Option(False, help="Run Simulacrum (dummy blocks)"),
     reuse: bool = typer.Option(False, help="Reuse the stored indices that were stored by running dummy blocks"),
     dense: bool = typer.Option(False, help="Use dense blocks by default"),
+    no_barriers: bool = typer.Option(False, "--no-barriers", help="Inline every single-use temporary unconditionally (skip is_safe_to_inline's safety analysis). Lower peak memory, not guaranteed value-preserving."),
 ):
     """
     Run a compiled ConstraintFlow program.

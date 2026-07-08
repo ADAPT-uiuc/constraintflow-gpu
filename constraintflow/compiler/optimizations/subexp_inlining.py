@@ -11,6 +11,7 @@ import bisect
 import heapq
 from constraintflow.compiler.ir import *
 from constraintflow.compiler.representations import Graph
+from constraintflow.lib.globals import no_barriers
 
 
 def get_generalized_children(expr) -> list[IrExpression]:
@@ -275,6 +276,8 @@ def is_safe_to_inline(
     even after `resolve_value` collapses the chain to a var-free `torch.zeros`) or
     the class of a variable `expr` reads.
     """
+    if no_barriers:
+        return True
     if True:
         relevant_classes: set[str] = set()
         cv = class_of.get(var.name)
