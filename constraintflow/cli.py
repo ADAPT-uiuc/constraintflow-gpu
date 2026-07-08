@@ -289,6 +289,11 @@ def run(
     if is_cuda:
         peak_bytes = torch.cuda.max_memory_allocated()
         typer.echo(f"Peak GPU memory: {peak_bytes} bytes")
+    else:
+        import resource
+        maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        peak_bytes = maxrss if sys.platform == "darwin" else maxrss * 1024
+        typer.echo(f"Peak CPU memory: {peak_bytes} bytes")
     # if eps == 0:
     #     assert(lb == ub).all(), "Bounds should be equal when eps=0"
 
