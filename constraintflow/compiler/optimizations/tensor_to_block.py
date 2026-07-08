@@ -1248,10 +1248,6 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 raise Exception("NOT IMPLEMENTED")
 
             new_assignments.append(IrAssignToBlock(assignToIr, valueIr))
-            # The writer appends assign_to_block to json_list, so it occupies an
-            # index slot that later "output": len(json_list) values account for.
-            # Append a placeholder output_var (bound to the mutated block) to keep
-            # output_vars positionally aligned, mirroring assign_to_view above.
             new_assignment = IrAssignment(new_var, assignToIr)
             new_assignments.append(new_assignment)
             output_vars.append(new_var)
