@@ -290,7 +290,7 @@ def test(
     dataset: str = "mnist",
     device: str = typer.Option("cpu", help="Device to run on: cpu, gpu (CUDA), or gpumac (Apple MPS)."),
     profile: bool = typer.Option(False, "--profile", help="Profile compile & run time and peak memory for the Normal and JIT paths and print a table."),
-    repeat: int = typer.Option(5, help="In --profile mode, run each configuration this many times and average the time and memory."),
+    repeat: int = typer.Option(1, help="In --profile mode, run each configuration this many times and average the time and memory."),
 ):
     if profile:
         _run_profile_mode(program_files, network, dataset, device, repeat)
