@@ -5,6 +5,7 @@ import torch
 from constraintflow.compiler.ir import *
 from constraintflow.compiler.optimizations import uses
 from constraintflow.gbcsr.sparse_tensor import get_operator_func
+from constraintflow.lib.globals import jit_path
 
 
 counter = -1
@@ -65,7 +66,7 @@ def get_profiled_branch(layer_index, block_id):
     if block_id is None:
         return None
 
-    filename = f"jit_branch/branch_{layer_index}_{block_id}.json"
+    filename = jit_path(f"jit_branch/branch_{layer_index}_{block_id}.json")
     if not os.path.exists(filename):
         return None
 
@@ -178,12 +179,10 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         filename = f"jit_sum/sum_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrEpsilon):
         filename = f"jit_new_eps/new_eps_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
-
     elif isinstance(expr, IrAccess) and (not expr.isMetadata):
         filename = f'jit_Abs_elem_sparse_get_elem/Abs_elem_sparse_get_elem_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
     elif isinstance(expr, IrAccess) and expr.isMetadata:
         filename = f'jit_llist_get_metadata/llist_get_metadata_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
-        # print(filename)
     elif isinstance(expr, IrExtractPolyCoeff):
         filename = f'jit_poly_exp_sparse_get_mat/poly_exp_sparse_get_mat_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
     elif isinstance(expr, IrExtractSymCoeff):
@@ -191,7 +190,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
     elif isinstance(expr, IrMapCoeff):
         filename = f'jit_poly_exp_sparse_get_mat/poly_exp_sparse_get_mat_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
     
-    with open(filename, 'r') as f:
+    with open(jit_path(filename), 'r') as f:
         json_list = json.load(f)
     if isinstance(expr, IrTernary):
         cond = expr.children[0]
@@ -255,8 +254,6 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         irMetadata = rhs.irMetadata
     elif isinstance(lhs, IrAst):
         irMetadata = lhs.irMetadata
-    # elif isinstance(expr, (IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff)):
-    #     irMetadata = expr.irMetadata
     else:
         irMetadata = None
     new_assignments = []
@@ -280,9 +277,6 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         
         elif json_obj["method"] == "SparseTensor":
             if "json_list_" in json_obj['blocks']:
-                # print(len(output_vars), int(json_obj['blocks'].split("_")[-1]))
-                # if 'debug_pos' in json_obj:
-                #     print(json_obj['debug_pos'])
                 blocksIr = output_vars[int(json_obj['blocks'].split("_")[-1])]
             elif json_obj['blocks'] == []:
                 blocksIr = []
@@ -331,18 +325,6 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
 
         elif json_obj["method"] == "bool_value":
             output = IrConst(json_obj["value"], 'Bool')
-
-        # elif json_obj["method"] == "get_sub_block_custom_range":
-        #     if "json_list_" in json_obj["lhs"]:
-        #         inputIr = output_vars[int(json_obj["lhs"].split("_")[-1])]
-        #     elif json_obj["lhs"] == "lhs":
-        #         inputIr = lhs
-        #     elif json_obj["lhs"] == "rhs":
-        #         inputIr = rhs
-        #     else:
-        #         raise Exception("NOT IMPLEMENTED")
-        #     output = IrGetSubBlockCustomRange(inputIr, torch.tensor(json_obj["start_index"], dtype=torch.int64), torch.tensor(json_obj["end_index"], dtype=torch.int64), json_obj["block_id"], json_obj["tensor"])
-
         elif json_obj["method"] == "unary_block":
             if "json_list_" in json_obj["input"]:
                 inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
@@ -390,11 +372,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             if lambda_obj["method"] != "lambda":
                 raise Exception("NOT IMPLEMENTED")
             # Inline the lambda directly as the op instead of referencing the
-            # ttb_var it was assigned to. IrSimpleUnary stores op outside of
-            # .children, so a variable reference here is invisible to the
-            # .children-based def/use analysis in subexp_inlining, which would
-            # then delete the lambda's definition while codegen still emits the
-            # reference (NameError). An inline IrLambda has no separate def.
+            # ttb_var it was assigned to. 
             output = IrSimpleUnary(inputIr, IrLambda(lambda_obj["op"]))
 
         elif json_obj["method"] == "torch_sigmoid":
@@ -1529,7 +1507,7 @@ def unroll_while(cfg, layer_index):
             break_node = cfg.get_block_id(first_while_block.inner_jump[1])
             exit_node = cfg.get_block_id(block.jump[1])
             while_number = first_while_block.while_number
-            filename = f"jit_while/while_iterations_layer_{layer_index}_while_{while_number}.json"
+            filename = jit_path(f"jit_while/while_iterations_layer_{layer_index}_while_{while_number}.json")
             with open(filename, 'r') as f:
                 json_obj = json.load(f)
                 num_iterations = json_obj["num_iterations"]
@@ -1604,7 +1582,7 @@ def collapse_cfg_to_single_block(cfg, layer_index):
 def tensor_to_block(ir):
     # TODO: DEBUG THE FOLLOWING LINE
     # uses.populate_uses_defs(ir)
-    filename = f"jit_layers/layers.json"
+    filename = jit_path("jit_layers", "layers.json")
     with open(filename, 'r') as f:
         json_obj = json.load(f)
     for transformer in ir.tstore.keys():

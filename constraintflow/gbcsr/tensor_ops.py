@@ -14,7 +14,6 @@ def check_type_equality(x, y):
     return False
 
 types = {bool: torch.bool, int: torch.int, float: torch.float}
-# equivalent_types = {(int, )}
 
 def checkTypes(x, y):
     if isinstance(x, SparseTensor):
@@ -95,8 +94,8 @@ def unary(x, op, layer_index=None, counter=None, inside_while=False, while_numbe
         res = op(x)
         if dummy_mode:
             if layer_index is not None and counter is not None:
-                os.makedirs("jit_unary", exist_ok=True)
-                capture_path = f"jit_unary/unary_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+                os.makedirs(jit_path("jit_unary"), exist_ok=True)
+                capture_path = jit_path(f"jit_unary/unary_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json")
                 with open(capture_path, 'w') as f:
                     json.dump(json_list, f, indent=4)
     elif isinstance(x, SparseTensor):
@@ -105,8 +104,8 @@ def unary(x, op, layer_index=None, counter=None, inside_while=False, while_numbe
         res = x.unary(op, json_list=json_list, lhs_index=0)
         if dummy_mode:
             if layer_index is not None and counter is not None:
-                os.makedirs("jit_unary", exist_ok=True)
-                capture_path = f"jit_unary/unary_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+                os.makedirs(jit_path("jit_unary"), exist_ok=True)
+                capture_path = jit_path(f"jit_unary/unary_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json")
                 with open(capture_path, 'w') as f:
                     json.dump(json_list, f, indent=4)
     else:
@@ -117,8 +116,8 @@ def unary(x, op, layer_index=None, counter=None, inside_while=False, while_numbe
         res = op(x)
         if dummy_mode:
             if layer_index is not None and counter is not None:
-                os.makedirs("jit_unary", exist_ok=True)
-                capture_path = f"jit_unary/unary_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+                os.makedirs(jit_path("jit_unary"), exist_ok=True)
+                capture_path = jit_path(f"jit_unary/unary_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json")
                 with open(capture_path, 'w') as f:
                     json.dump(json_list, f, indent=4)
     unary_time.update_total_time(time.perf_counter() - start_time)
@@ -138,8 +137,8 @@ def any(x, layer_index=None, counter=None, inside_while=False, while_number=None
         res = x.any(json_list=json_list, lhs_index=0)
     if dummy_mode:
         if layer_index is not None and counter is not None:
-            os.makedirs("jit_any", exist_ok=True)
-            with open(f"jit_any/any_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json", 'w') as f:
+            os.makedirs(jit_path("jit_any"), exist_ok=True)
+            with open(jit_path(f"jit_any/any_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"), 'w') as f:
                 json.dump(json_list, f, indent=4)
     any_time.update_total_time(time.perf_counter() - start_time)
     return res
@@ -160,8 +159,8 @@ def all(x, layer_index=None, counter=None, inside_while=False, while_number=None
 
     if dummy_mode:
         if layer_index is not None and counter is not None:
-            os.makedirs("jit_all", exist_ok=True)
-            with open(f"jit_all/all_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json", 'w') as f:
+            os.makedirs(jit_path("jit_all"), exist_ok=True)
+            with open(jit_path(f"jit_all/all_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"), 'w') as f:
                 json.dump(json_list, f, indent=4)
     all_time.update_total_time(time.perf_counter() - start_time)
     return res
@@ -226,8 +225,8 @@ def binary(x, y, op, layer_index = None, counter = None, inside_while = False, w
     #     print(while_iteration)
     if dummy_mode and parent_json_list is None:
         if layer_index is not None and counter is not None:
-            os.makedirs("jit_binary", exist_ok=True)
-            capture_path = f"jit_binary/binary_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+            os.makedirs(jit_path("jit_binary"), exist_ok=True)
+            capture_path = jit_path(f"jit_binary/binary_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json")
             # if inside_while:
             #     print(while_iteration)
             #     print(capture_path)
@@ -247,8 +246,8 @@ def cf_max(x, y, layer_index=None, counter=None, inside_while=False, while_numbe
             res = sparse_max(x, y, json_list=json_list, x_json_index=0, y_json_index=1)
             if dummy_mode:
                 if layer_index is not None and counter is not None:
-                    os.makedirs("jit_binary", exist_ok=True)
-                    capture_path = f"jit_binary/binary_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+                    os.makedirs(jit_path("jit_binary"), exist_ok=True)
+                    capture_path = jit_path(f"jit_binary/binary_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json")
                     with open(capture_path, 'w') as f:
                         json.dump(json_list, f, indent=4)
             where_time.update_total_time(time.perf_counter() - start_time)
@@ -268,8 +267,8 @@ def cf_min(x, y, layer_index=None, counter=None, inside_while=False, while_numbe
             res = sparse_min(x, y, json_list=json_list, x_json_index=0, y_json_index=1)
             if dummy_mode:
                 if layer_index is not None and counter is not None:
-                    os.makedirs("jit_binary", exist_ok=True)
-                    capture_path = f"jit_binary/binary_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+                    os.makedirs(jit_path("jit_binary"), exist_ok=True)
+                    capture_path = jit_path(f"jit_binary/binary_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json")
                     with open(capture_path, 'w') as f:
                         json.dump(json_list, f, indent=4)
             where_time.update_total_time(time.perf_counter() - start_time)
@@ -378,8 +377,8 @@ def where(x, y, z, layer_index = None, counter = None, inside_while = False, whi
     res = sp_where(x1, y1, z1, json_list = json_list, x_json_index = x_json_index, y_json_index = y_json_index, z_json_index = z_json_index)
     if dummy_mode:
         if layer_index is not None and counter is not None:
-            os.makedirs("jit_where", exist_ok=True)
-            capture_path = f"jit_where/where_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+            os.makedirs(jit_path("jit_where"), exist_ok=True)
+            capture_path = jit_path(f"jit_where/where_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json")
             
             with open(capture_path, 'w') as f:
                 json.dump(json_list, f, indent=4)
@@ -429,9 +428,9 @@ def inner_prod(x, y, layer_index = None, counter = None, inside_while = False, w
 
             if dummy_mode:
                 if layer_index is not None and counter is not None:
-                    os.makedirs("jit_matmul", exist_ok=True)
+                    os.makedirs(jit_path("jit_matmul"), exist_ok=True)
                     # capture_occurrence = _next_jit_occurrence(_jit_save_occurrence, layer_index, counter)
-                    capture_path = f"jit_matmul/matmul_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+                    capture_path = jit_path(f"jit_matmul/matmul_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json")
                     
                     with open(capture_path, 'w') as f:
                         json.dump(json_list, f, indent=4)
@@ -562,8 +561,8 @@ def get_default_stop(shape, abs_elem, batch_size, curr_size, poly_size, layer_in
     temp = SparseTensor(res_start_indices, res, len(shape), torch.tensor(shape), res_end_indices, type=bool, dense_const=True)
     if dummy_mode:
         if layer_index is not None and counter is not None:
-            os.makedirs("jit_defaultstop", exist_ok=True)
-            capture_path = f"jit_defaultstop/stop_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+            os.makedirs(jit_path("jit_defaultstop"), exist_ok=True)
+            capture_path = jit_path(f"jit_defaultstop/stop_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json")
             
             with open(capture_path, 'w') as f:
                 json.dump(json_list, f, indent=4)
@@ -632,8 +631,8 @@ def get_max_priority(sp_tensor, active_vertices: SparseTensor, layer_index=None,
             "output": len(json_list),
         })
         if dummy_mode:
-            os.makedirs("jit_priority", exist_ok=True)
-            capture_path = f"jit_priority/priority_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+            os.makedirs(jit_path("jit_priority"), exist_ok=True)
+            capture_path = jit_path(f"jit_priority/priority_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json")
             with open(capture_path, 'w') as f:
                 json.dump(json_list, f, indent=4)
     return SparseTensor(res_start_indices, res_blocks, sp_tensor.dims, sp_tensor.total_size, end_indices=res_end_indices, type=bool, dense_const=False)
@@ -659,8 +658,8 @@ def filter_trav_exp_stop(trav_exp, stop, layer_index=None, counter=None, inside_
     json_list.append(json_obj)
     polyexp_stop = trav_exp.create_similar(mat = polyexp_stop_mat)
     if dummy_mode:
-        os.makedirs("jit_polyexp_stop", exist_ok=True)
-        capture_path = f"jit_polyexp_stop/stop_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+        os.makedirs(jit_path("jit_polyexp_stop"), exist_ok=True)
+        capture_path = jit_path(f"jit_polyexp_stop/stop_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json")
         with open(capture_path, 'w') as f:
             json.dump(json_list, f, indent=4)
 
@@ -707,8 +706,8 @@ def filter_trav_exp_not_stop(trav_exp, stop, layer_index=None, counter=None, ins
     }
     json_list.append(json_obj)
     if dummy_mode:
-        os.makedirs("jit_polyexp_not_stop", exist_ok=True)
-        capture_path = f"jit_polyexp_not_stop/notstop_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+        os.makedirs(jit_path("jit_polyexp_not_stop"), exist_ok=True)
+        capture_path = jit_path(f"jit_polyexp_not_stop/notstop_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json")
         with open(capture_path, 'w') as f:
             json.dump(json_list, f, indent=4)
     return polyexp_not_stop
@@ -729,8 +728,8 @@ def get_dims(x, layer_index=None, counter=None, inside_while=False, while_number
     ]
     if dummy_mode:
         if layer_index is not None and counter is not None:
-            os.makedirs("jit_get_dims", exist_ok=True)
-            with open(f"jit_get_dims/get_dims_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json", 'w') as f:
+            os.makedirs(jit_path("jit_get_dims"), exist_ok=True)
+            with open(jit_path(f"jit_get_dims/get_dims_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"), 'w') as f:
                 json.dump(json_list, f, indent=4)
     return res
 
@@ -788,8 +787,8 @@ def repeat(mat, repeat_dims, layer_index = None, counter = None, inside_while = 
 
     if dummy_mode:
         if layer_index is not None and counter is not None:
-            os.makedirs("jit_repeat", exist_ok=True)
-            capture_path = f"jit_repeat/repeat_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+            os.makedirs(jit_path("jit_repeat"), exist_ok=True)
+            capture_path = jit_path(f"jit_repeat/repeat_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json")
             
             with open(capture_path, 'w') as f:
                 json.dump(json_list, f, indent=4)
@@ -862,8 +861,8 @@ def clamp(mat, const, min_true, layer_index = None, counter = None, inside_while
     clamp_total_time.update_total_time(time.perf_counter() - start_time)
     if dummy_mode:
         if layer_index is not None and counter is not None:
-            os.makedirs("jit_clamp", exist_ok=True)
-            capture_path = f"jit_clamp/clamp_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+            os.makedirs(jit_path("jit_clamp"), exist_ok=True)
+            capture_path = jit_path(f"jit_clamp/clamp_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json")
             
             with open(capture_path, 'w') as f:
                 json.dump(json_list, f, indent=4)

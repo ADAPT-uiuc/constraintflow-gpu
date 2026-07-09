@@ -47,7 +47,24 @@ optimizations_rewrite = [
     ]
 
 
+def _reset_compiler_state():
+    # These module-level counters accumulate across compilations within a single
+    # process. A fresh process resets them implicitly, so the manual two-step
+    # (--simulacrum then --reuse, in separate processes) always numbers whiles and
+    # ttb-counters from scratch. When two compiles share a process (e.g. the
+    # simulacrum-compile probe+reuse pair), reset them here so the reuse build
+    # reproduces the same while_number / ttb_counter numbering the simulacrum run
+    # captured -- otherwise the reuse build reads mismatched jit_* capture keys.
+    representations.while_counter = -1
+    rewrite.counter = -1
+    rewrite.ttb_counter = 0
+    cse.counter = 0
+    symexpCount.counter = -1
+    tensor_to_block.counter = -1
+
+
 def compile(inputfile, output_path):
+    _reset_compiler_state()
     lexer = dslLexer.dslLexer(antlr.FileStream(inputfile))
     tokens = antlr.CommonTokenStream(lexer)
     parser = dslParser.dslParser(tokens)
