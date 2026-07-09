@@ -5,7 +5,7 @@ import os
 from . import irVisitor 
 import copy
 from .ir import * 
-from constraintflow.lib.globals import reuse_mode
+from constraintflow.lib.globals import reuse_mode, jit_path
 
 class CodeGen(irVisitor.IRVisitor):
     def __init__(self,folder):
@@ -29,6 +29,7 @@ class CodeGen(irVisitor.IRVisitor):
         self.write("from constraintflow.lib.flow_sparse import Flow")
         self.write("from constraintflow.lib.abs_elem import Abs_elem_sparse")
         self.write("from constraintflow.lib.symexp import *")
+        self.write("from constraintflow.lib.globals import jit_path")
         self.write("from transformers import *")
         self.write("\n")
         # self.write("torch.cuda.reset_peak_memory_stats()")
@@ -45,7 +46,7 @@ class CodeGen(irVisitor.IRVisitor):
             return None
         if self.current_layer_index is None:
             return None
-        capture_path = os.path.join("jit_branch", f"branch_{self.current_layer_index}_{block_id}.json")
+        capture_path = jit_path("jit_branch", f"branch_{self.current_layer_index}_{block_id}.json")
         if not os.path.exists(capture_path):
             raise Exception(f"Profiled branch data not found for block_id {block_id} at {capture_path}")
         with open(capture_path, "r") as json_file:
@@ -195,8 +196,8 @@ class CodeGen(irVisitor.IRVisitor):
                         if block_id is not None:
                             self.write('if dummy_mode:')
                             self.indent += 1
-                            self.write('os.makedirs("jit_branch", exist_ok=True)')
-                            self.write('capture_path = "jit_branch/branch_" + str(layer_index) + "_' + str(block_id) + '.json"')
+                            self.write('os.makedirs(jit_path("jit_branch"), exist_ok=True)')
+                            self.write('capture_path = jit_path("jit_branch/branch_" + str(layer_index) + "_' + str(block_id) + '.json")')
                             self.write('with open(capture_path, "w") as json_file:')
                             self.indent += 1
                             self.write('json.dump({"taken": "then"}, json_file)')
@@ -208,8 +209,8 @@ class CodeGen(irVisitor.IRVisitor):
                         if block_id is not None:
                             self.write('if dummy_mode:')
                             self.indent += 1
-                            self.write('os.makedirs("jit_branch", exist_ok=True)')
-                            self.write('capture_path = "jit_branch/branch_" + str(layer_index) + "_' + str(block_id) + '.json"')
+                            self.write('os.makedirs(jit_path("jit_branch"), exist_ok=True)')
+                            self.write('capture_path = jit_path("jit_branch/branch_" + str(layer_index) + "_' + str(block_id) + '.json")')
                             self.write('with open(capture_path, "w") as json_file:')
                             self.indent += 1
                             self.write('json.dump({"taken": "else"}, json_file)')
@@ -232,8 +233,8 @@ class CodeGen(irVisitor.IRVisitor):
                     self.visit(node.inner_jump[1])
                     self.indent -= 1
                     self.write('json_obj = {"num_iterations": while_iteration}')
-                    self.write('os.makedirs("jit_while", exist_ok=True)')
-                    self.write('capture_path = "jit_while/while_iterations_layer_" + str(layer_index) + "_while_" + str(' + str(node.inner_jump[1].while_number) + ') + ".json"')
+                    self.write('os.makedirs(jit_path("jit_while"), exist_ok=True)')
+                    self.write('capture_path = jit_path("jit_while/while_iterations_layer_" + str(layer_index) + "_while_" + str(' + str(node.inner_jump[1].while_number) + ') + ".json")')
                     self.write('with open(capture_path, "w") as json_file:')
                     self.indent += 1
                     self.write('json.dump(json_obj, json_file)')

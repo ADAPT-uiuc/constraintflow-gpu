@@ -1,3 +1,25 @@
+import os
+
+# Common parent folder under which every jit_* capture directory is created
+# during simulacrum (write) and read back from during reuse. Both phases share
+# this root so the captures stay consistent. Relative to CWD by default; the CLI
+# overrides it via set_jit_root() from the --jit-dir option.
+jit_root = "jit_captures"
+
+def set_jit_root(path):
+    global jit_root
+    jit_root = path
+
+def jit_path(*parts):
+    """Resolve a jit capture path under jit_root.
+
+    Accepts either a bare directory name ("jit_binary") or an already-joined
+    relative capture path ("jit_binary/binary_0_1.json"); both are placed under
+    the common parent folder.
+    """
+    return os.path.join(jit_root, *parts)
+
+
 class Flag:
     def __init__(self):
         self.flag = False

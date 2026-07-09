@@ -35,36 +35,12 @@ from constraintflow.lib.spec import get_network_and_input_spec
 
 app = typer.Typer(help="ConstraintFlow CLI for verification and compilation of DSL programs.")
 
-JIT_CAPTURE_DIRS = (
-    "jit_layers",
-    "jit_branch",
-    "jit_while",
-    "jit_unary",
-    "jit_any",
-    "jit_all",
-    "jit_binary",
-    "jit_where",
-    "jit_matmul",
-    "jit_defaultstop",
-    "jit_priority",
-    "jit_polyexp_stop",
-    "jit_polyexp_not_stop",
-    "jit_get_dims",
-    "jit_repeat",
-    "jit_clamp",
-    "jit_squeeze",
-    "jit_unsqueeze",
-    "jit_Abs_elem_sparse_get_elem",
-    "jit_llist_get_metadata",
-    "jit_Llist_dot",
-    "jit_SparseTensor_get_sparse_custom_range",
-)
-
-
 def clear_jit_captures():
-    for directory in JIT_CAPTURE_DIRS:
-        if os.path.isdir(directory):
-            shutil.rmtree(directory)
+    # Every jit_* capture directory lives under the common parent folder
+    # (globals.jit_root), so clearing that one folder wipes all captures.
+    root = globals.jit_root
+    if os.path.isdir(root):
+        shutil.rmtree(root)
 
 
  
@@ -189,7 +165,108 @@ def compile(
     program_file: str = typer.Argument(..., help="ConstraintFlow program file"),
     output_path: str = typer.Option("output/", help="Output path for generated code"),
 ):
+    start_time = time.perf_counter()
     compile_code(program_file, output_path)
+    total_time = time.perf_counter() - start_time
+    typer.echo(f"Total time: {total_time:.2f} seconds")
+    import resource
+    maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    peak_bytes = maxrss if sys.platform == "darwin" else maxrss * 1024
+    typer.echo(f"Peak CPU memory: {peak_bytes} bytes")
+
+
+@app.command(name="jit")
+def simulacrum_compile(
+    program_file: str = typer.Argument(..., help="ConstraintFlow program file"),
+    network: str = typer.Option("mnist_relu_3_50", help="Network name"),
+    network_format: str = typer.Option("onnx", help="Network format"),
+    dataset: str = typer.Option("mnist", help="Dataset (mnist or cifar)"),
+    batch_size: int = typer.Option(1, help="Batch size"),
+    eps: float = typer.Option(0, help="Epsilon"),
+    train: bool = typer.Option(False, help="Trace on training dataset"),
+    no_sparsity: bool = typer.Option(False, help="Disable sparsity optimizations"),
+    device: str = typer.Option("cpu", help="Device mode: cpu, gpu (CUDA), or gpumac (Apple MPS)"),
+    output_path: str = typer.Option("output/", help="Output path for generated code"),
+    print_intermediate_results: bool = typer.Option(False, help="Print intermediate results during the simulacrum trace pass"),
+    dense: bool = typer.Option(False, help="Use dense blocks by default"),
+    jit_dir: str = typer.Option("jit_captures", help="Common parent folder for all jit_* capture files"),
+    no_barriers: bool = typer.Option(False, "--no-barriers", help="Inline every single-use temporary unconditionally (skip is_safe_to_inline's safety analysis)."),
+):
+    """
+    Compile a ConstraintFlow program through the whole simulacrum+reuse pipeline
+    in one shot.
+    """
+    start_time = time.perf_counter()
+    try:
+        os.makedirs(output_path, exist_ok=True)
+    except OSError as e:
+        typer.echo(f"Error creating folder '{output_path}': {e}")
+        raise typer.Exit(code=1)
+
+    globals.set_jit_root(jit_dir)
+    globals.dense_default_mode.set_flag() if dense else globals.dense_default_mode.reset_flag()
+    globals.no_barriers.set_flag() if no_barriers else globals.no_barriers.reset_flag()
+
+    valid_devices = {"cpu", "gpu", "gpumac"}
+    if device not in valid_devices:
+        typer.echo(f"Error: unknown device '{device}'. Choose from: {sorted(valid_devices)}")
+        raise typer.Exit(code=1)
+    if device == "gpu" and not torch.cuda.is_available():
+        typer.echo("Error: device='gpu' requested but CUDA is not available.")
+        raise typer.Exit(code=1)
+    if device == "gpumac" and not torch.backends.mps.is_available():
+        typer.echo("Error: device='gpumac' requested but MPS is not available.")
+        raise typer.Exit(code=1)
+    device_mode.set_mode(device)
+
+    clear_jit_captures()
+
+    # Simulacrum
+    globals.dummy_mode.set_flag()
+    globals.reuse_mode.reset_flag()
+    compile_code(program_file, output_path)
+
+    sys.path.insert(0, os.path.abspath(output_path))
+    from main import run as _probe_run  # probe build provides this
+
+    network_file = get_network(network, network_format, dataset)
+    X, y = get_dataset(batch_size, dataset, train=train)
+    _probe_run(
+        network_file,
+        batch_size,
+        eps,
+        X,
+        y,
+        dataset=dataset,
+        train=train,
+        print_intermediate_results=print_intermediate_results,
+        no_sparsity=no_sparsity,
+    )
+
+    trace_path = globals.jit_path("jit_layers", "layers.json")
+    if not os.path.isfile(trace_path):
+        typer.echo(
+            f"Error: simulacrum pass did not produce a trace at '{trace_path}'. "
+            "Cannot proceed to the reuse compile."
+        )
+        raise typer.Exit(code=1)
+
+    # Reuse
+    globals.dummy_mode.reset_flag()
+    globals.reuse_mode.set_flag()
+    try:
+        compile_code(program_file, output_path)
+    finally:
+        globals.reuse_mode.reset_flag()
+
+    typer.echo("Simulacrum+reuse compile complete ✅")
+    typer.echo(f"Optimized code written to: {os.path.abspath(output_path)}")
+    total_time = time.perf_counter() - start_time
+    typer.echo(f"Total time: {total_time:.2f} seconds")
+    import resource
+    maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    peak_bytes = maxrss if sys.platform == "darwin" else maxrss * 1024
+    typer.echo(f"Peak CPU memory: {peak_bytes} bytes")
 
 
 @app.command()
@@ -210,6 +287,7 @@ def run(
     simulacrum: bool = typer.Option(False, help="Run Simulacrum (dummy blocks)"),
     reuse: bool = typer.Option(False, help="Reuse the stored indices that were stored by running dummy blocks"),
     dense: bool = typer.Option(False, help="Use dense blocks by default"),
+    jit_dir: str = typer.Option("jit_captures", help="Common parent folder for all jit_* capture files"),
     no_barriers: bool = typer.Option(False, "--no-barriers", help="Inline every single-use temporary unconditionally (skip is_safe_to_inline's safety analysis). Lower peak memory, not guaranteed value-preserving."),
 ):
     """
@@ -221,26 +299,11 @@ def run(
         typer.echo(f"Error creating folder '{output_path}': {e}")
         raise typer.Exit(code=1)
 
+    globals.set_jit_root(jit_dir)
+
     if simulacrum:
         clear_jit_captures()
     
-    # if opt:
-    #     sys.path.insert(0, os.path.abspath(output_path))
-    #     from transformers import deeppoly
-    #     global dummy_mode
-    #     dummy_mode = True
-    #     network_file = get_network(network, network_format, dataset)
-    #     dataset_X, dataset_y = get_dataset(batch_size, dataset, train=train)
-    #     ntwk, l, u, L, U, Z, llist = get_network_and_input_spec(network_file, batch_size, dataset_X, dataset_y, dataset, eps=eps, train=train, no_sparsity=no_sparsity)
-    #     print(f'network: {[l.type for l in ntwk]}')
-    #     print(f'layer shapes: {[l.shape for l in ntwk]}')
-    #     abs_elem = Abs_elem_sparse({'llist' : llist, 'l' : l, 'u' : u, 'L' : L, 'U' : U}, {'l': 'Float', 'u': 'Float', 'L': 'PolyExp', 'U': 'PolyExp', 'llist': 'bool'}, ntwk, batch_size=batch_size, no_sparsity=no_sparsity)
-    #     flow = Flow(abs_elem, deeppoly(), ntwk, print_intermediate_results, no_sparsity)
-    #     flow.flow()
-    #     all_ll = Llist(ntwk, [1], start=0, end=7, llist=None)
-    #     print(abs_elem.get_elem('L', all_ll).get_mat(abs_elem))
-    #     return
-    # print(f'dummy_mode: {dummy_mode}')
     if compile:
         compile_code(program_file, output_path)
 
@@ -297,109 +360,6 @@ def run(
         maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         peak_bytes = maxrss if sys.platform == "darwin" else maxrss * 1024
         typer.echo(f"Peak CPU memory: {peak_bytes} bytes")
-    # if eps == 0:
-    #     assert(lb == ub).all(), "Bounds should be equal when eps=0"
-
-    # filename = network_file.split('/')[-1] + f'_{dataset}_{device}.csv'
-    # typer.echo(f"Total time: {total_time:.2f} seconds")
-    # typer.echo("Matmul Statistics")
-    # typer.echo(f"Total Matmul Time: {round(matmul_tensor_ops.get_total_time(), 5)} seconds")
-    # typer.echo(f"Matmul Expenses Time: {round((matmul_tensor_ops_expenses.get_total_time()+matmul_sparse_tensor_expenses.get_total_time()+unequal_matmul_profilier.get_total_time()+equal_matmul_profilier.get_total_time()-unequal_matmul_profilier.get_actual_op_time()-equal_matmul_profilier.get_actual_op_time()), 5)} seconds")
-    # typer.echo(f"Matmul Actual Op Time: {round((unequal_matmul_profilier.get_actual_op_time()+equal_matmul_profilier.get_actual_op_time()), 5)} seconds")
-
-    # percentage_matmul_operator_time = round(((unequal_matmul_profilier.get_actual_op_time() + equal_matmul_profilier.get_actual_op_time()) / matmul_tensor_ops.get_total_time()) * 100, 5)
-    # percentage_matmul_expenses_time = round(((matmul_tensor_ops_expenses.get_total_time() + matmul_sparse_tensor_expenses.get_total_time() + unequal_matmul_profilier.get_total_time() + equal_matmul_profilier.get_total_time() - unequal_matmul_profilier.get_actual_op_time() - equal_matmul_profilier.get_actual_op_time()) / matmul_tensor_ops.get_total_time()) * 100, 5)
-    # typer.echo(f"Percentage Matmul Operator Time: {percentage_matmul_operator_time}%")
-    # typer.echo(f"Percentage Matmul Expenses Time: {percentage_matmul_expenses_time}%")
-    # assert(percentage_matmul_operator_time + percentage_matmul_expenses_time <= 100.0), "Percentages should sum to at most 100%"
-
-    # round_num = 5
-    # all_expenses_time = (
-    #     binary_sparse_tensor_expenses.get_total_time()
-    #     + binary_sparse_tensor_overlap_expenses.get_total_time()
-    #     + binary_sparse_tensor_dom1_expenses.get_total_time()
-    #     + binary_sparse_tensor_dom2_expenses.get_total_time()
-    #     + binary_block_expenses.get_total_time()
-    #     - binary_profilier.get_total_time()
-    #     + binary_tensor_ops_expenses.get_total_time()
-    # )
-    # total_binary_time = total_binary_tensor_ops.get_total_time() - binary_tensor_ops_no_sparse.get_total_time() - binary_fixed_costs.get_total_time()
-
-    # percentage_binary_operator_time = round((binary_profilier.get_total_time() / total_binary_time) * 100, round_num)
-    # percentage_binary_transfer_time = round((all_expenses_time / total_binary_time) * 100, round_num)
-    # typer.echo(f"Percentage Binary Operator Time: {percentage_binary_operator_time}%")
-    # typer.echo(f"Percentage Binary Expenses Time: {percentage_binary_transfer_time}%")
-    # assert(percentage_binary_operator_time + percentage_binary_transfer_time <= 100.0), "Percentages should sum to at most 100%"
-
-    # typer.echo(f'Total Clamp Time: {round(clamp_total_time.get_total_time(), 5)} seconds')
-    # typer.echo(f'Clamp Expense Time: {round(clamp_const_block_expense.get_total_time() + clamp_sparse_block_expense.get_total_time() + clamp_repeat_block_expense.get_total_time(), 5)} seconds')
-    # typer.echo(f'Clamp Actual Op Time: {round(clamp_sparse_block_op_time.get_total_time() + clamp_repeat_block_op_time.get_total_time() + clamp_const_block_op_time.get_total_time(), 5)} seconds')
-    
-    # percentage_clamp_operator_time = round(((clamp_sparse_block_op_time.get_total_time() + clamp_repeat_block_op_time.get_total_time() + clamp_const_block_op_time.get_total_time()) / clamp_total_time.get_total_time()) * 100, 5)
-    # percentage_clamp_expenses_time = round(((clamp_const_block_expense.get_total_time() + clamp_sparse_block_expense.get_total_time() + clamp_repeat_block_expense.get_total_time()) / clamp_total_time.get_total_time()) * 100, 5)
-    # typer.echo(f'Percentage Clamp Operator Time: {percentage_clamp_operator_time}%')
-    # typer.echo(f'Percentage Clamp Expenses Time: {percentage_clamp_expenses_time}%')
-    # assert(percentage_clamp_operator_time + percentage_clamp_expenses_time <= 100.0), "Percentages should sum to at most 100%"
-
-    # base = network_file.split('/')[-1] + f'_{dataset}_{device}'
-
-    # # ── derived quantities ────────────────────────────────────────────────
-    # matmul_total    = matmul_tensor_ops.get_total_time()
-    # matmul_actual   = unequal_matmul_profilier.get_actual_op_time() + equal_matmul_profilier.get_actual_op_time()
-    # matmul_expenses = (matmul_tensor_ops_expenses.get_total_time()
-    #                    + matmul_sparse_tensor_expenses.get_total_time()
-    #                    + unequal_matmul_profilier.get_total_time()
-    #                    + equal_matmul_profilier.get_total_time()
-    #                    - matmul_actual)
-
-    # binary_total    = (total_binary_tensor_ops.get_total_time()
-    #                    - binary_tensor_ops_no_sparse.get_total_time()
-    #                    - binary_fixed_costs.get_total_time())
-    # binary_actual   = binary_profilier.get_total_time()
-    # binary_expenses = (binary_sparse_tensor_expenses.get_total_time()
-    #                    + binary_sparse_tensor_overlap_expenses.get_total_time()
-    #                    + binary_sparse_tensor_dom1_expenses.get_total_time()
-    #                    + binary_sparse_tensor_dom2_expenses.get_total_time()
-    #                    + binary_block_expenses.get_total_time()
-    #                    - binary_actual
-    #                    + binary_tensor_ops_expenses.get_total_time())
-
-    # clamp_total    = clamp_total_time.get_total_time()
-    # clamp_actual   = (clamp_sparse_block_op_time.get_total_time()
-    #                   + clamp_repeat_block_op_time.get_total_time()
-    #                   + clamp_const_block_op_time.get_total_time())
-    # clamp_expenses = (clamp_const_block_expense.get_total_time()
-    #                   + clamp_sparse_block_expense.get_total_time()
-    #                   + clamp_repeat_block_expense.get_total_time())
-
-    # # ── raw times ─────────────────────────────────────────────────────────
-    # raw_file = 'stats/' + base + '_stats_raw.csv'
-    # with open(raw_file, mode='w', newline='') as f:
-    #     writer = csv.writer(f)
-    #     writer.writerow(['Operation', 'Total_Time', 'Expenses_Time', 'Actual_Op_Time'])
-    #     writer.writerow(['Total',  round(total_time,    5), '-', '-'])
-    #     writer.writerow(['Matmul', round(matmul_total,  5), round(matmul_expenses,  5), round(matmul_actual,  5)])
-    #     writer.writerow(['Binary', round(binary_total,  5), round(binary_expenses,  5), round(binary_actual,  5)])
-    #     writer.writerow(['Clamp',  round(clamp_total,   5), round(clamp_expenses,   5), round(clamp_actual,   5)])
-
-    # # ── percentages ───────────────────────────────────────────────────────
-    # def safe_pct(numerator, denominator):
-    #     return round((numerator / denominator) * 100, 5) if denominator else 0.0
-
-    # pct_file = 'stats/' + base + '_stats_pct.csv'
-    # with open(pct_file, mode='w', newline='') as f:
-    #     writer = csv.writer(f)
-    #     writer.writerow(['Operation', 'Pct_Operator_Time', 'Pct_Expenses_Time'])
-    #     writer.writerow(['Matmul', safe_pct(matmul_actual,  matmul_total), safe_pct(matmul_expenses,  matmul_total)])
-    #     writer.writerow(['Binary', safe_pct(binary_actual,  binary_total), safe_pct(binary_expenses,  binary_total)])
-    #     writer.writerow(['Clamp',  safe_pct(clamp_actual,   clamp_total),  safe_pct(clamp_expenses,   clamp_total)])
-
-    # typer.echo(f"Total time: {total_time:.2f} seconds")
-    # typer.echo(f"Raw stats written to:        {raw_file}")
-    # typer.echo(f"Percentage stats written to: {pct_file}")
-    # typer.echo(f'Stop condition time: {round(stop_condition_time.get_total_time(), 5)} seconds')
-
-
 def main():
     app()
 
