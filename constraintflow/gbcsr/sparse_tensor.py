@@ -55,11 +55,8 @@ def tensor_to_list(tensor):
     return tensor
 
 def write_jit_capture_file(directory, prefix, layer_index, counter, inside_while, while_number, while_iteration, json_list):
-    directory = jit_path(directory)
-    os.makedirs(directory, exist_ok=True)
-    capture_path = f"{directory}/{prefix}_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
-    with open(capture_path, 'w') as f:
-        json.dump(json_list, f, indent=2)
+    rel_path = f"{directory}/{prefix}_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+    save_capture(rel_path, json_list)
 
 def tensor_list_to_list(lst):
     return [tensor_to_list(x) for x in lst]

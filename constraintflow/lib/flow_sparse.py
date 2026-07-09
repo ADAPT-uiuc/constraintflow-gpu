@@ -222,14 +222,7 @@ class Flow:
         ub = (abs_shape[1].get_dense())
 
         if dummy_mode:
-            os.makedirs(jit_path("jit_layers"), exist_ok=True)
-            capture_path = jit_path("jit_layers", "layers.json")
-            # if inside_while:
-            #     print(while_iteration)
-            #     print(capture_path)
-            
-            with open(capture_path, 'w') as f:
-                json.dump(json_obj, f, indent=4)
+            save_capture("jit_layers/layers.json", json_obj)
 
 
         return lb, ub
