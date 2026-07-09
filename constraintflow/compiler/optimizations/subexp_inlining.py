@@ -100,9 +100,6 @@ def compute_def_indices(
     return def_indices
 
 
-# Storage-class alias analysis, so the in-place-write barrier blocks only folds
-# whose value depends on the mutated storage. Node types that allocate fresh
-# storage; everything else is assumed to alias its inputs (sound default).
 _FRESH_NODE_TYPES = (
     IrTorchZeros, IrTorchEye, IrTensorOnes,
     IrTorchMatmul, IrBlockInnerProduct,
@@ -117,6 +114,7 @@ _FRESH_NODE_TYPES = (
 )
 
 
+# Union Find
 class _UnionFind:
     """Union-find over variable names with path-halving and union-by-size"""
 
@@ -192,6 +190,74 @@ def compute_storage_classes(instructions: list[IrStatement]):
     return class_of, mutations_by_class
 
 
+# Path-2
+def _resolve_storage(expr, reads_of: dict[str, frozenset]) -> frozenset:
+    """Storage roots `expr`'s result reads (depends on for its value). A FRESH
+    node reads none (its result is newly allocated); a bare/external var is its
+    own root; views, wrappers, accessors and containers pass through to their
+    operands' roots."""
+    if isinstance(expr, IrVar):
+        return reads_of.get(expr.name, frozenset((expr.name,)))
+    if expr is None or isinstance(expr, (int, float, IrConst)):
+        return frozenset()
+    if isinstance(expr, list):
+        out: set = set()
+        for x in expr:
+            out |= _resolve_storage(x, reads_of)
+        return frozenset(out)
+    if isinstance(expr, _FRESH_NODE_TYPES):
+        return frozenset()
+    out = set()
+    for child in get_generalized_children(expr):
+        out |= _resolve_storage(child, reads_of)
+    return frozenset(out)
+
+
+def compute_storage_reads_and_defs(instructions: list[IrStatement]):
+    """Build the storage-versioning space: what each value reads, and where
+    storage is def'd (mutated) in place.
+    """
+    reads_of: dict[str, frozenset] = {}
+    for instr in instructions:
+        if isinstance(instr, IrAssignment):
+            lhs = instr.children[0]
+            if isinstance(lhs, IrVar):
+                roots = _resolve_storage(instr.children[1], reads_of)
+                if not roots:                    # fresh allocation: own root
+                    roots = frozenset((lhs.name,))
+                prev = reads_of.get(lhs.name)
+                reads_of[lhs.name] = roots if prev is None else (prev | roots)
+    storage_defs: list = []
+    for idx, instr in enumerate(instructions):
+        if isinstance(instr, (IrAssignToView, IrAssignToBlock)):
+            # an in-place write is a def of the storage its target touches
+            roots = _resolve_storage(instr.children[0], reads_of)
+            if roots:
+                storage_defs.append((idx, roots))
+    storage_def_keys = [idx for idx, _ in storage_defs]
+    return reads_of, storage_defs, storage_def_keys
+
+
+def storage_redefd_between(
+        storage_defs: list, storage_def_keys: list, read_roots: set,
+        lo: int, hi: int) -> bool:
+    """Storage-space analog of `redefined_between`: True iff some storage def (an
+    in-place write) in the open interval (lo, hi) def's a root the value reads
+    (`read_roots`) -- i.e. the value goes stale before its use."""
+    if not read_roots:
+        return False
+    k = bisect.bisect_right(storage_def_keys, lo)
+    n = len(storage_defs)
+    while k < n:
+        idx, roots = storage_defs[k]
+        if idx >= hi:
+            return False
+        if roots & read_roots:
+            return True
+        k += 1
+    return False
+
+
 def reaching_def_index(
         def_indices: dict[str, list[int]], name: str, point: int):
     """Index of the definition of `name` strictly before `point`, or None if
@@ -265,31 +331,31 @@ def get_vars_expr_occurrences(expr) -> list[IrVar]:
 
 
 def is_safe_to_inline(
-        def_indices: dict[str, list[int]], class_of: dict[str, str],
-        mutations_by_class: dict[str, list[int]], var: IrVar, expr,
+        def_indices: dict[str, list[int]], reads_of: dict[str, frozenset],
+        storage_defs: list, storage_def_keys: list, var: IrVar, expr,
         def_index: int, use_index: int) -> bool:
     """
     Moving `var`'s value `expr` from `def_index` to `use_index` (open interval)
-    preserves it iff no variable `expr` reads is reassigned there, and no in-place
-    write there mutates a storage class the value depends on -- either `var`'s own
-    class (the value *is* that storage: the alias case, keyed on `var` so it holds
-    even after `resolve_value` collapses the chain to a var-free `torch.zeros`) or
-    the class of a variable `expr` reads.
+    preserves it iff nothing it depends on is def'd in that interval -- the same
+    def/use interval test, run in both spaces:
+
+      * name space    -- no variable `expr` reads is reassigned there
+                         (`redefined_between`);
+      * storage space -- no in-place write there def's (mutates) a storage root
+                         the value reads (`storage_redefd_between`).
+
+    The value's read roots are the roots the resolved `expr` reads, plus
+    `reads_of[var]` -- the storage the value *is* (the alias case, keyed on `var`
+    so it still holds after `resolve_value` collapses the chain to a var-free
+    `torch.zeros`).
     """
     if no_barriers:
         return True
-    if True:
-        relevant_classes: set[str] = set()
-        cv = class_of.get(var.name)
-        if cv is not None:
-            relevant_classes.add(cv)
-        for v in get_vars_expr_occurrences(expr):
-            cv = class_of.get(v.name)
-            if cv is not None:
-                relevant_classes.add(cv)
-        for rep in relevant_classes:
-            if mutated_between(mutations_by_class, rep, def_index, use_index):
-                return False
+    read_roots: set = set(_resolve_storage(expr, reads_of))
+    read_roots |= reads_of.get(var.name, frozenset((var.name,)))
+    if storage_redefd_between(storage_defs, storage_def_keys, read_roots,
+                              def_index, use_index):
+        return False
     for v in get_vars_expr_occurrences(expr):
         if redefined_between(def_indices, v.name, def_index, use_index):
             return False
@@ -316,9 +382,9 @@ def copy_leaf(expr):
 
 def try_inline_definition(
         instructions: list[IrStatement], def_indices: dict[str, list[int]],
-        class_of: dict[str, str], mutations_by_class: dict[str, list[int]],
-        var: IrVar, def_stmt_index: int, use_indices: list[int],
-        to_delete_indices: list[int]) -> None:
+        reads_of: dict[str, frozenset], storage_defs: list,
+        storage_def_keys: list, var: IrVar, def_stmt_index: int,
+        use_indices: list[int], to_delete_indices: list[int]) -> None:
     """
     Fold `var`'s definition (at `def_stmt_index`, with uses `use_indices`) into
     its use sites:
@@ -342,8 +408,8 @@ def try_inline_definition(
         return
     inlined_all = True
     for use_index in use_indices:
-        if is_safe_to_inline(def_indices, class_of, mutations_by_class, var,
-                             inline_expr, value_def_index, use_index):
+        if is_safe_to_inline(def_indices, reads_of, storage_defs, storage_def_keys,
+                             var, inline_expr, value_def_index, use_index):
             replace_var_with_expr(
                 instructions, use_index, copy_leaf(inline_expr), var)
         else:
@@ -355,7 +421,8 @@ def try_inline_definition(
 def indices_to_delete_and_replace_single_use(
         instructions: list[IrStatement]):
     def_indices: dict[str, list[int]] = compute_def_indices(instructions)
-    class_of, mutations_by_class = compute_storage_classes(instructions)
+    reads_of, storage_defs, storage_def_keys = compute_storage_reads_and_defs(
+        instructions)
     current_vars_def_index: dict[str, int] = {}
     uses_instr_count: dict[str, list[int]] = {}
     to_delete_indices: list[int] = []
@@ -398,15 +465,16 @@ def indices_to_delete_and_replace_single_use(
             assert isinstance(defined_var, IrVar)
             if defined_var.name in current_vars_def_index.keys():
                 try_inline_definition(
-                    instructions, def_indices, class_of, mutations_by_class,
-                    defined_var, current_vars_def_index[defined_var.name],
+                    instructions, def_indices, reads_of, storage_defs,
+                    storage_def_keys, defined_var,
+                    current_vars_def_index[defined_var.name],
                     uses_instr_count[defined_var.name], to_delete_indices)
             current_vars_def_index[defined_var.name] = i
             uses_instr_count[defined_var.name] = []
 
     for var in current_vars_def_index.keys():
         try_inline_definition(
-            instructions, def_indices, class_of, mutations_by_class,
+            instructions, def_indices, reads_of, storage_defs, storage_def_keys,
             name_to_var[var], current_vars_def_index[var],
             uses_instr_count.get(var, []), to_delete_indices)
 
