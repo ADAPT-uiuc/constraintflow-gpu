@@ -216,7 +216,8 @@ def _print_profile_table(rows: list[dict], device: str, repeat: int) -> None:
     print()
 
 
-def _run_profile_mode(program_files: str, network: str, dataset: str, device: str, repeat: int) -> None:
+def _run_profile_mode(program_files: str, network: str, dataset: str, device: str, repeat: int, in_memory: bool = False) -> None:
+    jit_extra = ["--in-memory"] if in_memory else []
     epss = [0]
     batch_sizes = [1]
     rows = []
@@ -249,7 +250,7 @@ def _run_profile_mode(program_files: str, network: str, dataset: str, device: st
                     n_ub = _parse_tensor(_extract_bound(out, "Upper bounds"))
 
                     # --- JIT path: one compile pass (probe + reuse compile,
-                    out = _run_and_capture(["jit", *run_args])
+                    out = _run_and_capture(["jit", *run_args, *jit_extra])
                     jc_t.append(_extract_total_time(out)); jc_m.append(_extract_peak_memory(out))
 
                     out = _run_and_capture(["run", *run_args])
@@ -291,10 +292,13 @@ def test(
     device: str = typer.Option("cpu", help="Device to run on: cpu, gpu (CUDA), or gpumac (Apple MPS)."),
     profile: bool = typer.Option(False, "--profile", help="Profile compile & run time and peak memory for the Normal and JIT paths and print a table."),
     repeat: int = typer.Option(1, help="In --profile mode, run each configuration this many times and average the time and memory."),
+    in_memory: bool = typer.Option(False, "--in-memory", help="Run the jit compile with --in-memory (keep captures in a process-local dict instead of on disk)."),
 ):
     if profile:
-        _run_profile_mode(program_files, network, dataset, device, repeat)
+        _run_profile_mode(program_files, network, dataset, device, repeat, in_memory)
         return
+
+    jit_extra = ["--in-memory"] if in_memory else []
 
     for program_file in program_files.split(","):
         program_file = "examples/compiler_examples/" + program_file
@@ -320,7 +324,7 @@ def test(
 
             # --- Simulacrum+reuse: ONE compile pass. 
             try:
-                _run_jit(program_file, network, dataset, ["--eps", str(epss[0]), *batch_args], device=device)
+                _run_jit(program_file, network, dataset, ["--eps", str(epss[0]), *batch_args, *jit_extra], device=device)
             except (AssertionError, RuntimeError) as e:
                 typer.echo("Simulacrum (jit) compile pass failed")
                 _echo_context(program_file, network, dataset, device, batch_size, epss[0])

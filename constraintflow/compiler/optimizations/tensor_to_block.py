@@ -5,7 +5,7 @@ import torch
 from constraintflow.compiler.ir import *
 from constraintflow.compiler.optimizations import uses
 from constraintflow.gbcsr.sparse_tensor import get_operator_func
-from constraintflow.lib.globals import jit_path
+from constraintflow.lib.globals import load_capture, capture_exists
 
 
 counter = -1
@@ -66,12 +66,11 @@ def get_profiled_branch(layer_index, block_id):
     if block_id is None:
         return None
 
-    filename = jit_path(f"jit_branch/branch_{layer_index}_{block_id}.json")
-    if not os.path.exists(filename):
+    rel_path = f"jit_branch/branch_{layer_index}_{block_id}.json"
+    if not capture_exists(rel_path):
         return None
 
-    with open(filename, 'r') as f:
-        json_obj = json.load(f)
+    json_obj = load_capture(rel_path)
 
     taken = json_obj["taken"]
     if taken in ("then", "else"):
@@ -190,8 +189,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
     elif isinstance(expr, IrMapCoeff):
         filename = f'jit_poly_exp_sparse_get_mat/poly_exp_sparse_get_mat_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
     
-    with open(jit_path(filename), 'r') as f:
-        json_list = json.load(f)
+    json_list = load_capture(filename)
     if isinstance(expr, IrTernary):
         cond = expr.children[0]
         lhs = expr.children[1]
@@ -1507,10 +1505,9 @@ def unroll_while(cfg, layer_index):
             break_node = cfg.get_block_id(first_while_block.inner_jump[1])
             exit_node = cfg.get_block_id(block.jump[1])
             while_number = first_while_block.while_number
-            filename = jit_path(f"jit_while/while_iterations_layer_{layer_index}_while_{while_number}.json")
-            with open(filename, 'r') as f:
-                json_obj = json.load(f)
-                num_iterations = json_obj["num_iterations"]
+            filename = f"jit_while/while_iterations_layer_{layer_index}_while_{while_number}.json"
+            json_obj = load_capture(filename)
+            num_iterations = json_obj["num_iterations"]
             remove_while(layer_index, num_iterations, cfg, root_node, first_while_node, second_while_node, exit_node, break_node)
 
 
@@ -1582,9 +1579,8 @@ def collapse_cfg_to_single_block(cfg, layer_index):
 def tensor_to_block(ir):
     # TODO: DEBUG THE FOLLOWING LINE
     # uses.populate_uses_defs(ir)
-    filename = jit_path("jit_layers", "layers.json")
-    with open(filename, 'r') as f:
-        json_obj = json.load(f)
+    filename = "jit_layers/layers.json"
+    json_obj = load_capture(filename)
     for transformer in ir.tstore.keys():
         for i in range(len(ir.tstore[transformer])):
             transformerIr = ir.tstore[transformer][i]

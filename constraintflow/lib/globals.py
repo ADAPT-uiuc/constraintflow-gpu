@@ -1,4 +1,5 @@
 import os
+import json
 
 # Common parent folder under which every jit_* capture directory is created
 # during simulacrum (write) and read back from during reuse. Both phases share
@@ -18,6 +19,40 @@ def jit_path(*parts):
     the common parent folder.
     """
     return os.path.join(jit_root, *parts)
+
+
+# When in_memory_captures is set (via `jit --in-memory`), jit captures live in
+# this process-local dict instead of on disk: the key is the capture's relative
+# path (the same string that would be the on-disk filename, e.g.
+# "jit_binary/binary_0_1_False_None_None.json") and the value is the JSON-encoded
+# capture, so it is byte-for-byte equivalent to the file it replaces. This only
+# works within the single `jit` process.
+_jit_store = {}
+
+def jit_store_clear():
+    _jit_store.clear()
+
+def save_capture(rel_path, obj):
+    """Persist a jit capture under its relative path (dir/file.json)."""
+    if in_memory_captures:
+        _jit_store[rel_path] = json.dumps(obj)
+        return
+    path = jit_path(rel_path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        json.dump(obj, f)
+
+def load_capture(rel_path):
+    """Load a jit capture previously written with save_capture."""
+    if in_memory_captures:
+        return json.loads(_jit_store[rel_path])
+    with open(jit_path(rel_path), 'r') as f:
+        return json.load(f)
+
+def capture_exists(rel_path):
+    if in_memory_captures:
+        return rel_path in _jit_store
+    return os.path.exists(jit_path(rel_path))
 
 
 class Flag:
@@ -49,19 +84,12 @@ dummy_mode = Flag()
 reuse_mode = Flag()
 dense_default_mode = Flag()
 # When set (via --no-barriers), subexp_inlining folds every single-use temporary
-# unconditionally: the storage-class/redefinition safety analysis in
-# is_safe_to_inline is skipped. Fewer materialized intermediates => lower peak
-# memory, but the transform is no longer guaranteed value-preserving.
+# unconditionally: 
 no_barriers = Flag()
-# dummy_mode = False
-# reuse_mode = False
+# When set (via `jit --in-memory`), jit captures are kept in the process-local
+# _jit_store dict instead of written to / read from disk. See save_capture.
+in_memory_captures = Flag()
 
-# def set_dummy_mode():
-#     global dummy_mode
-#     dummy_mode = True
-# def set_reuse_mode():
-#     global reuse_mode
-#     reuse_mode = True
 
 
 class DeviceMode:

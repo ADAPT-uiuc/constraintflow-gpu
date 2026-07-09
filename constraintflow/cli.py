@@ -190,6 +190,7 @@ def simulacrum_compile(
     print_intermediate_results: bool = typer.Option(False, help="Print intermediate results during the simulacrum trace pass"),
     dense: bool = typer.Option(False, help="Use dense blocks by default"),
     jit_dir: str = typer.Option("jit_captures", help="Common parent folder for all jit_* capture files"),
+    in_memory: bool = typer.Option(False, "--in-memory", help="Keep jit captures in a process-local dict instead of writing/reading capture files on disk (jit only)."),
     no_barriers: bool = typer.Option(False, "--no-barriers", help="Inline every single-use temporary unconditionally (skip is_safe_to_inline's safety analysis)."),
 ):
     """
@@ -204,6 +205,7 @@ def simulacrum_compile(
         raise typer.Exit(code=1)
 
     globals.set_jit_root(jit_dir)
+    globals.in_memory_captures.set_flag() if in_memory else globals.in_memory_captures.reset_flag()
     globals.dense_default_mode.set_flag() if dense else globals.dense_default_mode.reset_flag()
     globals.no_barriers.set_flag() if no_barriers else globals.no_barriers.reset_flag()
 
@@ -219,7 +221,10 @@ def simulacrum_compile(
         raise typer.Exit(code=1)
     device_mode.set_mode(device)
 
-    clear_jit_captures()
+    if in_memory:
+        globals.jit_store_clear()
+    else:
+        clear_jit_captures()
 
     # Simulacrum
     globals.dummy_mode.set_flag()
@@ -243,10 +248,10 @@ def simulacrum_compile(
         no_sparsity=no_sparsity,
     )
 
-    trace_path = globals.jit_path("jit_layers", "layers.json")
-    if not os.path.isfile(trace_path):
+    if not globals.capture_exists("jit_layers/layers.json"):
+        where = "the in-memory store" if in_memory else f"'{globals.jit_path('jit_layers', 'layers.json')}'"
         typer.echo(
-            f"Error: simulacrum pass did not produce a trace at '{trace_path}'. "
+            f"Error: simulacrum pass did not produce a trace in {where}. "
             "Cannot proceed to the reuse compile."
         )
         raise typer.Exit(code=1)
@@ -258,6 +263,8 @@ def simulacrum_compile(
         compile_code(program_file, output_path)
     finally:
         globals.reuse_mode.reset_flag()
+        if in_memory:
+            globals.jit_store_clear()
 
     typer.echo("Simulacrum+reuse compile complete ✅")
     typer.echo(f"Optimized code written to: {os.path.abspath(output_path)}")
