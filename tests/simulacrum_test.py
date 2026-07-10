@@ -219,7 +219,7 @@ def _print_profile_table(rows: list[dict], device: str, repeat: int) -> None:
 def _run_profile_mode(program_files: str, network: str, dataset: str, device: str, repeat: int, in_memory: bool = False) -> None:
     jit_extra = ["--in-memory"] if in_memory else []
     epss = [0]
-    batch_sizes = [1]
+    batch_sizes = [10]
     rows = []
     for program_file in program_files.split(","):
         program_path = "examples/compiler_examples/" + program_file
@@ -289,7 +289,7 @@ def test(
     program_files: str = typer.Argument(..., help="Comma-separated list of ConstraintFlow program files to test"),
     network: str = typer.Argument(..., help="Network path/name"),
     dataset: str = "mnist",
-    device: str = typer.Option("cpu", help="Device to run on: cpu, gpu (CUDA), or gpumac (Apple MPS)."),
+    device: str = typer.Option("gpu", help="Device to run on: cpu, gpu (CUDA), or gpumac (Apple MPS)."),
     profile: bool = typer.Option(False, "--profile", help="Profile compile & run time and peak memory for the Normal and JIT paths and print a table."),
     repeat: int = typer.Option(1, help="In --profile mode, run each configuration this many times and average the time and memory."),
     in_memory: bool = typer.Option(False, "--in-memory", help="Run the jit compile with --in-memory (keep captures in a process-local dict instead of on disk)."),
