@@ -1,8 +1,12 @@
 from constraintflow.compiler.ir import *
+from constraintflow.lib.globals import dummy_mode, reuse_mode
 
 import networkx as nx
 import matplotlib.pyplot as plt
 import graphviz
+
+def _jit_metadata_active():
+    return dummy_mode.get_flag() or reuse_mode.get_flag()
 
 def get_z3_vars(z3_expr):
     if isinstance(z3_expr, z3.z3.ArithRef):
@@ -172,8 +176,9 @@ def create_cfg(ir_list):
                 new_children = ir_list[:end]
                 currBlock.update_parent_child(new_children)
                 if whileBlock != None:
-                    currBlock.inside_while = True
-                    currBlock.while_number = while_number
+                    if _jit_metadata_active():
+                        currBlock.inside_while = True
+                        currBlock.while_number = while_number
                     if currBlock not in whileBlock.loopBody:
                         whileBlock.loopBody.append(currBlock)
                 cond = ir_list[end].children[0]
@@ -211,11 +216,12 @@ def create_cfg(ir_list):
                 new_children = ir_list[:end]
                 currBlock.update_parent_child(new_children)
                 if whileBlock != None:
-                    currBlock.inside_while=True
-                    currBlock.while_number = while_number
+                    if _jit_metadata_active():
+                        currBlock.inside_while=True
+                        currBlock.while_number = while_number
                     if currBlock not in whileBlock.loopBody:
                         whileBlock.loopBody.append(currBlock)
-                cond_if = ir_list[end].condIr 
+                cond_if = ir_list[end].condIr
                 cond_else = IrUnaryOp(cond_if, 'not')
                 block_if = IrBlock()
                 node_if = cfg.add()
@@ -269,8 +275,9 @@ def create_cfg(ir_list):
                 new_children = ir_list[:end+1]
                 currBlock.update_parent_child(new_children)
                 if whileBlock != None:
-                    currBlock.inside_while=True
-                    currBlock.while_number = while_number
+                    if _jit_metadata_active():
+                        currBlock.inside_while=True
+                        currBlock.while_number = while_number
                     if currBlock not in whileBlock.loopBody:
                         whileBlock.loopBody.append(currBlock)
 
@@ -282,8 +289,9 @@ def create_cfg(ir_list):
                     new_children = ir_list[:end]
                     currBlock.update_parent_child(new_children)
                     if whileBlock != None:
-                        currBlock.inside_while=True
-                        currBlock.while_number = while_number
+                        if _jit_metadata_active():
+                            currBlock.inside_while=True
+                            currBlock.while_number = while_number
                         if currBlock not in whileBlock.loopBody:
                             whileBlock.loopBody.append(currBlock)
                     return currNode

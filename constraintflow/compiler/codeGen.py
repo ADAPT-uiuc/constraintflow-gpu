@@ -5,7 +5,7 @@ import os
 from . import irVisitor 
 import copy
 from .ir import * 
-from constraintflow.lib.globals import reuse_mode, load_capture, capture_exists
+from constraintflow.lib.globals import dummy_mode, reuse_mode, load_capture, capture_exists
 
 class CodeGen(irVisitor.IRVisitor):
     def __init__(self,folder):
@@ -40,7 +40,13 @@ class CodeGen(irVisitor.IRVisitor):
 
         self.counter = 0
 
-    # This function is used to get the branch information for a tuple (block_id, layer_index) from the jit file. 
+
+    def _ttb_comment(self, node):
+        if dummy_mode.get_flag() or reuse_mode.get_flag():
+            return ' #' + str(node.ttb_counter)
+        return ''
+
+    # This function is used to get the branch information for a tuple (block_id, layer_index) from the jit file.
     def get_profiled_branch(self, block_id):
         if not reuse_mode.get_flag():
             return None
@@ -645,8 +651,8 @@ class CodeGen(irVisitor.IRVisitor):
                 shape += self.visit(node.irMetadata[i].shape[j]) + ","
         shape += ']'
         if node.inside_while:
-            return 'get_new_eps(abs_elem.network, torch.tensor(' + shape + '), layer_index = layer_index, counter = ' + str(node.ttb_counter) + ', inside_while = True, while_number = ' + str(node.while_number) + ', while_iteration=while_iteration) #' + str(node.ttb_counter)
-        return 'get_new_eps(abs_elem.network, torch.tensor(' + shape + '), layer_index = layer_index, counter = ' + str(node.ttb_counter) + ', inside_while = False, while_number = ' + str(node.while_number) + ') #' + str(node.ttb_counter)
+            return 'get_new_eps(abs_elem.network, torch.tensor(' + shape + '), layer_index = layer_index, counter = ' + str(node.ttb_counter) + ', inside_while = True, while_number = ' + str(node.while_number) + ', while_iteration=while_iteration)' + self._ttb_comment(node)
+        return 'get_new_eps(abs_elem.network, torch.tensor(' + shape + '), layer_index = layer_index, counter = ' + str(node.ttb_counter) + ', inside_while = False, while_number = ' + str(node.while_number) + ')' + self._ttb_comment(node)
 
     def visitIrNewEps(self, node):
         [matIr, constIr] = node.children
@@ -674,9 +680,9 @@ class CodeGen(irVisitor.IRVisitor):
                 repeat_dims += ', '
         repeat_dims = 'torch.tensor([' + repeat_dims + '])'
         if node.inside_while:
-            ret = 'repeat(' + self.visit(node.children[0]) + ', ' + repeat_dims + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = True' + ', while_number = ' + str(node.while_number) + ', while_iteration=while_iteration) #' + str(node.ttb_counter)
+            ret = 'repeat(' + self.visit(node.children[0]) + ', ' + repeat_dims + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = True' + ', while_number = ' + str(node.while_number) + ', while_iteration=while_iteration)' + self._ttb_comment(node)
         else:
-            ret = 'repeat(' + self.visit(node.children[0]) + ', ' + repeat_dims + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = False' + ', while_number = ' + str(node.while_number) + ') #' + str(node.ttb_counter)
+            ret = 'repeat(' + self.visit(node.children[0]) + ', ' + repeat_dims + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = False' + ', while_number = ' + str(node.while_number) + ')' + self._ttb_comment(node)
         return ret
 
     def visitIrAddDimension(self, node):
@@ -774,10 +780,10 @@ class CodeGen(irVisitor.IRVisitor):
             return op_name + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', layer_index=layer_index, counter=' + str(node.ttb_counter) + ', inside_while=False, while_number=' + str(node.while_number) + ')'
         else:
             if node.inside_while:
-                return 'binary(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = True' + ', while_number = ' + str(node.while_number) + ', while_iteration=while_iteration) #' + str(node.ttb_counter)
+                return 'binary(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = True' + ', while_number = ' + str(node.while_number) + ', while_iteration=while_iteration)' + self._ttb_comment(node)
             
 
-            return 'binary(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = False' + ', while_number = ' + str(node.while_number) + ') #' + str(node.ttb_counter)
+            return 'binary(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = False' + ', while_number = ' + str(node.while_number) + ')' + self._ttb_comment(node)
     
     def visitIrUnaryOp(self, node):
         op_name = None 
@@ -980,16 +986,16 @@ class CodeGen(irVisitor.IRVisitor):
         # self.counter += 1
         # return 'binary' + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ')'
         if node.inside_while:
-            return 'binary(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = True' + ', while_number = ' + str(node.while_number) + ', while_iteration=while_iteration) #' + str(node.ttb_counter)
-        return 'binary(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = False' + ', while_number = ' + str(node.while_number) + ') #' + str(node.ttb_counter)
+            return 'binary(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = True' + ', while_number = ' + str(node.while_number) + ', while_iteration=while_iteration)' + self._ttb_comment(node)
+        return 'binary(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + op_name + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = False' + ', while_number = ' + str(node.while_number) + ')' + self._ttb_comment(node)
     
     def visitIrInnerProduct(self, node):
         op_name = 'inner_prod'
         
         [lhsIr, rhsIr] = node.children
         if node.inside_while:
-            return op_name + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = True' + ', while_number = ' + str(node.while_number) + ', while_iteration=while_iteration) #' + str(node.ttb_counter)
-        return op_name + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = False' + ', while_number = ' + str(node.while_number) + ') #' + str(node.ttb_counter)
+            return op_name + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = True' + ', while_number = ' + str(node.while_number) + ', while_iteration=while_iteration)' + self._ttb_comment(node)
+        return op_name + '(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = False' + ', while_number = ' + str(node.while_number) + ')' + self._ttb_comment(node)
     
     def visitIrBlockInnerProduct(self, node):
         if node.type == 'equal_dims':
@@ -1015,21 +1021,21 @@ class CodeGen(irVisitor.IRVisitor):
             return self.visit(rhsIr) + '.dot(' + self.visit(lhsIr) + ', abs_elem.get_poly_size()' + dot_args + ", mats_input = 'lhs')"
         elif lhsIr.irMetadata[-1].type == 'Float':
             if node.inside_while:
-                return 'inner_prod(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = True' + ', while_number = ' + str(node.while_number) + ', while_iteration=while_iteration) #' + str(node.ttb_counter)
-            return 'inner_prod(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = False' + ', while_number = ' + str(node.while_number) + ') #' + str(node.ttb_counter)
+                return 'inner_prod(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = True' + ', while_number = ' + str(node.while_number) + ', while_iteration=while_iteration)' + self._ttb_comment(node)
+            return 'inner_prod(' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = False' + ', while_number = ' + str(node.while_number) + ')' + self._ttb_comment(node)
         else:
             raise Exception('NOT IMPLEMENTED')
 
     def visitIrTernary(self, node):
         [condIr, lhsIr, rhsIr] = node.children
-        return 'where(' + self.visit(condIr) + ', ' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', layer_index = layer_index, counter = ' + str(node.ttb_counter) + ', inside_while = ' + ('True' if node.inside_while else 'False') + ', while_number = ' + str(node.while_number) + ') #' + str(node.ttb_counter)
+        return 'where(' + self.visit(condIr) + ', ' + self.visit(lhsIr) + ', ' + self.visit(rhsIr) + ', layer_index = layer_index, counter = ' + str(node.ttb_counter) + ', inside_while = ' + ('True' if node.inside_while else 'False') + ', while_number = ' + str(node.while_number) + ')' + self._ttb_comment(node)
 
     def visitIrClamp(self, node):
         [inputIr, const] = node.children
         min_true = node.min_true 
         if node.inside_while:
-            return 'clamp(' + self.visit(inputIr) + ', ' + str(const) + ', ' + str(min_true) + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = True' + ', while_number = ' + str(node.while_number) + ', while_iteration=while_iteration) #' + str(node.ttb_counter)
-        return 'clamp(' + self.visit(inputIr) + ', ' + str(const) + ', ' + str(min_true) + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = False' + ', while_number = ' + str(node.while_number) + ') #' + str(node.ttb_counter)
+            return 'clamp(' + self.visit(inputIr) + ', ' + str(const) + ', ' + str(min_true) + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = True' + ', while_number = ' + str(node.while_number) + ', while_iteration=while_iteration)' + self._ttb_comment(node)
+        return 'clamp(' + self.visit(inputIr) + ', ' + str(const) + ', ' + str(min_true) + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = False' + ', while_number = ' + str(node.while_number) + ')' + self._ttb_comment(node)
 
     def visitIrCombineToPoly(self, node):
         [coeffIr, constIr, rows] = node.children

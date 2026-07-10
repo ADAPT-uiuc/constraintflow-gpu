@@ -1,8 +1,15 @@
 from constraintflow.compiler.ir import *
 from constraintflow.compiler.optimizations import uses
+from constraintflow.lib.globals import dummy_mode, reuse_mode
 
 
 counter = -1
+
+# The extra IR types below (beyond the original IrBinaryOp/IrInnerProduct/IrMult(/IrRepeat))
+# are only split into their own temp-variable assignment so simulacrum (dummy_mode) and
+# reuse can key jit captures per-site. Normal compiles keep the original, smaller split set.
+def _jit_metadata_active():
+    return dummy_mode.get_flag() or reuse_mode.get_flag()
 
 def get_var(flag=False):
     global counter 
@@ -724,12 +731,15 @@ def hoist_split_targets(expr, inside_while, while_number):
         new_assignments += child_assignments
     expr.update_parent_child(new_children)
 
-    targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpNotStop, IrGetPolyexpStop, IrAddDimension, IrRemoveDimension, IrAccess,
+    targets = ()
+    if _jit_metadata_active():
+        targets = (IrBinaryOp, IrInnerProduct, IrMult)
+        targets += (IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpNotStop, IrGetPolyexpStop, IrAddDimension, IrRemoveDimension, IrAccess,
                IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff, IrReduce)
     if isinstance(expr, targets):
         # IrAccess keeps default while_number=-1 when not in a while body, matching
         # simulacrum JIT filenames for get_metadata/get_elem recorded at Affine sites.
-        if not isinstance(expr, IrAccess) or inside_while:
+        if _jit_metadata_active() and (not isinstance(expr, IrAccess) or inside_while):
             expr.inside_while = inside_while
             expr.while_number = while_number
         new_name = get_var(True)
@@ -750,7 +760,10 @@ def assign_ttb_counter(expr):
         new_child, _ = assign_ttb_counter(child)
         new_children.append(new_child)
     expr.update_parent_child(new_children)
-    targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpNotStop, IrGetPolyexpStop, IrAddDimension, IrRemoveDimension, IrGetAbsElemSparseDKey, IrAccess,
+    targets = ()
+    if _jit_metadata_active():
+        targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat)
+        targets += (IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpNotStop, IrGetPolyexpStop, IrAddDimension, IrRemoveDimension, IrGetAbsElemSparseDKey, IrAccess,
                IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff, IrReduce, IrEpsilon)
     if isinstance(expr, targets):
         ttb_counter += 1
