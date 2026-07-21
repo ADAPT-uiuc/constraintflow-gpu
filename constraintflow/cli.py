@@ -6,11 +6,12 @@ globals.dummy_mode.set_flag() if "--simulacrum" in argv else globals.dummy_mode.
 globals.reuse_mode.set_flag() if "--reuse" in argv else globals.reuse_mode.reset_flag()
 globals.dense_default_mode.set_flag() if "--dense" in argv else globals.dense_default_mode.reset_flag()
 globals.no_barriers.set_flag() if "--no-barriers" in argv else globals.no_barriers.reset_flag()
+globals.inductor_mode.set_flag() if "--inductor" in argv else globals.inductor_mode.reset_flag()
 
 print(f'dummy_mode in cli: {globals.dummy_mode}')
 print(f'reuse_mode in cli: {globals.reuse_mode}')
 print(f'no_barriers in cli: {globals.no_barriers}')
-
+print(f'inductor_mode in cli: {globals.inductor_mode}')
 
 
 import os
@@ -338,6 +339,30 @@ def run(
     if is_cuda:
         torch.cuda.reset_peak_memory_stats()
         torch.cuda.synchronize()
+    
+    lb, ub = run(
+        network_file,
+        batch_size,
+        eps,
+        X,
+        y,
+        dataset=dataset,
+        train=train,
+        print_intermediate_results=print_intermediate_results,
+        no_sparsity=no_sparsity,
+    )
+
+    lb, ub = run(
+        network_file,
+        batch_size,
+        eps,
+        X,
+        y,
+        dataset=dataset,
+        train=train,
+        print_intermediate_results=print_intermediate_results,
+        no_sparsity=no_sparsity,
+    )
 
     start_time = time.perf_counter()
     lb, ub = run(
