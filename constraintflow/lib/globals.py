@@ -83,6 +83,7 @@ debug_flag4 = Flag()
 dummy_mode = Flag()
 reuse_mode = Flag()
 dense_default_mode = Flag()
+inductor_mode = Flag()
 # When set (via --no-barriers), subexp_inlining folds every single-use temporary
 # unconditionally: 
 no_barriers = Flag()
