@@ -295,6 +295,7 @@ def run(
     simulacrum: bool = typer.Option(False, help="Run Simulacrum (dummy blocks)"),
     reuse: bool = typer.Option(False, help="Reuse the stored indices that were stored by running dummy blocks"),
     dense: bool = typer.Option(False, help="Use dense blocks by default"),
+    inductor: bool = typer.Option(False, help="Use PyTorch Inductor for JIT compilation"),
     jit_dir: str = typer.Option("jit_captures", help="Common parent folder for all jit_* capture files"),
     no_barriers: bool = typer.Option(False, "--no-barriers", help="Inline every single-use temporary unconditionally (skip is_safe_to_inline's safety analysis). Lower peak memory, not guaranteed value-preserving."),
 ):

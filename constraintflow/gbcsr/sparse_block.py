@@ -132,10 +132,12 @@ class SparseBlock:
             return
 
         if isinstance(block, torch.Tensor) and not block.is_meta:
-            start_transfer = time.perf_counter()
+            if not inductor_mode.get_flag():
+                start_transfer = time.perf_counter()
 
             block = block.to(device_mode.get_device())
-            binary_profilier.update_data_transfer_time(time.perf_counter() - start_transfer)
+            if not inductor_mode.get_flag():
+                binary_profilier.update_data_transfer_time(time.perf_counter() - start_transfer)
         if isinstance(block, bool) or (isinstance(block, torch.Tensor) and block.dtype == torch.bool):
             self.block = block 
         else:
@@ -671,7 +673,8 @@ class DenseBlock(SparseBlock):
         return res
     
     def unsqueeze(self, index, json_list=[], template_index=-1, simulacrum=False):
-        start_time = time.time()
+        if not inductor_mode.get_flag():
+            start_time = time.time()
         json_obj = {
             "method": "extract_sparse_block",
             "input": "json_list_" + str(template_index),
@@ -701,8 +704,9 @@ class DenseBlock(SparseBlock):
 
         if simulacrum:
             return DenseBlock(res), res_index
-        end_time = time.time()
-        unsqueeze_time.update_op_time(end_time-start_time)
+        if not inductor_mode.get_flag():
+            end_time = time.time()
+            unsqueeze_time.update_op_time(end_time-start_time)
         return DenseBlock(res)
     
     def squeeze(self, index, json_list=[], template_index=-1, simulacrum=False):

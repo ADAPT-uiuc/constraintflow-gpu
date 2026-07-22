@@ -491,7 +491,8 @@ def split_blocks(start_index_1, end_index_1, start_index_2, end_index_2, block_i
 
 class SparseTensor:
     def __init__(self, start_indices, blocks, dims, total_size, end_indices = None, type=float, dense_const = 0.0):
-        t1 = time.perf_counter()
+        if not inductor_mode.get_flag():
+            t1 = time.perf_counter()
         self.start_indices = start_indices
         self.blocks = blocks
         self.total_size = total_size.int()
@@ -508,10 +509,11 @@ class SparseTensor:
             self.end_indices = []
             for i in range(self.num_blocks):
                 self.end_indices.append(start_indices[i] + torch.as_tensor(blocks[i].total_shape))
-                if not  (self.end_indices[i] <= self.total_size).all():
-                    print(self.end_indices)
-                    print(self.total_size)
-                assert((self.end_indices[i] <= self.total_size).all())
+                if not inductor_mode.get_flag():
+                    if not  (self.end_indices[i] <= self.total_size).all():
+                        print(self.end_indices)
+                        print(self.total_size)
+                    assert((self.end_indices[i] <= self.total_size).all())
         # else:
         #     for i in range(self.num_blocks):
         #         assert((end_indices[i] - start_indices[i] >= 0).all())
@@ -522,7 +524,8 @@ class SparseTensor:
         #             print(start_indices[j], self.end_indices[j])
         #         assert(not(block_overlap([start_indices[i], self.end_indices[i]], [start_indices[j], self.end_indices[j]])))
         
-        sparse_tensor_init_time.update_op_time(time.perf_counter()-t1)
+        if not inductor_mode.get_flag():
+            sparse_tensor_init_time.update_op_time(time.perf_counter()-t1)
         
         if self.num_blocks > 0:
             if self.check_dense():
@@ -541,8 +544,9 @@ class SparseTensor:
                         delete_indices.append(i)
 
         delete_indices.reverse()
-
-        sparse_tensor_init_time.update_total_time(time.perf_counter()-t1)
+        
+        if not inductor_mode.get_flag():
+            sparse_tensor_init_time.update_total_time(time.perf_counter()-t1)
 
 
         # if self.num_blocks > len(delete_indices):
@@ -2194,7 +2198,8 @@ Blocks Types: "
         return x
     
     def unsqueeze(self, index, json_list=None, lhs_index=-1, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None):
-        start_time = time.perf_counter()
+        if not inductor_mode.get_flag():
+            start_time = time.perf_counter()
         owns_capture = json_list is None and dummy_mode
         if owns_capture:
             json_list = [{"method": "noop", "input": "lhs", "output": 0}]
@@ -2256,8 +2261,9 @@ Blocks Types: "
                 "output": len(json_list),
             }
             json_list.append(json_obj)
-        end_time = time.perf_counter()
-        unsqueeze_time.update_total_time(end_time-start_time)
+        if not inductor_mode.get_flag():
+            end_time = time.perf_counter()
+            unsqueeze_time.update_total_time(end_time-start_time)
         result = SparseTensor(start_indices, blocks, dims, total_size, end_indices, self.type, self.dense_const)
         if owns_capture:
             write_jit_capture_file("jit_unsqueeze", "unsqueeze", layer_index, counter, inside_while, while_number, while_iteration, json_list)
