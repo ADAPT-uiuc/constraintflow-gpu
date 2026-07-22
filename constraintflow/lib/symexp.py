@@ -1,6 +1,7 @@
 from typing import Any
 from constraintflow.gbcsr.sparse_tensor import *
 from constraintflow.gbcsr.sparse_block import *
+from constraintflow.lib.globals import dummy_mode, inductor_mode
 
 def get_num_eps(mat):
     if mat==None:
@@ -186,8 +187,9 @@ def get_new_eps(network, initial_shape, json_list=None, layer_index=None,
 class SymExpSparse:
     count = 0
     def __init__(self, network, mat = None, const = 0.0):
-        if SymExpSparse.count < get_num_eps(mat) :
-            SymExpSparse.count = get_num_eps(mat)
+        if not inductor_mode.get_flag():
+            if SymExpSparse.count < get_num_eps(mat) :
+                SymExpSparse.count = get_num_eps(mat)
         self.mat = mat
         self.const = const
         self.network = network

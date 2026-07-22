@@ -5,7 +5,7 @@ import os
 from . import irVisitor 
 import copy
 from .ir import * 
-from constraintflow.lib.globals import dummy_mode, reuse_mode, load_capture, capture_exists
+from constraintflow.lib.globals import dummy_mode, reuse_mode, load_capture, capture_exists, inductor_mode
 
 class CodeGen(irVisitor.IRVisitor):
     def __init__(self,folder):
@@ -29,7 +29,7 @@ class CodeGen(irVisitor.IRVisitor):
         self.write("from constraintflow.lib.flow_sparse import Flow")
         self.write("from constraintflow.lib.abs_elem import Abs_elem_sparse")
         self.write("from constraintflow.lib.symexp import *")
-        self.write("from constraintflow.lib.globals import save_capture")
+        self.write("from constraintflow.lib.globals import save_capture, inductor_mode")
         self.write("from transformers import *")
         self.write("\n")
         # self.write("torch.cuda.reset_peak_memory_stats()")
@@ -166,6 +166,8 @@ class CodeGen(irVisitor.IRVisitor):
                     self.write('')
                     
                     for layer_index in opStmtIr.layerwise_cfgs.keys():
+                        if inductor_mode.get_flag():
+                            self.write('@torch.compile(fullgraph=True, backend="inductor")')
                         self.write('def ' + opStmtIr.op + '_' + str(layer_index) + '(self, abs_elem, prev, curr, poly_size, curr_size, prev_size, input_size, batch_size, layer_index = None):')
                         self.indent += 1
                         self.write('while_iteration = -1')
@@ -1135,7 +1137,8 @@ class CodeGen(irVisitor.IRVisitor):
         self.indent += 1
         self.write('flow = Flow(abs_elem, ' + str(node.transformer) + '(), network, print_intermediate_results, no_sparsity)')
         self.write('res = flow.flow()')
-        self.write('print("Peak memory usage:", torch.cuda.max_memory_allocated() / 1024**2, "MB")')
+        self.write('if not inductor_mode.get_flag():')
+        self.write('    print("Peak memory usage:", torch.cuda.max_memory_allocated() / 1024**2, "MB")')
         self.write('return res')
         self.indent -= 1
 
