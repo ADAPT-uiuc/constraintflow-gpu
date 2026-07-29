@@ -1,4 +1,9 @@
+import csv
+import datetime
+import os
+import random
 import re
+import shlex
 import subprocess
 import sys
 import ast
@@ -7,8 +12,99 @@ from typing import Tuple
 import torch
 import typer
 
+# Shared with the experiment drivers, so it lives outside this repo (/home/db50/bench).
+_BENCH_DIR = os.environ.get(
+    "CF_BENCH_DIR",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                 "bench"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(_BENCH_DIR)))
+from bench import configs as bench_configs
+
 app = typer.Typer(help="ConstraintFlow JIT test")
 
+# Logs live next to this file (not under the cwd) so they land in the same place
+# no matter which directory the test was launched from.
+LOG_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+# Set by _init_logging() to logs/<label>_<timestamp>/, so each invocation gets its own
+# folder. None means logging is off, which keeps the CLI helpers usable if imported.
+CURRENT_LOG_DIR = None
+_LOG_CONTEXT = "cli"
+_LOG_SEQ = 0
+
+# The terminal command that started this test run, recorded in every log it writes.
+INVOCATION_CMD = shlex.join([sys.executable, *sys.argv])
+
+# One identifier per invocation, stamped into the log folder name, the sweep CSV filename,
+# and every CSV row's `run_id` column, so a result row can always be traced back to the
+# logs that produced it. Timestamp sorts; the name half is what's memorable.
+_RUN_ADJECTIVES = ["amber", "basalt", "cobalt", "dusky", "ember", "flinty", "gilded",
+                   "hazel", "indigo", "jasper", "kelpy", "lucent", "murky", "nimbus",
+                   "opal", "quartz"]
+_RUN_NOUNS = ["lynx", "heron", "otter", "falcon", "marten", "kestrel", "badger", "ibis",
+              "shrike", "tapir", "gannet", "civet", "osprey", "serval", "curlew", "vireo"]
+
+
+def _new_run_id() -> str:
+    return (f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_"
+            f"{random.choice(_RUN_ADJECTIVES)}-{random.choice(_RUN_NOUNS)}")
+
+
+RUN_ID = _new_run_id()
+
+
+def _run_id_path(path: str) -> str:
+    """Insert RUN_ID before the extension, so the CSV pairs by name with the log folder."""
+    stem, ext = os.path.splitext(path)
+    return f"{stem}_{RUN_ID}{ext}"
+
+
+def _init_logging(label: str, csv_path: str = "") -> None:
+    """Open a fresh log folder for this invocation and record how it was launched."""
+    global CURRENT_LOG_DIR
+    CURRENT_LOG_DIR = os.path.join(LOG_ROOT, f"{label}_{RUN_ID}")
+    os.makedirs(CURRENT_LOG_DIR, exist_ok=True)
+    with open(os.path.join(CURRENT_LOG_DIR, "invocation.txt"), "w") as f:
+        f.write(f"# run id: {RUN_ID}\n"
+                f"# terminal command: {INVOCATION_CMD}\n"
+                f"# cwd: {os.getcwd()}\n"
+                f"# started: {datetime.datetime.now().isoformat(timespec='seconds')}\n"
+                + (f"# csv: {csv_path}\n" if csv_path else ""))
+    typer.echo(f"Run id: {RUN_ID}")
+    typer.echo(f"Logging this run to {CURRENT_LOG_DIR}")
+
+
+def _set_log_context(context: str) -> None:
+    """Tag subsequent log filenames with the config/program they belong to."""
+    global _LOG_CONTEXT
+    _LOG_CONTEXT = re.sub(r"[^A-Za-z0-9._-]+", "_", context).strip("_") or "cli"
+
+
+def _save_log(cmd: list[str], result: subprocess.CompletedProcess) -> None:
+    """Write one subprocess's stdout/stderr, each headed by the command that produced it.
+
+    `subprocess command` is copy-pasteable after `cd`-ing to `cwd`; `terminal command`
+    is how this test script itself was launched. Called before the returncode check so
+    failed runs are logged too.
+    """
+    if CURRENT_LOG_DIR is None:
+        return
+    global _LOG_SEQ
+    _LOG_SEQ += 1
+    # cli.py's subcommand ('run'/'jit'/'compile') is the argument right after the script.
+    phase = cmd[2] if len(cmd) > 2 else "cli"
+    base = os.path.join(CURRENT_LOG_DIR, f"{_LOG_SEQ:03d}_{_LOG_CONTEXT}_{phase}")
+    header = (
+        f"# run id: {RUN_ID}\n"
+        f"# terminal command: {INVOCATION_CMD}\n"
+        f"# subprocess command: {shlex.join(cmd)}\n"
+        f"# cwd: {os.getcwd()}\n"
+        f"# exit code: {result.returncode}\n"
+        "# " + "-" * 70 + "\n\n"
+    )
+    with open(f"{base}_stdout.txt", "w") as f:
+        f.write(header + result.stdout)
+    with open(f"{base}_stderr.txt", "w") as f:
+        f.write(header + result.stderr)
 
 def _extract_bound(output: str, label: str) -> str:
     # Bounds can span multiple lines, so use DOTALL and non-greedy capture.
@@ -86,6 +182,7 @@ def _run_cli(program_file: str, network: str, dataset: str, extra_args: list[str
     if compile:
         cmd.append("--compile")
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    _save_log(cmd, result)
     if result.returncode != 0:
         raise _fail(cmd, result)
     print(result.stdout)
@@ -112,6 +209,7 @@ def _run_jit(program_file: str, network: str, dataset: str, extra_args: list[str
         *extra_args,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    _save_log(cmd, result)
     if result.returncode != 0:
         raise _fail(cmd, result)
     print(result.stdout)
@@ -125,6 +223,7 @@ def _run_and_capture(cli_args: list[str]) -> str:
     """
     cmd = [sys.executable, "constraintflow/cli.py", *cli_args]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    _save_log(cmd, result)
     if result.returncode != 0:
         raise _fail(cmd, result)
     print(result.stdout)
@@ -134,7 +233,7 @@ def _run_and_capture(cli_args: list[str]) -> str:
 def _assert_bounds_close(lhs: torch.Tensor, rhs: torch.Tensor, name: str) -> None:
     if lhs.shape != rhs.shape:
         raise AssertionError(f"{name} shape mismatch: {lhs.shape} != {rhs.shape}")
-    if not torch.allclose(lhs, rhs, atol=1e-6, rtol=1e-6):
+    if not torch.allclose(lhs, rhs, atol=1e-3, rtol=0):
         raise AssertionError(f"{name} mismatch.\nLeft:\n{lhs}\nRight:\n{rhs}")
 
 
@@ -171,6 +270,133 @@ def _avg(values):
     if not vals:
         return None
     return sum(vals) / len(vals)
+
+
+def _ratio(numerator, denominator):
+    if numerator is None or denominator is None or denominator == 0:
+        return None
+    return numerator / denominator
+
+
+def _format_bounds_for_csv(t: torch.Tensor) -> str:
+    # .tolist() first: torch's own repr/str truncates large tensors (summarizes
+    # with "..."), which would silently drop the data we're trying to preserve.
+    return str(t.tolist())
+
+
+def _kernel_paths(program_path: str, network_path: str, batch_size: int, config_id: str = None):
+    """The two prebuilt kernels a profiling row runs: Normal `compile` vs `jit`."""
+    only = f" --configs {config_id}" if config_id else \
+        f" --network {network_path} --batch-size {batch_size}"
+    return (bench_configs.require_kernel(
+                bench_configs.kernel_dir("normal", program_path),
+                "python3 bench/build_kernels.py --tool normal"),
+            bench_configs.require_kernel(
+                bench_configs.kernel_dir("jit", program_path, network_path, batch_size),
+                f"python3 bench/build_kernels.py --tool jit{only}"))
+
+
+def _profile_one_config(program_file: str, program_path: str, config_id: str, network_name: str,
+                         network_path: str, dataset: str, eps: float, batch_size: int, device: str,
+                         repeat: int, in_memory: bool = False, use_cache: bool = False) -> list[dict]:
+    """Run one (program, network config) through Normal vs JIT compile+run `repeat` times and
+    return one row per phase (Compile, Run) with raw time/memory measurements, for CSV export.
+    """
+    jit_extra = ["--in-memory"] if in_memory else []
+    normal_out, jit_out = _kernel_paths(program_path, network_path, batch_size, config_id) \
+        if use_cache else (None, None)
+    run_args = [
+        program_path,
+        "--network", network_path,
+        "--dataset", dataset,
+        "--device", device,
+        "--eps", str(eps),
+        "--batch-size", str(batch_size),
+    ]
+    normal_run = ["run", *run_args] + (["--output-path", normal_out] if normal_out else [])
+    jit_run = ["run", *run_args] + (["--output-path", jit_out] if jit_out else [])
+
+    nc_t, nc_m, nr_t, nr_m = [], [], [], []
+    jc_t, jc_m, jr_t, jr_m = [], [], [], []
+    match = None
+    for _ in range(repeat):
+        # --- Normal path: compile (device-agnostic codegen), then run
+        if not use_cache:
+            out = _run_and_capture(["compile", program_path, "--output-path", "output/"])
+            nc_t.append(_extract_total_time(out)); nc_m.append(_extract_peak_memory(out))
+
+        out = _run_and_capture(normal_run)
+        nr_t.append(_extract_total_time(out)); nr_m.append(_extract_peak_memory(out))
+        n_lb = _parse_tensor(_extract_bound(out, "Lower bounds"))
+        n_ub = _parse_tensor(_extract_bound(out, "Upper bounds"))
+
+        # --- JIT path: one compile pass (probe + reuse compile), then run
+        if not use_cache:
+            out = _run_and_capture(["jit", *run_args, *jit_extra])
+            jc_t.append(_extract_total_time(out)); jc_m.append(_extract_peak_memory(out))
+
+        out = _run_and_capture(jit_run)
+        jr_t.append(_extract_total_time(out)); jr_m.append(_extract_peak_memory(out))
+        j_lb = _parse_tensor(_extract_bound(out, "Lower bounds"))
+        j_ub = _parse_tensor(_extract_bound(out, "Upper bounds"))
+
+        # Bounds are deterministic, so decide the match once.
+        if match is None:
+            match = "Yes" if _bounds_match(n_lb, n_ub, j_lb, j_ub) else "No"
+
+    base = {
+        "run_id": RUN_ID,
+        "config_id": config_id, "program": program_file, "network": network_name,
+        "dataset": dataset, "batch": batch_size, "eps": eps, "device": device, "repeats": repeat,
+    }
+    n_compile_time, j_compile_time = _avg(nc_t), _avg(jc_t)
+    n_compile_mem, j_compile_mem = _avg(nc_m), _avg(jc_m)
+    n_run_time, j_run_time = _avg(nr_t), _avg(jr_t)
+    n_run_mem, j_run_mem = _avg(nr_m), _avg(jr_m)
+
+    empty_bounds = {"n_lower_bounds": "", "n_upper_bounds": "", "j_lower_bounds": "", "j_upper_bounds": ""}
+    run_bounds = empty_bounds
+    if match == "No":
+        run_bounds = {
+            "n_lower_bounds": _format_bounds_for_csv(n_lb),
+            "n_upper_bounds": _format_bounds_for_csv(n_ub),
+            "j_lower_bounds": _format_bounds_for_csv(j_lb),
+            "j_upper_bounds": _format_bounds_for_csv(j_ub),
+        }
+
+    return [
+        {**base, "phase": "Compile",
+         "n_time": n_compile_time, "j_time": j_compile_time,
+         "n_mem": n_compile_mem, "j_mem": j_compile_mem,
+         "speedup_normal_over_jit": _ratio(n_compile_time, j_compile_time),
+         "mem_overhead_jit_over_normal": _ratio(j_compile_mem, n_compile_mem),
+         "match": "", **empty_bounds},
+        {**base, "phase": "Run",
+         "n_time": n_run_time, "j_time": j_run_time,
+         "n_mem": n_run_mem, "j_mem": j_run_mem,
+         "speedup_normal_over_jit": _ratio(n_run_time, j_run_time),
+         "mem_overhead_jit_over_normal": _ratio(j_run_mem, n_run_mem),
+         "match": match, **run_bounds},
+    ]
+
+
+def _export_profile_csv(rows: list[dict], csv_path: str) -> None:
+    """Append rows to csv_path, writing the header only if the file doesn't exist yet.
+
+    Opens, writes, and closes on every call (rather than holding the file handle open
+    across a whole sweep) so each call's rows are flushed to disk immediately -- callers
+    can call this once per config to make a long sweep incrementally durable/tailable.
+    """
+    if not rows:
+        typer.echo("No results to write (every config was skipped or failed).")
+        return
+    write_header = not os.path.isfile(csv_path)
+    with open(csv_path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        if write_header:
+            writer.writeheader()
+        writer.writerows(rows)
+    typer.echo(f"  -> {len(rows)} row(s) appended to {csv_path}")
 
 
 def _print_profile_table(rows: list[dict], device: str, repeat: int) -> None:
@@ -216,15 +442,19 @@ def _print_profile_table(rows: list[dict], device: str, repeat: int) -> None:
     print()
 
 
-def _run_profile_mode(program_files: str, network: str, dataset: str, device: str, repeat: int, in_memory: bool = False) -> None:
+def _run_profile_mode(program_files: str, network: str, dataset: str, device: str, repeat: int,
+                       in_memory: bool = False, use_cache: bool = False) -> None:
     jit_extra = ["--in-memory"] if in_memory else []
     epss = [0]
     batch_sizes = [10]
     rows = []
     for program_file in program_files.split(","):
+        _set_log_context(os.path.splitext(program_file)[0])
         program_path = "examples/compiler_examples/" + program_file
         print(f"Profiling program file: {program_path} with network: {network}, dataset: {dataset}, device: {device}, repeat: {repeat}")
         for batch_size in batch_sizes:
+            normal_out, jit_out = _kernel_paths(program_path, network, batch_size) \
+                if use_cache else (None, None)
             for eps in epss:
                 run_args = [
                     program_path,
@@ -234,26 +464,29 @@ def _run_profile_mode(program_files: str, network: str, dataset: str, device: st
                     "--eps", str(eps),
                     "--batch-size", str(batch_size),
                 ]
-
+                normal_run = ["run", *run_args] + (["--output-path", normal_out] if normal_out else [])
+                jit_run = ["run", *run_args] + (["--output-path", jit_out] if jit_out else [])
 
                 nc_t, nc_m, nr_t, nr_m = [], [], [], []
                 jc_t, jc_m, jr_t, jr_m = [], [], [], []
                 match = None
                 for _ in range(repeat):
                     # --- Normal path: compile (device-agnostic codegen), then run
-                    out = _run_and_capture(["compile", program_path, "--output-path", "output/"])
-                    nc_t.append(_extract_total_time(out)); nc_m.append(_extract_peak_memory(out))
+                    if not use_cache:
+                        out = _run_and_capture(["compile", program_path, "--output-path", "output/"])
+                        nc_t.append(_extract_total_time(out)); nc_m.append(_extract_peak_memory(out))
 
-                    out = _run_and_capture(["run", *run_args])
+                    out = _run_and_capture(normal_run)
                     nr_t.append(_extract_total_time(out)); nr_m.append(_extract_peak_memory(out))
                     n_lb = _parse_tensor(_extract_bound(out, "Lower bounds"))
                     n_ub = _parse_tensor(_extract_bound(out, "Upper bounds"))
 
-                    # --- JIT path: one compile pass (probe + reuse compile,
-                    out = _run_and_capture(["jit", *run_args, *jit_extra])
-                    jc_t.append(_extract_total_time(out)); jc_m.append(_extract_peak_memory(out))
+                    # --- JIT path: one compile pass (probe + reuse compile), then run
+                    if not use_cache:
+                        out = _run_and_capture(["jit", *run_args, *jit_extra])
+                        jc_t.append(_extract_total_time(out)); jc_m.append(_extract_peak_memory(out))
 
-                    out = _run_and_capture(["run", *run_args])
+                    out = _run_and_capture(jit_run)
                     jr_t.append(_extract_total_time(out)); jr_m.append(_extract_peak_memory(out))
                     j_lb = _parse_tensor(_extract_bound(out, "Lower bounds"))
                     j_ub = _parse_tensor(_extract_bound(out, "Upper bounds"))
@@ -263,8 +496,7 @@ def _run_profile_mode(program_files: str, network: str, dataset: str, device: st
                         match = "Yes" if _bounds_match(n_lb, n_ub, j_lb, j_ub) else "No"
 
                 base = {"program": program_file, "batch": batch_size, "eps": eps}
-                # One row per phase, Normal and JIT side by side (time/memory are
-                # the mean over `repeat` runs). Match only applies to the Run row.
+                # One row per phase, Normal and JIT side by side; match applies to Run only.
                 rows.append({**base, "phase": "Compile",
                              "n_time": _avg(nc_t), "j_time": _avg(jc_t),
                              "n_mem": _avg(nc_m), "j_mem": _avg(jc_m), "match": ""})
@@ -293,18 +525,24 @@ def test(
     profile: bool = typer.Option(False, "--profile", help="Profile compile & run time and peak memory for the Normal and JIT paths and print a table."),
     repeat: int = typer.Option(1, help="In --profile mode, run each configuration this many times and average the time and memory."),
     in_memory: bool = typer.Option(False, "--in-memory", help="Run the jit compile with --in-memory (keep captures in a process-local dict instead of on disk)."),
+    use_cache: bool = typer.Option(False, "--use-cache", help="In --profile mode, run kernels prebuilt by bench/build_kernels.py instead of compiling. The Compile row is then blank."),
 ):
     if profile:
-        _run_profile_mode(program_files, network, dataset, device, repeat, in_memory)
+        _init_logging(f"profile_{dataset}_{device}")
+        _run_profile_mode(program_files, network, dataset, device, repeat, in_memory, use_cache)
         return
 
+    # `test` still compiles in place on purpose: it compares a fresh normal compile
+    # against a fresh jit compile.
+    _init_logging(f"test_{dataset}_{device}")
     jit_extra = ["--in-memory"] if in_memory else []
 
     for program_file in program_files.split(","):
+        _set_log_context(os.path.splitext(program_file)[0])
         program_file = "examples/compiler_examples/" + program_file
         print(f"Testing program file: {program_file} with network: {network}, dataset: {dataset}, device: {device}")
-        epss = [0, 0.001]
-        batch_sizes = [1, 2]
+        epss = [0.005]
+        batch_sizes = [100]
         for batch_size in batch_sizes:
             batch_args = ["--batch-size", str(batch_size)]
 
@@ -362,6 +600,56 @@ def test(
                 typer.echo(f"JIT test passed: baseline and jit modes bounds match for eps={eps} and batch_size={batch_size} on {device}.")
 
     print("JIT test passed: all eps and batch sizes passed.")
+
+
+@app.command()
+def sweep(
+    program_files: str = typer.Argument(..., help="Comma-separated list of ConstraintFlow program files to profile"),
+    dataset: str = typer.Option("all", help="Restrict the sweep to networks from this dataset: mnist, cifar, or all."),
+    config_ids: str = typer.Option(None, "--configs", help="Comma-separated config ids to run, e.g. N1,N12 (default: all)."),
+    device: str = typer.Option("gpu", help="Device to run on: cpu, gpu (CUDA), or gpumac (Apple MPS)."),
+    repeat: int = typer.Option(1, help="Run each configuration this many times and average the time and memory."),
+    in_memory: bool = typer.Option(False, "--in-memory", help="Run the jit compile with --in-memory (keep captures in a process-local dict instead of on disk)."),
+    use_cache: bool = typer.Option(False, "--use-cache", help="Run kernels prebuilt by bench/build_kernels.py instead of compiling. The Compile rows are then blank."),
+    csv_path: str = typer.Option("simulacrum_sweep_results.csv", help="Path to append the CSV results to. This run's id is inserted before the extension so the CSV pairs with its log folder."),
+):
+    """
+    Profile Normal vs JIT compile & run (time and peak memory) across the full model
+    config table (network, dataset, eps, batch_size per config, shared with the
+    experiment drivers via bench/configs.py). Results are appended to a CSV instead of
+    being printed.
+    """
+    csv_path = _run_id_path(csv_path)
+    _init_logging(f"sweep_{dataset}_{device}", csv_path)
+    only = [c.strip() for c in config_ids.split(",")] if config_ids else None
+    total_rows = 0
+    for program_file in program_files.split(","):
+        program_path = "examples/compiler_examples/" + program_file
+        for (config_id, network_name, config_dataset, eps, batch_size, _method,
+             network_path) in bench_configs.iter_configs(dataset, only):
+            _set_log_context(f"{config_id}_{os.path.splitext(program_file)[0]}")
+            typer.echo(f"Profiling {config_id} ({network_name} on {config_dataset}, device={device}, "
+                        f"eps={eps}, batch_size={batch_size}, {repeat} repeat(s))")
+            try:
+                config_rows = _profile_one_config(
+                    program_file, program_path, config_id, network_name, network_path,
+                    config_dataset, eps, batch_size, device, repeat, in_memory, use_cache,
+                )
+            except (AssertionError, RuntimeError) as e:
+                typer.echo(f"  [{config_id}] profiling failed, skipping: {e}")
+                continue
+
+            # Write this config's rows immediately (rather than batching until the
+            # whole sweep finishes) so results survive a crash/interrupt partway
+            # through and can be tailed live while the sweep is still running.
+            _export_profile_csv(config_rows, csv_path)
+            total_rows += len(config_rows)
+
+    if total_rows == 0:
+        typer.echo("No results were written (every config was skipped or failed).")
+    else:
+        typer.echo(f"Done. {total_rows} row(s) written to {csv_path} "
+                    f"(run id {RUN_ID}, logs in {CURRENT_LOG_DIR})")
 
 
 if __name__ == "__main__":

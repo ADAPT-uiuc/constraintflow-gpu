@@ -88,9 +88,8 @@ def replace_var_with_expr(
 
 def compute_def_indices(
         instructions: list[IrStatement]) -> dict[str, list[int]]:
-    """Map each variable to the ascending list of statement indices that assign
-    it. On a straight-line block the reaching definition at any point is just
-    the nearest preceding one."""
+    """Each variable to the ascending indices that assign it. On a straight-line
+    block the reaching definition at any point is the nearest preceding one."""
     def_indices: dict[str, list[int]] = {}
     for idx, instr in enumerate(instructions):
         if isinstance(instr, IrAssignment):
@@ -98,7 +97,6 @@ def compute_def_indices(
             if isinstance(lhs, IrVar):
                 def_indices.setdefault(lhs.name, []).append(idx)
     return def_indices
-
 
 _FRESH_NODE_TYPES = (
     IrTorchZeros, IrTorchEye, IrTensorOnes,
@@ -108,94 +106,16 @@ _FRESH_NODE_TYPES = (
     IrTorchDiagEmbed, IrTorchWhere, IrBlockWhereBlock,
     IrTensorClamp, IrBlockClamp, IrConvertBoolToFloat,
     IrFConv2d, IrFConvTranspose2d, IrFUnfold,
-    IrConstBlock, IrTorchStride, IrBlockGetDims,
-    IrBlockAll, IrBlockAny, IrBlockCopy, IrBlockCreateSimilar,
-    IrGetKthLayerNetworkParam, IrEmptyList,
+    IrTorchStride, IrBlockGetDims,
+    IrBlockAll, IrBlockAny, IrBlockCopy,
+    IrEmptyList,
 )
 
 
-# Union Find
-class _UnionFind:
-    """Union-find over variable names with path-halving and union-by-size"""
-
-    def __init__(self):
-        self.parent: dict[str, str] = {}
-        self.size: dict[str, int] = {}
-
-    def find(self, x: str) -> str:
-        parent = self.parent
-        if x not in parent:
-            parent[x] = x
-            self.size[x] = 1
-            return x
-        root = x
-        while parent[root] != root:
-            root = parent[root]
-        while parent[x] != root:            # path-halving
-            parent[x], x = root, parent[x]
-        return root
-
-    def union(self, a: str, b: str) -> None:
-        ra, rb = self.find(a), self.find(b)
-        if ra == rb:
-            return
-        if self.size[ra] < self.size[rb]:   # attach smaller tree under larger
-            ra, rb = rb, ra
-        self.parent[rb] = ra
-        self.size[ra] += self.size[rb]
-
-
-def expr_base_vars(expr) -> list[IrVar]:
-    """Variables whose storage `expr`'s result may alias: none for a FRESH node,
-    else the vars it is built from (view/wrapper/accessor/unknown all alias)."""
-    if isinstance(expr, IrVar):
-        return [expr]
-    if expr is None or isinstance(expr, (int, float, IrConst)):
-        return []
-    if isinstance(expr, list):
-        out: list[IrVar] = []
-        for x in expr:
-            out.extend(expr_base_vars(x))
-        return out
-    if isinstance(expr, _FRESH_NODE_TYPES):
-        return []
-    out = []
-    for child in get_generalized_children(expr):
-        out.extend(expr_base_vars(child))
-    return out
-
-
-def compute_storage_classes(instructions: list[IrStatement]):
-    """Return (class_of, mutations_by_class): each variable's storage-class
-    representative, and per class the ascending indices of in-place writes that
-    mutate it."""
-    uf = _UnionFind()
-    for instr in instructions:
-        if isinstance(instr, IrAssignment):
-            lhs = instr.children[0]
-            if isinstance(lhs, IrVar):
-                uf.find(lhs.name)
-                for bv in expr_base_vars(instr.children[1]):
-                    uf.union(lhs.name, bv.name)
-    # Indices are appended in ascending order (enumerate), so lists stay sorted.
-    mutations_by_class: dict[str, list[int]] = {}
-    for idx, instr in enumerate(instructions):
-        if isinstance(instr, (IrAssignToView, IrAssignToBlock)):
-            for bv in expr_base_vars(instr.children[0]):
-                rep = uf.find(bv.name)
-                idxs = mutations_by_class.setdefault(rep, [])
-                if not idxs or idxs[-1] != idx:
-                    idxs.append(idx)
-    class_of = {name: uf.find(name) for name in uf.parent}
-    return class_of, mutations_by_class
-
-
-# Path-2
 def _resolve_storage(expr, reads_of: dict[str, frozenset]) -> frozenset:
-    """Storage roots `expr`'s result reads (depends on for its value). A FRESH
-    node reads none (its result is newly allocated); a bare/external var is its
-    own root; views, wrappers, accessors and containers pass through to their
-    operands' roots."""
+    """Storage roots `expr`'s result reads. A FRESH node reads none (its result is
+    newly allocated); a bare var is its own root; everything else passes through
+    to its operands' roots."""
     if isinstance(expr, IrVar):
         return reads_of.get(expr.name, frozenset((expr.name,)))
     if expr is None or isinstance(expr, (int, float, IrConst)):
@@ -213,10 +133,28 @@ def _resolve_storage(expr, reads_of: dict[str, frozenset]) -> frozenset:
     return frozenset(out)
 
 
+def _expr_eval_roots(expr, reads_of: dict[str, frozenset]) -> frozenset:
+    """Storage roots that *evaluating* `expr` depends on. Unlike `_resolve_storage`,
+    this recurses into FRESH nodes too: allocating new storage doesn't mean reading
+    the operands was free, so mutating one before a relocated evaluation would still
+    change the result."""
+    if isinstance(expr, IrVar):
+        return reads_of.get(expr.name, frozenset((expr.name,)))
+    if expr is None or isinstance(expr, (int, float, IrConst)):
+        return frozenset()
+    if isinstance(expr, list):
+        out: set = set()
+        for x in expr:
+            out |= _expr_eval_roots(x, reads_of)
+        return frozenset(out)
+    out = set()
+    for child in get_generalized_children(expr):
+        out |= _expr_eval_roots(child, reads_of)
+    return frozenset(out)
+
+
 def compute_storage_reads_and_defs(instructions: list[IrStatement]):
-    """Build the storage-versioning space: what each value reads, and where
-    storage is def'd (mutated) in place.
-    """
+    """What each value reads, and where storage is mutated in place."""
     reads_of: dict[str, frozenset] = {}
     for instr in instructions:
         if isinstance(instr, IrAssignment):
@@ -230,7 +168,7 @@ def compute_storage_reads_and_defs(instructions: list[IrStatement]):
     storage_defs: list = []
     for idx, instr in enumerate(instructions):
         if isinstance(instr, (IrAssignToView, IrAssignToBlock)):
-            # an in-place write is a def of the storage its target touches
+            # an in-place write defs the storage its target touches
             roots = _resolve_storage(instr.children[0], reads_of)
             if roots:
                 storage_defs.append((idx, roots))
@@ -241,9 +179,8 @@ def compute_storage_reads_and_defs(instructions: list[IrStatement]):
 def storage_redefd_between(
         storage_defs: list, storage_def_keys: list, read_roots: set,
         lo: int, hi: int) -> bool:
-    """Storage-space analog of `redefined_between`: True iff some storage def (an
-    in-place write) in the open interval (lo, hi) def's a root the value reads
-    (`read_roots`) -- i.e. the value goes stale before its use."""
+    """Storage-space analog of `redefined_between`: True iff some in-place write in
+    (lo, hi) defs a root in `read_roots`, i.e. the value goes stale before its use."""
     if not read_roots:
         return False
     k = bisect.bisect_right(storage_def_keys, lo)
@@ -279,29 +216,15 @@ def redefined_between(
     return k < len(idxs) and idxs[k] < hi
 
 
-def mutated_between(
-        mutations_by_class: dict[str, list[int]], class_rep: str,
-        lo: int, hi: int) -> bool:
-    """True iff storage class `class_rep` is written in place at some index in
-    the open interval (lo, hi)."""
-    idxs = mutations_by_class.get(class_rep)
-    if not idxs:
-        return False
-    k = bisect.bisect_right(idxs, lo)
-    return k < len(idxs) and idxs[k] < hi
-
-
 def resolve_value(
         instructions: list[IrStatement], def_indices: dict[str, list[int]],
         var: IrVar, point: int):
-    """
-    Return (expr, def_index): an expression equal to `var`'s value at `point`,
-    and the index of the statement whose RHS it is (-1 for a block-external
-    variable).
+    """(expr, def_index) for `var`'s value at `point`; def_index is -1 for a
+    block-external variable.
 
-    Copy chains (`t = a; a = expr`) are followed through reaching definitions.
-    Each hop moves to a strictly earlier index, so this terminates and binds to
-    the correct definition even for reassigned variables.
+    Copy chains (`t = a; a = expr`) are followed through reaching definitions. Each
+    hop moves strictly earlier, so this terminates and binds the right definition
+    even for reassigned variables.
     """
     d = reaching_def_index(def_indices, var.name, point)
     if d is None:
@@ -335,23 +258,18 @@ def is_safe_to_inline(
         storage_defs: list, storage_def_keys: list, var: IrVar, expr,
         def_index: int, use_index: int) -> bool:
     """
-    Moving `var`'s value `expr` from `def_index` to `use_index` (open interval)
-    preserves it iff nothing it depends on is def'd in that interval -- the same
-    def/use interval test, run in both spaces:
+    Moving `var`'s value `expr` from `def_index` to `use_index` preserves it iff
+    nothing it depends on is def'd in that open interval -- the same test in both
+    spaces: no variable `expr` reads is reassigned (`redefined_between`), and no
+    in-place write mutates a storage root it reads (`storage_redefd_between`).
 
-      * name space    -- no variable `expr` reads is reassigned there
-                         (`redefined_between`);
-      * storage space -- no in-place write there def's (mutates) a storage root
-                         the value reads (`storage_redefd_between`).
-
-    The value's read roots are the roots the resolved `expr` reads, plus
-    `reads_of[var]` -- the storage the value *is* (the alias case, keyed on `var`
-    so it still holds after `resolve_value` collapses the chain to a var-free
-    `torch.zeros`).
+    Read roots are those of the resolved `expr` plus `reads_of[var]`, the storage the
+    value *is*. Keying the latter on `var` keeps the alias case covered after
+    `resolve_value` has collapsed the chain to a var-free `torch.zeros`.
     """
     if no_barriers:
         return True
-    read_roots: set = set(_resolve_storage(expr, reads_of))
+    read_roots: set = set(_expr_eval_roots(expr, reads_of))
     read_roots |= reads_of.get(var.name, frozenset((var.name,)))
     if storage_redefd_between(storage_defs, storage_def_keys, read_roots,
                               def_index, use_index):
@@ -363,16 +281,14 @@ def is_safe_to_inline(
 
 
 def is_trivial(expr) -> bool:
-    """A leaf that is free to recompute: a bare variable or a literal. Only
-    these may be folded into more than one use site; copying anything heavier
-    would duplicate real work."""
+    """A leaf that is free to recompute. Only these may be folded into more than one
+    use site; copying anything heavier would duplicate real work."""
     return isinstance(expr, (IrVar, IrConst))
 
 
 def copy_leaf(expr):
-    """Fresh copy of a trivial leaf so folding into several use sites never
-    leaves them sharing one node object. Non-leaves (only ever inlined into a
-    single site) are returned unchanged."""
+    """Fresh copy of a trivial leaf so several use sites never share one node object.
+    Non-leaves (only ever inlined once) are returned unchanged."""
     if isinstance(expr, IrVar):
         return IrVar(expr.name, expr.irMetadata)
     if isinstance(expr, IrConst):
@@ -386,18 +302,14 @@ def try_inline_definition(
         storage_def_keys: list, var: IrVar, def_stmt_index: int,
         use_indices: list[int], to_delete_indices: list[int]) -> None:
     """
-    Fold `var`'s definition (at `def_stmt_index`, with uses `use_indices`) into
-    its use sites:
+    Fold `var`'s definition (at `def_stmt_index`, used at `use_indices`) into its
+    use sites:
 
       - 0 uses  -> dead definition; delete it.
       - 1 use   -> inline if the move is value-preserving.
       - >1 uses -> only if the resolved value is a trivial leaf (free to
                    duplicate); inline into every safe use, and delete the
                    definition only if all uses were inlined.
-
-    `resolve_value` follows the copy chain to the bottom, so a trivial result is
-    always a literal or a block-external variable (both safe to duplicate); an
-    alias bottoming out in a heavy expression is correctly not trivial.
     """
     if not use_indices:
         to_delete_indices.append(def_stmt_index)
@@ -483,9 +395,8 @@ def indices_to_delete_and_replace_single_use(
 
 
 def inline_fixpoint(instructions: list[IrStatement]) -> None:
-    """Iterate the delete/replace pass to a fixpoint over a straight-line
-    instruction list. Uses are mutated in place; deleted definitions are removed
-    from `instructions` in place, so a caller holding the list sees them."""
+    """Iterate the delete/replace pass to a fixpoint. Both the rewritten uses and the
+    deleted definitions are applied in place, so a caller holding the list sees them."""
     while True:
         to_delete_indices = indices_to_delete_and_replace_single_use(
             instructions)
@@ -505,11 +416,10 @@ def inline_subexp_cfg(cfg: Graph) -> None:
     private
     Inline single-use temporaries within one transformer CFG.
 
-    Reuse-mode per-layer CFGs are collapsed to a single straight-line block by
-    `tensor_to_block` (control flow resolved along the profiled live path), so
-    the common case is inlined directly. A CFG that still has control flow (e.g.
-    an unsupported transformer op that was not specialized) has no linearizable
-    live path here and is left unchanged.
+    `tensor_to_block` collapses reuse-mode per-layer CFGs to a single straight-line
+    block, so the common case is inlined directly. A CFG that still has control flow
+    (e.g. an op that was not specialized) has no linearizable live path and is left
+    unchanged.
     """
     if len(cfg.nodes) == 1:
         inline_subexp_block(cfg.ir[cfg.nodes[0]])
@@ -536,20 +446,17 @@ def inline_subexp(ir: IrProgram) -> None:
 
 # Liveness-based name recycling (linear-scan register allocation).
 #
-# tensor_to_block gives every temporary a unique name, and Python only frees a
-# local at function return, so temporaries inlining could not fold pile up (peak
-# = sum of all of them). Reusing a name instead frees the previous tensor on
-# rebind (refcount drop -- no del/gc). This pass runs after inline_subexp and
-# renames single-def temporaries onto the smallest pool that respects liveness,
-# so peak drops to the max simultaneously-live set.
+# tensor_to_block gives every temporary a unique name and Python frees locals only at
+# function return, so temporaries inlining could not fold pile up (peak = sum of all
+# of them). Reusing a name frees the previous tensor on rebind (refcount drop, no
+# del/gc), dropping peak to the max simultaneously-live set.
 
 
 def _temp_liveness(instructions, prefix):
     """
-    Per temporary named with `prefix`, return its def index, last-use index, and
-    every IrVar node naming it (def + uses, so the caller can rename in place).
-    Names assigned more than once go in `multi_def` (no single live interval) and
-    are left alone.
+    Per `prefix` temporary: its def index, last-use index, and every IrVar node naming
+    it, so the caller can rename in place. Names assigned more than once go in
+    `multi_def` (no single live interval) and are left alone.
     """
     def_pos: dict[str, int] = {}
     last_use: dict[str, int] = {}
@@ -584,15 +491,14 @@ def recycle_temp_names_block(
         instructions, prefix="ttb_var_", pool_prefix="ttb_r_") -> dict[str, str]:
     """
     Linear-scan register allocation over a straight-line block: rename single-def
-    `prefix` temporaries onto a minimal pool (`pool_prefix`0, 1, ...), reusing a
-    name only after its occupant's last use. Returns the applied name map.
+    `prefix` temporaries onto a minimal pool (`pool_prefix`0, 1, ...), reusing a name
+    only after its occupant's last use. Returns the applied name map.
 
-    Reusing a name only after its occupant is dead never clobbers a live value.
-    Aliasing is safe too: reuse just drops that binding; a block still referenced
+    Aliasing is safe: reuse only drops that binding, so a block still referenced
     elsewhere (e.g. `.blocks[k]` held by a survivor) stays alive through it.
     """
-    # Drop inert `del` markers (codegen emits nothing for them) so they can't pin
-    # a recycled name.
+    # Drop inert `del` markers (codegen emits nothing for them) so they can't pin a
+    # recycled name.
     instructions[:] = [ins for ins in instructions if not isinstance(ins, IrDel)]
 
     def_pos, last_use, nodes, multi_def = _temp_liveness(instructions, prefix)

@@ -169,7 +169,7 @@ def compile(
     start_time = time.perf_counter()
     compile_code(program_file, output_path)
     total_time = time.perf_counter() - start_time
-    typer.echo(f"Total time: {total_time:.2f} seconds")
+    typer.echo(f"Total time: {total_time:.6f} seconds")
     import resource
     maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     peak_bytes = maxrss if sys.platform == "darwin" else maxrss * 1024
@@ -222,6 +222,8 @@ def simulacrum_compile(
         raise typer.Exit(code=1)
     device_mode.set_mode(device)
 
+    is_cuda = device_mode.get_device() == "cuda"
+
     if in_memory:
         globals.jit_store_clear()
     else:
@@ -269,8 +271,10 @@ def simulacrum_compile(
 
     typer.echo("Simulacrum+reuse compile complete ✅")
     typer.echo(f"Optimized code written to: {os.path.abspath(output_path)}")
+    if is_cuda:
+        torch.cuda.synchronize()
     total_time = time.perf_counter() - start_time
-    typer.echo(f"Total time: {total_time:.2f} seconds")
+    typer.echo(f"Total time: {total_time:.6f} seconds")
     import resource
     maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     peak_bytes = maxrss if sys.platform == "darwin" else maxrss * 1024
@@ -286,7 +290,7 @@ def run(
     batch_size: int = typer.Option(1, help="Batch size"),
     eps: float = typer.Option(0.01, help="Epsilon"),
     train: bool = typer.Option(False, help="Run on training dataset"),
-    print_intermediate_results: bool = False,
+    print_intermediate_results: bool = True,
     no_sparsity: bool = typer.Option(False, help="Disable sparsity optimizations"),
     device: str = typer.Option("cpu", help="Device mode: cpu, gpu (CUDA), or gpumac (Apple MPS)"),
     output_path: str = typer.Option("output/", help="Path where compiled program is stored"),
@@ -384,7 +388,7 @@ def run(
 
     typer.echo(f"Lower bounds: {lb}")
     typer.echo(f"Upper bounds: {ub}")
-    typer.echo(f"Total time: {total_time:.2f} seconds")
+    typer.echo(f"Total time: {total_time:.6f} seconds")
     if is_cuda:
         peak_bytes = torch.cuda.max_memory_allocated()
         typer.echo(f"Peak GPU memory: {peak_bytes} bytes")
