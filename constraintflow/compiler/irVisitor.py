@@ -318,17 +318,8 @@ class IRVisitor:
         elif isinstance(node, IR.IrGetKthLayerNetworkParam):
             return self.visitIrGetKthLayerNetworkParam(node)
 
-        elif isinstance(node, IR.IrDenseBlock):
-            return self.visitIrDenseBlock(node)
-        
-        elif isinstance(node, IR.IrKernelBlock):
-            return self.visitIrKernelBlock(node)
-        
         elif isinstance(node, IR.IrSimpleBinary):
             return self.visitIrSimpleBinary(node)
-        
-        elif isinstance(node, IR.IrBlockRepeat):
-            return self.visitIrBlockRepeat(node)
         
         elif isinstance(node, IR.IrBlockClamp):
             return self.visitIrBlockClamp(node)
@@ -336,9 +327,6 @@ class IRVisitor:
         elif isinstance(node, IR.IrBlockSqueeze):
             return self.visitIrBlockSqueeze(node)
 
-        elif isinstance(node, IR.IrBlockUnsqueeze):
-            return self.visitIrBlockUnsqueeze(node)
-        
         elif isinstance(node, IR.IrTensorOnes):
             return self.visitIrTensorOnes(node)
         

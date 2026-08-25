@@ -7,6 +7,32 @@ import copy
 from .ir import * 
 from constraintflow.lib.globals import dummy_mode, reuse_mode, load_capture, capture_exists, inductor_mode
 
+# One prefix per payload kind: tier class is prefix+'Sparse', leaf is prefix+kind.
+SPARSE_TIER = {'FloatTensorSparse': 'FloatTensor', 'BoolTensorSparse': 'BoolTensor',
+               'BoolScalarSparse': 'BoolScalar', 'ScalarSparse': 'FloatScalar'}
+
+# The arm of the real SparseBlock.__init__ that each tier fixes statically.
+SPARSE_PAYLOAD_INIT = {
+    'FloatTensorSparse': 'block.to(device_mode.get_device()).type(torch.float)',
+    'BoolTensorSparse': 'block.to(device_mode.get_device())',
+    'BoolScalarSparse': 'block',
+    'ScalarSparse': 'float(block)',
+}
+
+SPARSE_TENSOR_PAYLOAD = {'FloatTensorSparse': True, 'BoolTensorSparse': True,
+                         'BoolScalarSparse': False, 'ScalarSparse': False}
+
+BLOCK_FIELDS = {
+    'DenseBlock': ('D', ('batch_size',)),
+    'ConstBlock': ('C', ()),
+    'RepeatBlock': ('R', ('repeat_dims', 'only_one_repeat')),
+    'DiagonalBlock': ('Diag', ('diag_index', 'batch_size')),
+    'KernelBlock': ('K', ('ix', 'iy', 'ox', 'oy', 'sx', 'sy', 'px', 'py',
+                          'kx', 'ky', 'num_channels', 'num_kernels')),
+    'PatchesBlock': ('P', ('ix', 'iy', 'ox', 'oy', 'sx', 'sy', 'px', 'py',
+                           'kx', 'ky', 'num_channels', 'num_kernels')),
+}
+
 class CodeGen(irVisitor.IRVisitor):
     def __init__(self,folder):
         self.folder = folder 
@@ -39,6 +65,11 @@ class CodeGen(irVisitor.IRVisitor):
         self.visited = set()
 
         self.counter = 0
+
+        self.used_block_classes = set()
+
+        # Reuse mode inlines its own class; normal mode imports the real one.
+        self.polyexp_cls = 'JitPolyExpSparse' if reuse_mode.get_flag() else 'PolyExpSparse'
 
 
     def _ttb_comment(self, node):
@@ -108,7 +139,8 @@ class CodeGen(irVisitor.IRVisitor):
         self.write('import torch')
         self.write('import operator')
         self.write('from constraintflow.lib.globals import device_mode')
-        self.write('from constraintflow.lib.polyexp import PolyExpSparse')
+        if not reuse_mode.get_flag():
+            self.write('from constraintflow.lib.polyexp import PolyExpSparse')
         if reuse_mode.get_flag():
             self.write('from constraintflow.lib.symexp import SymExpSparse')
             # self.write('from constraintflow.lib.symexp import get_new_eps')
@@ -119,16 +151,12 @@ class CodeGen(irVisitor.IRVisitor):
         if reuse_mode.get_flag():
             self.write('import operator')
             self.write('import torch.nn.functional as F')
-            self.write('from constraintflow.gbcsr.sparse_tensor import SparseTensor')
             # self.write('from constraintflow.gbcsr.tensor_ops import *')
-            self.write('from constraintflow.gbcsr.sparse_block import SparseBlock, DenseBlock, DiagonalBlock, PatchesBlock, KernelBlock, RepeatBlock, ConstBlock')
         else:
             self.write('from constraintflow.gbcsr.sparse_tensor import SparseTensor')
         self.write('from constraintflow.lib.llist import Llist')
         if not reuse_mode.get_flag():
             self.write('from constraintflow.gbcsr.tensor_ops import *')
-            
-
         for i, transformer_name in enumerate(node.tstore.keys()):
             self.write('class ' + transformer_name + ':')
             self.indent += 1
@@ -177,6 +205,114 @@ class CodeGen(irVisitor.IRVisitor):
                         self.indent -= 1
                         self.write('', True)
             self.indent -=1
+
+        if reuse_mode.get_flag():
+            # Defined after use; names resolve when the methods are called.
+            self.indent = 0
+            self.write('class JitSparseTensor:')
+            self.indent += 1
+            self.write('__slots__ = ("start_indices", "blocks", "dims", "total_size", "end_indices", "type", "dense_const", "delete_indices", "num_blocks")')
+            self.write('def __init__(self, start_indices, blocks, dims, total_size, end_indices, type, dense_const, delete_indices):')
+            self.indent += 1
+            for field in ('start_indices', 'blocks', 'dims', 'total_size', 'end_indices', 'type', 'dense_const', 'delete_indices'):
+                self.write('self.' + field + ' = ' + field)
+            self.write('self.num_blocks = len(start_indices)')
+            self.indent -= 1
+            # These preserve structure entirely; only payload and dense_const change.
+            self.write('def float(self):')
+            self.indent += 1
+            self.write('return JitSparseTensor(self.start_indices, [b.float() for b in self.blocks], self.dims, self.total_size, self.end_indices, float, float(self.dense_const), self.delete_indices)')
+            self.indent -= 1
+            self.write('def check_dense(self):')
+            self.indent += 1
+            self.write('t = 0')
+            self.write('for i in range(self.num_blocks):')
+            self.indent += 1
+            self.write('p = 1')
+            self.write('for d in self.blocks[i].total_shape.tolist():')
+            self.indent += 1
+            self.write('p = p * d')
+            self.indent -= 1
+            self.write('t = t + p')
+            self.indent -= 1
+            self.write('q = 1')
+            self.write('for d in self.total_size.tolist():')
+            self.indent += 1
+            self.write('q = q * d')
+            self.indent -= 1
+            self.write('return not (t < q)')
+            self.indent -= 1
+            self.write('def increase_size(self, start_index, new_total_size):')
+            self.indent += 1
+            self.write('res_start_indices = []')
+            self.write('res_end_indices = []')
+            self.write('res_blocks = []')
+            self.write('for i in range(self.num_blocks):')
+            self.indent += 1
+            self.write('res_start_indices.append(start_index + self.start_indices[i])')
+            self.write('res_end_indices.append(start_index + self.end_indices[i])')
+            self.write('res_blocks.append(self.blocks[i].copy())')
+            self.indent -= 1
+            self.write('return JitSparseTensor(res_start_indices, res_blocks, self.dims, new_total_size, res_end_indices, self.type, self.dense_const, self.delete_indices)')
+            self.indent -= 2
+
+            self.write('class ' + self.polyexp_cls + ':')
+            self.indent += 1
+            self.write('__slots__ = ("network", "mat", "const")')
+            self.write('def __init__(self, network, mat, const):')
+            self.indent += 1
+            for field in ('network', 'mat', 'const'):
+                self.write('self.' + field + ' = ' + field)
+            self.indent -= 2
+
+            self.write('class JitSparseBlock:')
+            self.indent += 1
+            self.write('__slots__ = ("block", "total_shape")')
+            self.indent -= 1
+
+            # float() names another leaf, so both float targets must exist for every kind used.
+            leaves = set(self.used_block_classes)
+            leaves |= {(kind, 'FloatTensorSparse') for kind, t in self.used_block_classes
+                       if SPARSE_TENSOR_PAYLOAD[t]}
+            leaves |= {(kind, 'ScalarSparse') for kind, t in self.used_block_classes
+                       if not SPARSE_TENSOR_PAYLOAD[t]}
+
+            # Each tier owns one payload representation, so leaves carry only geometry.
+            for sparse_block_type in sorted({t for _, t in leaves}):
+                self.write('class ' + SPARSE_TIER[sparse_block_type] + 'Sparse(JitSparseBlock):')
+                self.indent += 1
+                self.write('__slots__ = ()')
+                self.write('def __init__(self, block, total_shape):')
+                self.indent += 1
+                self.write('self.block = ' + SPARSE_PAYLOAD_INIT[sparse_block_type])
+                self.write('self.total_shape = total_shape')
+                self.indent -= 2
+
+            for kind, sparse_block_type in sorted(leaves):
+                block_type, fields = BLOCK_FIELDS[kind]
+                tier = SPARSE_TIER[sparse_block_type]
+                is_tensor = SPARSE_TENSOR_PAYLOAD[sparse_block_type]
+                float_tier = SPARSE_TIER['FloatTensorSparse' if is_tensor else 'ScalarSparse']
+                rest = ''.join(', self.' + f for f in fields)
+                self.write('class ' + tier + kind + '(' + tier + 'Sparse):')
+                self.indent += 1
+                self.write('__slots__ = (' + ''.join('"' + f + '", ' for f in fields) + ')')
+                self.write("block_type = '" + block_type + "'")
+                self.write('def __init__(self, block, total_shape' + ''.join(', ' + f for f in fields) + '):')
+                self.indent += 1
+                self.write(tier + 'Sparse.__init__(self, block, total_shape)')
+                for f in fields:
+                    self.write('self.' + f + ' = ' + f)
+                self.indent -= 1
+                self.write('def float(self):')
+                self.indent += 1
+                payload = 'self.block.float()' if is_tensor else 'float(self.block)'
+                self.write('return ' + float_tier + kind + '(' + payload + ', self.total_shape' + rest + ')')
+                self.indent -= 1
+                self.write('def copy(self):')
+                self.indent += 1
+                self.write('return ' + tier + kind + '(' + ('self.block.clone()' if is_tensor else 'self.block') + ', self.total_shape' + rest + ')')
+                self.indent -= 2
 
         self.open(self.main_file)
         for i in range(len(node.irNodes)):
@@ -329,10 +465,7 @@ class CodeGen(irVisitor.IRVisitor):
     
     def visitIrConst(self, node):
         return str(node.const)
-    
-    def visitInt(self, node):
-        return str(node)
-    
+
     def visitList(self, node):
         res = '['
         for i, child in enumerate(node):
@@ -359,60 +492,51 @@ class CodeGen(irVisitor.IRVisitor):
         return ', '.join(parts)
 
     def visitIrSparseTensor(self, node):
-        args = [
-            self.visit(node.start_indices),
-            self.visit(node.children[0]),
-            self.visit(node.dims),
-            self.visit(node.total_size),
-        ]
+        start_indices = '[' + ', '.join(
+            x if isinstance(x, str) else 'torch.tensor(' + str(x.tolist()) + ', dtype=torch.int64)'
+            for x in node.start_indices) + ']'
+        end_indices = '[' + ', '.join(
+            x if isinstance(x, str) else 'torch.tensor(' + str(x.tolist()) + ', dtype=torch.int64)'
+            for x in node.end_indices) + ']'
+        total_size = node.total_size if isinstance(node.total_size, str) else 'torch.tensor(' + str(node.total_size.tolist()) + ', dtype=torch.int64)'
+        # An empty block list is a plain [], not an IR node.
+        blocks = '[]' if isinstance(node.children[0], list) else self.visit(node.children[0])
+        # repr of these three does not parse back.
+        dense_const = repr(node.dense_const)
+        if dense_const in ('inf', '-inf', 'nan'):
+            dense_const = "float('" + dense_const + "')"
 
-        kwargs = []
-        if hasattr(node, "end_indices"):
-            kwargs.append(f"end_indices={self.visit(node.end_indices)}")
-        if hasattr(node, "type"):
-            kwargs.append(f"type={self.visit(node.type)}")
-        if hasattr(node, "dense_const"):
-            kwargs.append(f"dense_const={self.visit(node.dense_const)}")
-
-        return "SparseTensor(" + ", ".join(args + kwargs) + ")"
+        return ('JitSparseTensor(' + start_indices + ', ' + blocks + ', ' + str(node.dims) + ', '
+                + total_size + ', ' + end_indices + ', ' + node.type.__name__ + ', '
+                + dense_const + ', ' + str(node.delete_indices) + ')')
 
     def visitIrConstBlock(self, node):
-        return 'ConstBlock(' + self.visit(node.children[0]) + ',' + self.visit(node.total_shape) + ')'
-
-    def visitIrDenseBlock(self, node):
-        return 'DenseBlock(' + self.visit(node.children[0]) + ')'
+        self.used_block_classes.add(('ConstBlock', node.sparse_block_type))
+        return (SPARSE_TIER[node.sparse_block_type] + 'ConstBlock('
+                + self.visit(node.children[0]) + ', ' + node.total_shape + ')')
 
     def visitIrPatchesBlock(self, node):
-        return (
-            'PatchesBlock(' + self.visit(node.children[0]) + ', '
-            + self.visit(node.total_shape) + ', '
-            + str(node.ix) + ', ' + str(node.iy) + ', '
-            + str(node.ox) + ', ' + str(node.oy) + ', '
-            + str(node.sx) + ', ' + str(node.sy) + ', '
-            + str(node.px) + ', ' + str(node.py) + ', '
-            + str(node.kx) + ', ' + str(node.ky) + ', '
-            + str(node.num_channels) + ', ' + str(node.num_kernels) + ')'
-        )
-
-    def visitIrKernelBlock(self, node):
-        return (
-            'KernelBlock(' + self.visit(node.children[0]) + ', '
-            + self.visit(node.total_shape) + ', '
-            + str(node.ix) + ', ' + str(node.iy) + ', '
-            + str(node.ox) + ', ' + str(node.oy) + ', '
-            + str(node.sx) + ', ' + str(node.sy) + ', '
-            + str(node.px) + ', ' + str(node.py) + ')'
-        )
+        self.used_block_classes.add(('PatchesBlock', node.sparse_block_type))
+        return (SPARSE_TIER[node.sparse_block_type] + 'PatchesBlock('
+                + self.visit(node.children[0]) + ', ' + node.total_shape + ', '
+                + str(node.ix) + ', ' + str(node.iy) + ', '
+                + str(node.ox) + ', ' + str(node.oy) + ', '
+                + str(node.sx) + ', ' + str(node.sy) + ', '
+                + str(node.px) + ', ' + str(node.py) + ', '
+                + str(node.kx) + ', ' + str(node.ky) + ', '
+                + str(node.num_channels) + ', ' + str(node.num_kernels) + ')')
 
     def visitIrRepeatBlock(self, node):
-        return 'RepeatBlock(' + self.visit(node.children[0]) + ', ' + self.visit(node.total_shape) + ')'
+        self.used_block_classes.add(('RepeatBlock', node.sparse_block_type))
+        return (SPARSE_TIER[node.sparse_block_type] + 'RepeatBlock('
+                + self.visit(node.children[0]) + ', ' + node.total_shape + ', '
+                + node.repeat_dims + ', ' + str(node.only_one_repeat) + ')')
 
     def visitIrDiagonalBlock(self, node):
-        return (
-            'DiagonalBlock(' + self.visit(node.children[0]) + ', '
-            + self.visit(node.total_shape) + ', '
-            + str(node.diag_index) + ')'
-        )
+        self.used_block_classes.add(('DiagonalBlock', node.sparse_block_type))
+        return (SPARSE_TIER[node.sparse_block_type] + 'DiagonalBlock('
+                + self.visit(node.children[0]) + ', ' + node.total_shape + ', '
+                + str(node.diag_index) + ', ' + str(node.batch_size) + ')')
 
     def visitIrTorchDiagonal(self, node):
         input_expr = self.visit(node.children[0])
@@ -583,11 +707,21 @@ class CodeGen(irVisitor.IRVisitor):
         return f'abs_elem.network[{node.layer_index}].{node.param}'
 
     def visitIrDenseBlock(self, node):
-        return 'DenseBlock(' + self.visit(node.children[0]) + ')'
-    
+        self.used_block_classes.add(('DenseBlock', node.sparse_block_type))
+        return (SPARSE_TIER[node.sparse_block_type] + 'DenseBlock('
+                + self.visit(node.children[0]) + ', ' + node.total_shape + ', '
+                + str(node.batch_size) + ')')
+
     def visitIrKernelBlock(self, node):
-        return f'KernelBlock({self.visit(node.children[0])}, torch.tensor({node.total_shape}), ' \
-               f'{node.ix}, {node.iy}, {node.ox}, {node.oy}, {node.sx}, {node.sy}, {node.px}, {node.py})'
+        self.used_block_classes.add(('KernelBlock', node.sparse_block_type))
+        return (SPARSE_TIER[node.sparse_block_type] + 'KernelBlock('
+                + self.visit(node.children[0]) + ', ' + node.total_shape + ', '
+                + str(node.ix) + ', ' + str(node.iy) + ', '
+                + str(node.ox) + ', ' + str(node.oy) + ', '
+                + str(node.sx) + ', ' + str(node.sy) + ', '
+                + str(node.px) + ', ' + str(node.py) + ', '
+                + str(node.kx) + ', ' + str(node.ky) + ', '
+                + str(node.num_channels) + ', ' + str(node.num_kernels) + ')')
 
     def get_operator_func(self, name: str):
         if not isinstance(name, str):
@@ -735,9 +869,12 @@ class CodeGen(irVisitor.IRVisitor):
             if i<len(node.children)-1:
                 repeat_dims += ', '
         if inputIr.irMetadata[-1].isConst:
-            ret = 'SparseTensor([], [], 0, torch.tensor([]), dense_const=' + str(self.visit(inputIr)) + ', type= type(' + str(self.visit(inputIr)) + '))'
-        else:
-            ret = str(self.visit(inputIr))
+            if node.inside_while:
+                trace = ', layer_index = layer_index, counter = ' + str(node.ttb_counter) + ', inside_while = True, while_number = ' + str(node.while_number) + ', while_iteration=while_iteration'
+            else:
+                trace = ', layer_index = layer_index, counter = ' + str(node.ttb_counter) + ', inside_while = False, while_number = ' + str(node.while_number)
+            return 'add_dimension_const(' + str(self.visit(inputIr)) + ', torch.tensor([' + repeat_dims + '])' + trace + ')'
+        ret = str(self.visit(inputIr))
         for i in range(size):
             ret += '.unsqueeze(' + str(i) + ')'
         ret += '.repeat(torch.tensor([' + repeat_dims + ']))'
@@ -888,23 +1025,7 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrBlockSqueeze(self, node):
         return self.visit(node.children[0]) + '.squeeze(' + str(node.index) + ')'
 
-    def visitIrBlockUnsqueeze(self, node):
-        return self.visit(node.children[0]) + '.unsqueeze(' + str(node.index) + ')'
 
-    
-
-    def visitIrBlockRepeat(self, node):
-        # repeat_dims = ''
-        # for i in range(1, len(node.children)):
-        #     repeat_dims += self.visit(node.children[i])
-        #     if i<len(node.children)-1:
-        #         repeat_dims += ', '
-        # repeat_dims = 'torch.tensor([' + repeat_dims + '])'
-        temp = (node.repeat_dims)
-        return self.visit(node.children[0]) + '.repeat(torch.tensor(' + str(node.repeat_dims.tolist()) + ', dtype=torch.int64))'
-        # ret = self.visit(node.children[0]) + '.repeat(torch.tensor(' + str(node.repeat_dims.tolist()) + ', dtype=torch.int64))'
-        # print(ret)
-        # return ret
 
     def visitIrGetDefaultStop(self, node):
         repeat_dims = ''
@@ -950,11 +1071,14 @@ class CodeGen(irVisitor.IRVisitor):
         return 'convert_to_float(' + self.visit(node.children[0]) + '.unary(operator.not_))'
 
     def visitIrBlockPolyexpStop(self, node):
-        return self.visit(node.children[0]) + '.create_similar(mat=' + self.visit(node.children[1]) + ')'
+        recv = self.visit(node.children[0])
+        return (self.polyexp_cls + '(' + recv + '.network, ' + self.visit(node.children[1])
+                + ', ' + recv + '.const)')
 
     def visitIrBlockPolyexpNotStop(self, node):
-        return (self.visit(node.children[0]) + '.create_similar(mat=' +
-                self.visit(node.children[1]) + ', const=' + self.visit(node.children[2]) + ')')
+        recv = self.visit(node.children[0])
+        return (self.polyexp_cls + '(' + recv + '.network, ' + self.visit(node.children[1])
+                + ', ' + self.visit(node.children[2]) + ')')
 
     def visitIrBlockAny(self, node):
         return self.visit(node.children[0]) + '.any()'
@@ -1042,7 +1166,7 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrCombineToPoly(self, node):
         [coeffIr, constIr, rows] = node.children
         cols = 'poly_size'
-        return 'PolyExpSparse(abs_elem.network, ' + self.visit(coeffIr) + ' , ' + self.visit(constIr) + ')'
+        return self.polyexp_cls + '(abs_elem.network, ' + self.visit(coeffIr) + ' , ' + self.visit(constIr) + ')'
 
     def visitIrCombineToSym(self, node):
         [coeffIr, constIr, rows] = node.children
@@ -1077,12 +1201,17 @@ class CodeGen(irVisitor.IRVisitor):
 
     def visitIrConvertNeuronToPoly(self, node):
         [inputIr] = node.children
-        return self.visit(inputIr) + '.convert_to_poly(abs_elem)'
+        while_iteration = 'while_iteration' if node.inside_while else 'None'
+        return self.visit(inputIr) + '.convert_to_poly(abs_elem' \
+            + ', layer_index=layer_index, counter=' + str(node.ttb_counter) \
+            + ', inside_while=' + str(node.inside_while) \
+            + ', while_number=' + str(node.while_number) \
+            + ', while_iteration=' + while_iteration + ')'
     
     def visitIrConvertConstToPoly(self, node):
         [inputIr, rows] = node.children
         cols = 'poly_size'
-        return 'PolyExpSparse(abs_elem.network, 0.0, ' + self.visit(inputIr) + ')'
+        return self.polyexp_cls + '(abs_elem.network, 0.0, ' + self.visit(inputIr) + ')'
         
     def visitIrConvertConstToSym(self, node):
         [inputIr, rows] = node.children
@@ -1126,9 +1255,9 @@ class CodeGen(irVisitor.IRVisitor):
 
     def visitIrMapNeuron(self, node):
         if node.dims:
-            return 'Llist(abs_elem.network, [1]*(' + self.visit(node.children[0]) + '), None, None,' + "torch.nonzero(abs_elem.d['llist']).flatten().tolist())"
+            return 'Llist(abs_elem.network, [1]*(' + self.visit(node.children[0]) + '), None, None,' + "abs_elem.live_layers)"
         else:
-            return 'Llist(abs_elem.network, [1]*(' + self.visit(node.children[0]) + '.mat.dims-1), None, None,' + "torch.nonzero(abs_elem.d['llist']).flatten().tolist())"
+            return 'Llist(abs_elem.network, [1]*(' + self.visit(node.children[0]) + '.mat.dims-1), None, None,' + "abs_elem.live_layers)"
 
     def visitIrSymbolic(self, node):
         return node.name

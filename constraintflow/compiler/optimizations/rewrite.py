@@ -736,6 +736,9 @@ def hoist_split_targets(expr, inside_while, while_number):
         targets = (IrBinaryOp, IrInnerProduct, IrMult)
         targets += (IrRepeat, IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpNotStop, IrGetPolyexpStop, IrAddDimension, IrRemoveDimension, IrAccess,
                IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff, IrReduce)
+        targets += (IrSparseTensor, IrDenseBlock, IrConstBlock, IrKernelBlock,
+                    IrDiagonalBlock, IrPatchesBlock, IrRepeatBlock, IrAddDimensionConst,
+                    IrConvertNeuronToPoly)
     if isinstance(expr, targets):
         # IrAccess keeps default while_number=-1 when not in a while body, matching
         # simulacrum JIT filenames for get_metadata/get_elem recorded at Affine sites.
@@ -765,6 +768,9 @@ def assign_ttb_counter(expr):
         targets = (IrBinaryOp, IrInnerProduct, IrMult, IrRepeat)
         targets += (IrClamp, IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop, IrGetPriorityLList, IrGetPolyexpNotStop, IrGetPolyexpStop, IrAddDimension, IrRemoveDimension, IrGetAbsElemSparseDKey, IrAccess,
                IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff, IrReduce, IrEpsilon)
+        targets += (IrSparseTensor, IrDenseBlock, IrConstBlock, IrKernelBlock,
+                    IrDiagonalBlock, IrPatchesBlock, IrRepeatBlock, IrAddDimensionConst,
+                    IrConvertNeuronToPoly)
     if isinstance(expr, targets):
         ttb_counter += 1
         expr.ttb_counter = ttb_counter

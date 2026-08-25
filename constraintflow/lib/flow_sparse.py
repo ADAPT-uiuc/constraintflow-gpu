@@ -8,8 +8,78 @@ from constraintflow.gbcsr.sparse_tensor import SparseTensor
 from constraintflow.gbcsr.sparse_block import DenseBlock, DiagonalBlock
 
 import torch
+import torch.nn.functional as F
 import time
 
+
+def get_dense_inlined(t):
+    # Inlined get_dense; the simulacrum needs the real meta-tensor path.
+    if dummy_mode:
+        return t.get_dense()
+    res = torch.ones(list(t.total_size), dtype=t.type) * t.dense_const
+    for i in range(t.num_blocks):
+        s = [slice(int(t.start_indices[i][j]), int(t.end_indices[i][j])) for j in range(t.start_indices[i].shape[0])]
+        b = t.blocks[i]
+        if b.block_type == 'D':
+            res[tuple(s)] = b.block
+        elif b.block_type == 'C':
+            res[tuple(s)] = torch.ones(*b.total_shape.tolist()) * b.block
+        elif b.block_type == 'R':
+            res[tuple(s)] = b.block.expand(*b.total_shape)
+        elif b.block_type == 'Diag':
+            if b.diag_index == len(b.total_shape):
+                res[tuple(s)] = torch.diag_embed(b.block)
+            else:
+                shape = list(b.block.shape)
+                d = b.diag_index - 1
+                perm = list(range(len(shape)))
+                perm.pop(d)
+                perm.append(d)
+                new_perm = list(range(len(shape)-1))
+                new_perm.insert(d, len(new_perm))
+                new_perm.insert(d+1, len(new_perm))
+                res[tuple(s)] = torch.diag_embed(b.block.permute(perm)).permute(new_perm)
+        elif b.block_type == 'K':
+            new_px = (b.ix + 2*b.px - b.kx) % b.sx
+            new_py = (b.iy + 2*b.py - b.ky) % b.sy
+            curr_size = b.num_kernels*b.ox*b.oy
+            eye = torch.eye(curr_size).unsqueeze(0).reshape(curr_size, b.num_kernels, b.ox, b.oy)
+            res[tuple(s)] = F.conv_transpose2d(eye, b.block.float(), stride=(b.sx, b.sy), padding=(b.px, b.py), output_padding=(new_px, new_py)).reshape(1, curr_size, -1)
+        elif b.block_type == 'P':
+            batch_size = b.total_shape[0]
+            output_channel, output_x, output_y = b.num_kernels, b.ox, b.oy
+            input_channel, kernel_x, kernel_y = b.num_channels, b.kx, b.ky
+            input_x, input_y = b.ix, b.iy
+            padding = (b.py, b.py, b.px, b.px)
+            stride = b.sx
+            pieces = b.block.view(-1, output_channel, output_x, output_y, input_channel, kernel_x, kernel_y)
+            if pieces.shape[0] < batch_size:
+                pieces = pieces.expand(batch_size, *pieces.shape[1:])
+            A_matrix = torch.zeros(batch_size, output_channel, output_x, output_y, input_channel, (input_x + padding[2] + padding[3]) * (input_y + padding[0] + padding[1]), device=pieces.device, dtype=pieces.dtype)
+            orig_stride = A_matrix.stride()
+            matrix_strided = torch.as_strided(A_matrix, [batch_size, output_channel, output_x, output_y, output_x, output_y, input_channel, kernel_x, kernel_y], [orig_stride[0], orig_stride[1], orig_stride[2], orig_stride[3], (input_x + padding[2] + padding[3]) * stride, stride, orig_stride[4], input_y + padding[0] + padding[1], 1])
+            first_indices = torch.arange(output_x * output_y, device=pieces.device)
+            second_indices = torch.div(first_indices, output_y, rounding_mode="trunc")
+            third_indices = torch.fmod(first_indices, output_y)
+            matrix_strided[:,:,second_indices,third_indices,second_indices,third_indices,:,:,:] = pieces.reshape(*pieces.shape[:2], -1, *pieces.shape[4:])
+            A_matrix = A_matrix.view(batch_size, output_channel * output_x * output_y, input_channel, input_x + padding[2] + padding[3], input_y + padding[0] + padding[1])
+            A_matrix = A_matrix[:,:,:,padding[2]:input_x + padding[2],padding[0]:input_y + padding[0]]
+            A_matrix = A_matrix.reshape(A_matrix.shape[0], A_matrix.shape[1], -1)
+            if len(A_matrix.shape)!=len(b.total_shape):
+                if (torch.tensor(A_matrix.shape) == b.total_shape[:-1]).all():
+                    A_matrix = A_matrix.unsqueeze(-1).expand(*b.total_shape)
+                else:
+                    diffdim = -1
+                    for i in range(len(A_matrix.shape)):
+                        if(diffdim == -1 and b.total_shape[i] != A_matrix.shape[i]):
+                                diffdim = i
+                        if diffdim != -1 and b.total_shape[i+1] != A_matrix.shape[i]:
+                            raise NotImplementedError(f'PatchesBlock get_dense: {A_matrix.shape} != {b.total_shape[:-1]}')
+                    A_matrix = A_matrix.unsqueeze(diffdim).expand(*b.total_shape)
+            res[tuple(s)] = A_matrix
+        else:
+            raise NotImplementedError(f'get_dense: unknown block_type {b.block_type}')
+    return res
 
 
 class Flow:
@@ -36,7 +106,7 @@ class Flow:
 
         for tmp, layer in enumerate(self.model):
             t_time = time.time()
-            poly_size = self.model[list(torch.nonzero(self.abs_elem.d['llist']))[-1].item()].end
+            poly_size = self.model[self.abs_elem.live_layers[-1]].end
             curr_size = self.model[tmp].end-size
 
             if layer.type == LayerType.ReLU:
@@ -205,8 +275,8 @@ class Flow:
                 print(tmp+1, layer.type, layer.shape)
                 print(time.time()-t_time)
                 print('---------------------------')
-                lb = (abs_shape[0].get_dense())
-                ub = (abs_shape[1].get_dense())
+                lb = get_dense_inlined(abs_shape[0])
+                ub = get_dense_inlined(abs_shape[1])
                 self.logfile.write(f'l: {lb}\n')
                 self.logfile.write(f'u: {ub}\n')
                 print(f'l: {lb}')
@@ -218,8 +288,8 @@ class Flow:
                 #     print(f'U: {U}')
                 # elif len(abs_shape) > 2 and hasattr(abs_shape[2], 'mat'):
                 #     print(f'Z: {abs_shape[2].mat}')
-        lb = (abs_shape[0].get_dense())
-        ub = (abs_shape[1].get_dense())
+        lb = get_dense_inlined(abs_shape[0])
+        ub = get_dense_inlined(abs_shape[1])
 
         if dummy_mode:
             save_capture("jit_layers/layers.json", json_obj)

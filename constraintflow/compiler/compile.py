@@ -94,5 +94,4 @@ def compile(inputfile, output_path):
         # copyPropagation.copy_proagate(ir)
 
     codeGen.CodeGen(output_path).visit(ir)
-
     return True

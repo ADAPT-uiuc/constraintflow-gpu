@@ -4,13 +4,59 @@ from typing import Any
  
 
 class PolyExpSparse:
-    def __init__(self, network, mat, const):
+    def __init__(self, network, mat, const,
+                og_json_list = None, mat_index = -1, const_index = -1,
+                layer_index = None, counter = None, inside_while = False,
+                while_number = None, while_iteration = None):
+
+        if og_json_list is None:
+            json_list = []
+        else:
+            json_list = og_json_list
+
+        if mat_index == -1:
+            json_obj = {
+                "method": "noop",
+                "input": "lhs",
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            mat_json_list_index = len(json_list) - 1
+        else:
+            mat_json_list_index = mat_index
+
         self.network = network
-        self.mat = mat 
+        self.mat = mat
         self.const = const
-        if not isinstance(self.const, SparseTensor):
-            if isinstance(self.const, torch.Tensor):
-                self.const = SparseTensor([torch.tensor([0]*self.const.dim())], [SparseBlock(self.const)], self.const.dim(), torch.tensor(self.const.shape))
+
+        if not isinstance(self.const, SparseTensor) and isinstance(self.const, torch.Tensor):
+            self.const = SparseTensor([torch.tensor([0]*self.const.dim())], [SparseBlock(self.const)], self.const.dim(), torch.tensor(self.const.shape), og_json_list = json_list)
+            const_json_list_index = self.const.json_index
+        elif const_index == -1:
+            json_obj = {
+                "method": "noop",
+                "input": "rhs",
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            const_json_list_index = len(json_list) - 1
+        else:
+            const_json_list_index = const_index
+
+        json_obj = {
+            "method": "PolyExpSparseConstructor",
+            "mat": "json_list_" + str(mat_json_list_index),
+            "const": "json_list_" + str(const_json_list_index),
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        self.json_index = len(json_list) - 1
+        self.json_list = json_list
+
+        if dummy_mode and og_json_list is None:
+            if layer_index is not None and counter is not None:
+                write_jit_capture_file('jit_PolyExpSparse', 'PolyExpSparse', layer_index, counter, inside_while, while_number, while_iteration, json_list)
+                self.json_list = None
 
     def copy(self):
         if isinstance(self.mat, SparseTensor):
@@ -82,14 +128,14 @@ class PolyExpSparse:
                 block, block_idx = block_ret
             else:
                 block = block_ret
+            # block_idx only exists under trace, so the threaded call is guarded the same way
+            # the hand-written record was.
             if trace:
-                db_idx = len(json_list)
-                json_obj: dict[str, Any] = {
-                    'method': 'DenseBlock',
-                    'input': 'json_list_' + str(block_idx),
-                    'output': db_idx,
-                }
-                json_list.append(json_obj)
+                dense_block = DenseBlock(block, json_list, block_idx)
+                db_idx = dense_block.json_index
+            else:
+                dense_block = DenseBlock(block)
+            if trace:
                 block_list_idx = len(json_list)
                 json_obj: dict[str, Any] = {
                     'method': 'initialise',
@@ -106,17 +152,13 @@ class PolyExpSparse:
                     'output': appended_idx,
                 }
                 json_list.append(json_obj)
-                sp_mat_idx = len(json_list)
-                json_obj: dict[str, Any] = {
-                    'method': 'SparseTensor',
-                    'start_indices': [torch.tensor([0]*block.dim()).tolist()],
-                    'blocks': 'json_list_' + str(appended_idx),
-                    'dims': block.dim(),
-                    'total_size': block.shape,
-                    'output': sp_mat_idx,
-                }
-                json_list.append(json_obj)
-            sp_mat = SparseTensor([torch.tensor([0]*block.dim())], [DenseBlock(block)], block.dim(), torch.tensor(block.shape))
+            # appended_idx only exists under trace, so the threaded call is guarded the same
+            # way the hand-written record was.
+            if trace:
+                sp_mat = SparseTensor([torch.tensor([0]*block.dim())], [dense_block], block.dim(), torch.tensor(block.shape), og_json_list=json_list, blocks_index=appended_idx)
+                sp_mat_idx = sp_mat.json_index
+            else:
+                sp_mat = SparseTensor([torch.tensor([0]*block.dim())], [dense_block], block.dim(), torch.tensor(block.shape))
         else:
             sp_mat_idx = -1
             if trace:
@@ -128,7 +170,7 @@ class PolyExpSparse:
                 }
                 json_list.append(json_obj)
             sp_mat = self.mat
-        start, end = torch.nonzero(abs_elem.d['llist']).flatten().tolist()[0], torch.nonzero(abs_elem.d['llist']).flatten().tolist()[-1]
+        start, end = abs_elem.live_layers[0], abs_elem.live_layers[-1]
         start, end = self.network[start].start, self.network[end].end
         start_index = torch.zeros(sp_mat.dims, dtype=torch.int64)
         end_index = sp_mat.total_size

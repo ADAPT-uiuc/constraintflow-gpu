@@ -1,6 +1,7 @@
 from numpy import block
 import copy
-import torch 
+import copyreg
+import torch
 import torch.nn.functional as F
 import time
 import operator
@@ -138,6 +139,7 @@ class SparseBlock:
             block = block.to(device_mode.get_device())
             if not inductor_mode.get_flag():
                 binary_profilier.update_data_transfer_time(time.perf_counter() - start_transfer)
+        
         if isinstance(block, bool) or (isinstance(block, torch.Tensor) and block.dtype == torch.bool):
             self.block = block 
         else:
@@ -145,6 +147,9 @@ class SparseBlock:
                 self.block = block.type(torch.float)
             else:
                 self.block = float(block)
+
+        
+
     def copy(self):
         new_block = self.block 
         if isinstance(new_block, torch.Tensor):
@@ -153,6 +158,9 @@ class SparseBlock:
 
     def __copy__(self):
         return self.copy()
+
+    def __reduce__(self):
+        return (copyreg._reconstructor, (type(self), object, None), self.__dict__)
 
     def __deepcopy__(self, memo):
         copied = self.copy()
@@ -289,13 +297,8 @@ class SparseBlock:
             }
             json_list.append(json_obj)
             block = operation(block_1, block_2, op)
-            json_obj = {
-                "method": "DenseBlock",
-                "block": "json_list_" + str(len(json_list) - 1),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            return DenseBlock(block), len(json_list) - 1
+            traced_res = DenseBlock(block, json_list, len(json_list) - 1)
+            return traced_res, traced_res.json_index
         elif not isinstance(self, type(sp_block)):
             block_1 = self 
             block_2 = sp_block
@@ -304,13 +307,7 @@ class SparseBlock:
                 return block_1.disjunctive_binary(block_2, op, json_list, lhs_index, rhs_index)
             if isinstance(self, ConstBlock):
                 self_block, lhs_index = self.get_dense(json_list=json_list, template_index=lhs_index,  simulacrum=True)
-                block_1 = DenseBlock(self_block)
-                json_obj = {
-                    "method": "DenseBlock",
-                    "block": "json_list_" + str(lhs_index),
-                    "output": len(json_list),
-                }
-                json_list.append(json_obj)
+                block_1 = DenseBlock(self_block, json_list, lhs_index)
                 lhs_index = len(json_list) - 1
                 return block_1.disjunctive_binary(block_2, op, json_list, lhs_index, rhs_index)
             if isinstance(sp_block, KernelBlock):
@@ -318,13 +315,7 @@ class SparseBlock:
                 return block_1.disjunctive_binary(block_2, op, json_list, lhs_index, rhs_index)
             if isinstance(sp_block, ConstBlock):
                 block_temp, rhs_index = sp_block.get_dense(json_list=json_list, template_index=rhs_index,  simulacrum=True)
-                block_2 = DenseBlock(block_temp)
-                json_obj = {
-                    "method": "DenseBlock",
-                    "block": "json_list_" + str(rhs_index),
-                    "output": len(json_list),
-                }
-                json_list.append(json_obj)
+                block_2 = DenseBlock(block_temp, json_list, rhs_index)
                 rhs_index = len(json_list) - 1
                 return block_1.disjunctive_binary(block_2, op, json_list, lhs_index, rhs_index)
         block_1, lhs_index = self.get_dense(json_list=json_list, template_index=lhs_index,  simulacrum=True)
@@ -338,13 +329,8 @@ class SparseBlock:
         }
         json_list.append(json_obj)
         block = operation(block_1, block_2, op)
-        json_obj = {
-            "method": "DenseBlock",
-            "block": "json_list_" + str(len(json_list) - 1),
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        return DenseBlock(block), len(json_list) - 1
+        traced_res = DenseBlock(block, json_list, len(json_list) - 1)
+        return traced_res, traced_res.json_index
             
     def conjunctive_binary(self, sp_block, op, json_list=[], lhs_index=-1, rhs_index=-1):
         if isinstance(self, type(sp_block)):
@@ -390,13 +376,8 @@ class SparseBlock:
             }
             json_list.append(json_obj)
             block = operation(block_1, block_2, op)
-            json_obj = {
-                "method": "DenseBlock",
-                "block": "json_list_" + str(len(json_list) - 1),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            return DenseBlock(block), len(json_list) - 1 
+            traced_res = DenseBlock(block, json_list, len(json_list) - 1)
+            return traced_res, traced_res.json_index
         elif not isinstance(self, type(sp_block)):
             block_1 = self 
             block_2 = sp_block
@@ -405,27 +386,15 @@ class SparseBlock:
                 return block_1.conjunctive_binary(block_2, op, json_list=json_list, lhs_index=lhs_index, rhs_index=rhs_index)
             if isinstance(self, ConstBlock):
                 self_block, lhs_index = self.get_dense(json_list=json_list, template_index=lhs_index,  simulacrum=True)
-                json_obj = {
-                    "method": "DenseBlock",
-                    "block": "json_list_" + str(lhs_index),
-                    "output": len(json_list),
-                }
-                json_list.append(json_obj)
-
-                block_1 = DenseBlock(self_block)
-                return block_1.conjunctive_binary(block_2, op, json_list=json_list, lhs_index=len(json_list)-1, rhs_index=rhs_index)
+                block_1 = DenseBlock(self_block, json_list, lhs_index)
+                return block_1.conjunctive_binary(block_2, op, json_list=json_list, lhs_index=block_1.json_index, rhs_index=rhs_index)
             if isinstance(sp_block, KernelBlock):
                 block_2, rhs_index = sp_block.convert_to_patches(json_list=json_list, index=rhs_index)
                 return block_1.conjunctive_binary(block_2, op, json_list=json_list, lhs_index=lhs_index, rhs_index=rhs_index)
             if isinstance(sp_block, ConstBlock):
                 sp_block, rhs_index = sp_block.get_dense(json_list=json_list, template_index=rhs_index,  simulacrum=True)
-                json_obj = {
-                    "method": "DenseBlock",
-                    "block": "json_list_" + str(rhs_index),
-                    "output": len(json_list),
-                }
-                json_list.append(json_obj)
-                return block_1.conjunctive_binary(block_2, op, json_list=json_list, lhs_index=lhs_index, rhs_index=len(json_list)-1)
+                dense_rhs = DenseBlock(sp_block, json_list, rhs_index)
+                return block_1.conjunctive_binary(block_2, op, json_list=json_list, lhs_index=lhs_index, rhs_index=dense_rhs.json_index)
         if isinstance(self, DiagonalBlock) and isinstance(sp_block, DenseBlock):
             block_1 = self.block
             json_obj = {
@@ -500,13 +469,8 @@ class SparseBlock:
             "output": len(json_list),
         }
         json_list.append(json_obj)
-        json_obj = {
-            "method": "DenseBlock",
-            "block": "json_list_" + str(len(json_list) - 1),
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        return DenseBlock(block), len(json_list) - 1 
+        traced_res = DenseBlock(block, json_list, len(json_list) - 1)
+        return traced_res, traced_res.json_index
 
 
 
@@ -530,9 +494,25 @@ class SparseBlock:
             return res, res_index
         return res
     
-    def float(self):
-        return self.create_similar((self.block).float())
-    
+    def float(self, json_list=[], template_index=-1, simulacrum=False):
+        json_list.append({
+            "method": "sparse_block_extract",
+            "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
+            "output": len(json_list),
+        })
+        block_index = len(json_list) - 1
+        json_list.append({
+            "method": "torch_float",
+            "input": "json_list_" + str(block_index),
+            "output": len(json_list),
+        })
+        float_index = len(json_list) - 1
+        res, res_index = self.create_similar(block=(self.block).float(), json_list=json_list, template_index=float_index, simulacrum=True)
+        if simulacrum:
+            return res, res_index
+        return res
+
     def sum(self, dim):
         raise Exception(f'Not implemented for {type(self)}')
     
@@ -625,13 +605,77 @@ class SparseBlock:
         return res
 
 
+
+def identifySparseBlockType(block):
+    if isinstance(block, torch.Tensor) and block.dtype == torch.bool:
+        return "BoolTensorSparse"
+    elif isinstance(block, bool):
+        return "BoolScalarSparse"
+    elif isinstance(block, torch.Tensor):
+        return "FloatTensorSparse"
+    else:
+        return "ScalarSparse"
 class DenseBlock(SparseBlock):
-    def __init__(self, block):
+    def __init__(self, block, og_json_list = None, block_index = -1,
+                layer_index = None, counter = None, inside_while = False,
+                while_number = None, while_iteration = None):
+
+        if og_json_list is None:
+            json_list = []
+        else:
+            json_list = og_json_list
+
+        if block_index == -1:
+            json_obj = {
+                "method": "noop",
+                "input": "lhs",
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            block_json_list_index = len(json_list) - 1
+        else:
+            block_json_list_index = block_index
+
         total_shape = torch.tensor(block.shape)
         super().__init__(block, total_shape, 'D')
         self.batch_size = total_shape[0]
-        # if isinstance(self.batch_size, torch.Tensor):
-        #     self.batch_size = self.batch_size.item()
+
+        SparseBlockType = identifySparseBlockType(block)
+
+        json_obj = {
+            "method": "DenseBlockConstructor",
+            "block": "json_list_" + str(block_json_list_index),
+            "total_shape": total_shape.tolist(),
+            "batch_size": int(self.batch_size),
+            "SparseBlockType":  SparseBlockType,
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        self.json_index = len(json_list) - 1
+        self.json_list = json_list
+
+        if dummy_mode and self.json_list is not None and og_json_list is None:
+            if layer_index is not None and counter is not None:
+                save_capture(f"jit_DenseBlock/DenseBlock_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json", json_list)
+                self.json_list = None
+            
+    @classmethod
+    def DenseBlock_JIT(cls, block, og_json_list = None, block_index = -1,
+                layer_index = None, counter = None, inside_while = False,
+                while_number = None, while_iteration = None):
+
+        if og_json_list is None:
+            raise AssertionError("og_json_list cannot be None when using DenseBlock_JIT")
+
+
+
+        obj = cls(block, og_json_list, block_index, layer_index, counter, inside_while, while_number, while_iteration)
+        return obj, obj.json_index
+        
+
+                
+
+        
 
     def get_dense(self, json_list=[], template_index=-1, simulacrum=False):
         json_list.append({"method": "extract_sparse_block",
@@ -653,17 +697,10 @@ class DenseBlock(SparseBlock):
         json_list.append(json_obj)
         block_index = len(json_list) - 1
 
-        json_obj = {
-            "method": "RepeatBlock",
-            "block": "json_list_" + str(block_index),
-            "total_shape": (self.total_shape*repeat_dims).tolist(),
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        repeat_index = len(json_list) - 1
+        res = RepeatBlock(self.block, self.total_shape*repeat_dims, json_list, block_index)
         if simulacrum:
-            return RepeatBlock(self.block, self.total_shape*repeat_dims), repeat_index
-        return RepeatBlock(self.block, self.total_shape*repeat_dims)
+            return res, res.json_index
+        return res
         start_time = time.time()
         expand_dims = torch.tensor(self.block.shape) * repeat_dims
         new_block = self.block.expand(*expand_dims)
@@ -694,20 +731,14 @@ class DenseBlock(SparseBlock):
         res_index = len(json_list) - 1
         res = self.block.unsqueeze(index)
 
-        json_obj = {
-            "method": "DenseBlock",
-            "block": "json_list_" + str(res_index),
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        res_index = len(json_list) - 1
+        res_block = DenseBlock(res, json_list, res_index)
 
         if simulacrum:
-            return DenseBlock(res), res_index
+            return res_block, res_block.json_index
         if not inductor_mode.get_flag():
             end_time = time.time()
             unsqueeze_time.update_op_time(end_time-start_time)
-        return DenseBlock(res)
+        return res_block
     
     def squeeze(self, index, json_list=[], template_index=-1, simulacrum=False):
         start_time = time.time()
@@ -731,14 +762,8 @@ class DenseBlock(SparseBlock):
         res_index = len(json_list) - 1
         new_block = self.block.squeeze(index)
 
-        json_obj = {
-            "method": "DenseBlock",
-            "block": "json_list_" + str(res_index),
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        res_index = len(json_list) - 1
-        res = DenseBlock(new_block)
+        res = DenseBlock(new_block, json_list, res_index)
+        res_index = res.json_index
         if simulacrum:
             return res, res_index
         end_time = time.time()
@@ -779,14 +804,8 @@ class DenseBlock(SparseBlock):
             c = a @ b
 
 
-            json_obj = {
-                "method": "DenseBlock",
-                "block": "json_list_" + str(len(json_list) - 1),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = DenseBlock(c)
+            res = DenseBlock(c, json_list, len(json_list) - 1)
+            res_index = res.json_index
         elif isinstance(sp_block, DiagonalBlock):
             json_obj = {
                 "method": "extract_sparse_block",
@@ -827,14 +846,8 @@ class DenseBlock(SparseBlock):
             json_list.append(json_obj)
             res = lhs * rhs
 
-            json_obj = {
-                "method": "DenseBlock",
-                "block": "json_list_" + str(len(json_list) - 1),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = DenseBlock(res)
+            res = DenseBlock(res, json_list, len(json_list) - 1)
+            res_index = res.json_index
 
         elif isinstance(sp_block, KernelBlock):
             json_obj = {
@@ -901,28 +914,15 @@ class DenseBlock(SparseBlock):
             }
             json_list.append(json_obj)
             res_index = len(json_list) - 1
-            json_obj = {
-                "method": "DenseBlock",
-                "block": "json_list_" + str(res_index),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = DenseBlock(output_tensor.reshape(batch_size, curr_size, -1))
+            res = DenseBlock(output_tensor.reshape(batch_size, curr_size, -1), json_list, res_index)
+            res_index = res.json_index
         elif isinstance(sp_block, ConstBlock):
             if sp_block.block == 0:
                 new_total_shape = self.total_shape.clone()
                 new_total_shape[-1] = sp_block.total_shape[-1]
 
-                json_obj = {
-                    "method": "ConstBlock",
-                    "block": 0,
-                    "total_shape": new_total_shape.tolist(),
-                    "output": len(json_list),
-                }
-                json_list.append(json_obj)
-                res_index = len(json_list) - 1
-                res = ConstBlock(0, new_total_shape)
+                res = ConstBlock(0, new_total_shape, json_list)
+                res_index = res.json_index
                 
             else:
                 raise NotImplementedError
@@ -951,14 +951,8 @@ class DenseBlock(SparseBlock):
             json_list.append(json_obj)
             c = lhs @ block_2
 
-            json_obj = {
-                "method": "DenseBlock",
-                "block": "json_list_" + str(len(json_list) - 1),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = DenseBlock(c)
+            res = DenseBlock(c, json_list, len(json_list) - 1)
+            res_index = res.json_index
         return res, res_index
         
     def matmul_unequal_dims(self, sp_block, json_list=[], lhs_index=-1, rhs_index=-1):
@@ -1009,14 +1003,8 @@ class DenseBlock(SparseBlock):
             res = (c).squeeze(-1)
 
 
-            json_obj = {
-                "method": "DenseBlock",
-                "block": "json_list_" + str(res_index),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = DenseBlock(res)
+            res = DenseBlock(res, json_list, res_index)
+            res_index = res.json_index
         elif isinstance(sp_block, DiagonalBlock):
             raise NotImplementedError
         elif isinstance(sp_block, KernelBlock):
@@ -1024,15 +1012,8 @@ class DenseBlock(SparseBlock):
         elif isinstance(sp_block, ConstBlock):
             if sp_block.block == 0:
                 new_total_shape = self.total_shape.clone()[:-1]
-                json_obj = {
-                    "method": "ConstBlock",
-                    "block": 0,
-                    "total_shape": new_total_shape.tolist(),
-                    "output": len(json_list),
-                }
-                json_list.append(json_obj)
-                res_index = len(json_list) - 1
-                res = ConstBlock(0, new_total_shape)
+                res = ConstBlock(0, new_total_shape, json_list)
+                res_index = res.json_index
             else:
                 raise NotImplementedError
         elif isinstance(sp_block, RepeatBlock):
@@ -1040,14 +1021,8 @@ class DenseBlock(SparseBlock):
 
             sp_block, rhs_index = sp_block.get_dense(json_list=json_list, template_index=rhs_index, simulacrum=True)
 
-            json_obj = {
-                "method": "DenseBlock",
-                "block": "json_list_" + str(rhs_index),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            rhs_index = len(json_list) - 1
-            sp_block = DenseBlock(sp_block)
+            sp_block = DenseBlock(sp_block, json_list, rhs_index)
+            rhs_index = sp_block.json_index
 
             res, res_index = self.matmul_unequal_dims(sp_block, json_list=json_list, lhs_index=lhs_index, rhs_index=rhs_index)
             return res, res_index
@@ -1095,14 +1070,8 @@ class DenseBlock(SparseBlock):
         }
         json_list.append(json_obj)
         sum_index = len(json_list) - 1
-        json_obj = {
-            "method": "DenseBlock",
-            "block": "json_list_" + str(sum_index),
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        res_index = len(json_list) - 1
-        res = DenseBlock(self.block.sum(dim))
+        res = DenseBlock(self.block.sum(dim), json_list, sum_index)
+        res_index = res.json_index
         if simulacrum:
             return res, res_index
         return res
@@ -1120,7 +1089,6 @@ class DenseBlock(SparseBlock):
         local_start = start_index - block_start_index
         local_end = end_index - block_start_index
         s = get_slice(local_start, local_end)
-        res = DenseBlock(self.block[tuple(s)])
         if simulacrum:
             json_list.append({
                 "method": "extract_sparse_block",
@@ -1136,32 +1104,47 @@ class DenseBlock(SparseBlock):
                 "output": len(json_list),
             })
             slice_index = len(json_list) - 1
-            json_list.append({
-                "method": "DenseBlock",
-                "input": "json_list_" + str(slice_index),
-                "output": len(json_list),
-            })
-            return res, len(json_list) - 1
-        return res
+            res = DenseBlock(self.block[tuple(s)], json_list, slice_index)
+            return res, res.json_index
+        return DenseBlock(self.block[tuple(s)])
     
     def create_similar(self, block, json_list=[], template_index=-1, simulacrum=False):
-        json_obj = {
-            "method": "DenseBlock",
-            "block": "json_list_" + str(template_index),
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
+        res = DenseBlock(block, json_list, template_index)
         if simulacrum:
-            return DenseBlock(block), len(json_list) - 1
-        return DenseBlock(block)
+            return res, res.json_index
+        return res
 
 class KernelBlock(SparseBlock):
-    def __new__(cls, block, total_shape, ix, iy, ox, oy, sx, sy, px, py):
+    def __new__(cls, block, total_shape, ix, iy, ox, oy, sx, sy, px, py,
+                og_json_list = None, block_index = -1,
+                layer_index = None, counter = None, inside_while = False,
+                while_number = None, while_iteration = None):
         if _should_coerce_to_dense(cls):
             return _coerce_to_dense_block(cls, KernelBlock.__init__, block, total_shape, ix, iy, ox, oy, sx, sy, px, py)
         return super().__new__(cls)
 
-    def __init__(self, block, total_shape, ix, iy, ox, oy, sx, sy, px, py):
+    def __init__(self, block, total_shape, ix, iy, ox, oy, sx, sy, px, py,
+                og_json_list = None, block_index = -1,
+                layer_index = None, counter = None, inside_while = False,
+                while_number = None, while_iteration = None):
+
+        if og_json_list is None:
+            json_list = []
+        else:
+            json_list = og_json_list
+
+        if block_index == -1:
+            json_obj = {
+                "method": "noop",
+                "input": "lhs",
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            block_json_list_index = len(json_list) - 1
+        else:
+            block_json_list_index = block_index
+
+
         super().__init__(block, total_shape, 'K')
         self.ix = ix
         self.iy = iy
@@ -1175,6 +1158,35 @@ class KernelBlock(SparseBlock):
         self.ky = block.shape[-1]
         self.num_channels = block.shape[1]
         self.num_kernels = block.shape[0]
+
+        SparseBlockType = identifySparseBlockType(block)
+        json_obj = {
+            "method": "KernelBlockConstructor",
+            "block": "json_list_" + str(block_json_list_index),
+            "total_shape": total_shape.tolist() if isinstance(total_shape, torch.Tensor) else list(total_shape),
+            "ix": self.ix,
+            "iy": self.iy,
+            "ox": self.ox,
+            "oy": self.oy,
+            "sx": self.sx,
+            "sy": self.sy,
+            "px": self.px,
+            "py": self.py,
+            "kx": int(self.kx),
+            "ky": int(self.ky),
+            "num_channels": int(self.num_channels),
+            "num_kernels": int(self.num_kernels),
+            "SparseBlockType":  SparseBlockType,
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        self.json_index = len(json_list) - 1
+        self.json_list = json_list
+
+        if dummy_mode and og_json_list is None:
+            if layer_index is not None and counter is not None:
+                save_capture(f"jit_KernelBlock/KernelBlock_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json", json_list)
+                self.json_list = None
 
     def __str__(self):
         res = f'KernelBlock: \n \
@@ -1277,23 +1289,8 @@ class KernelBlock(SparseBlock):
         }
         json_list.append(json_obj)
         new_total_shape = self.total_shape*repeat_dims
-        json_obj = {
-            "method": "KernelBlock",
-            "block": "json_list_" + str(len(json_list) - 1),
-            "total_shape": new_total_shape.tolist(),
-            "ix": self.ix,
-            "iy": self.iy,
-            "ox": self.ox,
-            "oy": self.oy,
-            "sx": self.sx,
-            "sy": self.sy,
-            "px": self.px,
-            "py": self.py,
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        res_index = len(json_list) - 1
-        res = KernelBlock(self.block, new_total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py)
+        res = KernelBlock(self.block, new_total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, json_list, len(json_list) - 1)
+        res_index = res.json_index
         if simulacrum:
             return res, res_index
         return res
@@ -1308,23 +1305,8 @@ class KernelBlock(SparseBlock):
         }
         json_list.append(json_obj)
         new_total_shape = torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]])
-        json_obj = {
-            "method": "KernelBlock",
-            "block": "json_list_" + str(len(json_list) - 1),
-            "total_shape": new_total_shape.tolist(),
-            "ix": self.ix,
-            "iy": self.iy,
-            "ox": self.ox,
-            "oy": self.oy,
-            "sx": self.sx,
-            "sy": self.sy,
-            "px": self.px,
-            "py": self.py,
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        res_index = len(json_list) - 1
-        res = KernelBlock(self.block, new_total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py)
+        res = KernelBlock(self.block, new_total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, json_list, len(json_list) - 1)
+        res_index = res.json_index
         if simulacrum:
             return res, res_index
         return res
@@ -1338,23 +1320,8 @@ class KernelBlock(SparseBlock):
         }
         json_list.append(json_obj)
         new_total_shape = torch.concat([self.total_shape[:index], self.total_shape[index+1:]])
-        json_obj = {
-            "method": "KernelBlock",
-            "block": "json_list_" + str(len(json_list) - 1),
-            "total_shape": new_total_shape.tolist(),
-            "ix": self.ix,
-            "iy": self.iy,
-            "ox": self.ox,
-            "oy": self.oy,
-            "sx": self.sx,
-            "sy": self.sy,
-            "px": self.px,
-            "py": self.py,
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        res_index = len(json_list) - 1
-        res = KernelBlock(self.block, new_total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py)
+        res = KernelBlock(self.block, new_total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, json_list, len(json_list) - 1)
+        res_index = res.json_index
         if simulacrum:
             return res, res_index
         return res
@@ -1465,40 +1432,14 @@ class KernelBlock(SparseBlock):
             # if baseline_gpu_mode:
             #     torch.cuda.synchronize()
             equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
-            json_obj = {
-                "method": "PatchesBlock",
-                "block": "json_list_" + str(patches_index),
-                "total_shape": self.total_shape.tolist(),
-                "ix": self.ix,
-                "iy": self.iy,
-                "ox": self.ox,
-                "oy": self.oy,
-                "sx": self.sx,
-                "sy": self.sy,
-                "px": self.px,
-                "py": self.py,
-                "kx": self.kx,
-                "ky": self.ky,
-                "num_channels": self.num_channels,
-                "num_kernels": self.num_kernels,
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = PatchesBlock(patches, self.total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels)
+            res = PatchesBlock(patches, self.total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels, json_list, patches_index)
+            res_index = res.json_index
         elif isinstance(sp_block, ConstBlock):
             if sp_block.block == 0:
                 new_total_shape = self.total_shape.clone()
                 new_total_shape[-1] = sp_block.total_shape[-1]
-                json_obj = {
-                    "method": "ConstBlock",
-                    "block": 0,
-                    "total_shape": new_total_shape.tolist(),
-                    "output": len(json_list),
-                }
-                json_list.append(json_obj)
-                res_index = len(json_list) - 1
-                res = ConstBlock(0, new_total_shape)
+                res = ConstBlock(0, new_total_shape, json_list)
+                res_index = res.json_index
             else:
                 raise NotImplementedError
         elif isinstance(sp_block, DenseBlock):
@@ -1574,25 +1515,13 @@ class KernelBlock(SparseBlock):
             res = res.transpose(1,2) # batch_size, curr_size, sym_size
             
             equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
-            json_obj = {
-                "method": "DenseBlock",
-                "block": "json_list_" + str(len(json_list) - 1),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = DenseBlock(res)
+            res = DenseBlock(res, json_list, len(json_list) - 1)
+            res_index = res.json_index
         elif isinstance(sp_block, PatchesBlock):
             sp_block_dense, sp_block_dense_index = sp_block.get_dense(json_list=json_list, template_index=rhs_index, simulacrum=True)
             
-            json_obj = {
-                "method": "DenseBlock",
-                "block": "json_list_" + str(sp_block_dense_index),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            d_block_index = len(json_list) - 1
-            d_block = DenseBlock(sp_block_dense)
+            d_block = DenseBlock(sp_block_dense, json_list, sp_block_dense_index)
+            d_block_index = d_block.json_index
 
 
             res, res_index = self.matmul_equal_dims(d_block, json_list=json_list, lhs_index=lhs_index, rhs_index=d_block_index)
@@ -1695,14 +1624,8 @@ class KernelBlock(SparseBlock):
 
             unequal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
             
-            json_obj = {
-                "method": "DenseBlock",
-                "block": "json_list_" + str(len(json_list) - 1),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = DenseBlock(block)
+            res = DenseBlock(block, json_list, len(json_list) - 1)
+            res_index = res.json_index
         elif isinstance(sp_block, DiagonalBlock):
             raise NotImplementedError
         elif isinstance(sp_block, KernelBlock):
@@ -1711,15 +1634,8 @@ class KernelBlock(SparseBlock):
             if sp_block.block == 0:
                 new_total_shape = self.total_shape.clone()[:-1]
 
-                json_obj = {
-                    "method": "ConstBlock",
-                    "block": 0,
-                    "total_shape": new_total_shape.tolist(),
-                    "output": len(json_list),
-                }
-                json_list.append(json_obj)
-                res_index = len(json_list) - 1
-                res = ConstBlock(0, new_total_shape)
+                res = ConstBlock(0, new_total_shape, json_list)
+                res_index = res.json_index
             else:
                 raise NotImplementedError
         else:
@@ -1776,27 +1692,8 @@ class KernelBlock(SparseBlock):
         }
         json_list.append(json_obj)
         
-        json_obj = {
-            "method": "PatchesBlock",
-            "block": "json_list_" + str(len(json_list) - 1),
-            "total_shape": self.total_shape.tolist(),
-            "ix": self.ix,
-            "iy": self.iy,
-            "ox": self.ox,
-            "oy": self.oy,
-            "sx": self.sx,
-            "sy": self.sy,
-            "px": self.px,
-            "py": self.py,
-            "kx": self.kx,
-            "ky": self.ky,
-            "num_channels": self.num_channels,
-            "num_kernels": self.num_kernels,
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        res_index = len(json_list) - 1
-        res = PatchesBlock(patches, self.total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels)
+        res = PatchesBlock(patches, self.total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels, json_list, len(json_list) - 1)
+        res_index = res.json_index
         if simulacrum:
             return res, res_index
         return res
@@ -1808,38 +1705,64 @@ class KernelBlock(SparseBlock):
 
     
     def create_similar(self, block, json_list=[], template_index=-1, simulacrum=False):
-        json_obj = {
-            "method": "KernelBlock",
-            "block": "json_list_" + str(template_index),
-            "total_shape": self.total_shape.tolist(),
-            "ix": self.ix,
-            "iy": self.iy,
-            "ox": self.ox,
-            "oy": self.oy,
-            "sx": self.sx,
-            "sy": self.sy,
-            "px": self.px,
-            "py": self.py,
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        res_index = len(json_list) - 1
-        res = KernelBlock(block, self.total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py)
+        res = KernelBlock(block, self.total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, json_list, template_index)
+        res_index = res.json_index
         if simulacrum:
             return res, res_index
         return res
 
 class DiagonalBlock(SparseBlock):
-    def __new__(cls, block, total_shape, diag_index):
+    def __new__(cls, block, total_shape, diag_index,
+                og_json_list = None, block_index = -1,
+                layer_index = None, counter = None, inside_while = False,
+                while_number = None, while_iteration = None):
         if _should_coerce_to_dense(cls):
             return _coerce_to_dense_block(cls, DiagonalBlock.__init__, block, total_shape, diag_index)
         return super().__new__(cls)
 
-    def __init__(self, block, total_shape, diag_index):
+    def __init__(self, block, total_shape, diag_index,
+                og_json_list = None, block_index = -1,
+                layer_index = None, counter = None, inside_while = False,
+                while_number = None, while_iteration = None):
+
+        if og_json_list is None:
+            json_list = []
+        else:
+            json_list = og_json_list
+
+        if block_index == -1:
+            json_obj = {
+                "method": "noop",
+                "input": "lhs",
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            block_json_list_index = len(json_list) - 1
+        else:
+            block_json_list_index = block_index
+
         super().__init__(block, total_shape, 'Diag')
         self.diag_index = diag_index
         self.batch_size = self.total_shape[0]
-        # assert((torch.tensor(block.shape) == torch.concat([total_shape[:diag_index], total_shape[diag_index+1:]])).all())
+
+        SparseBlockType = identifySparseBlockType(block)
+        json_obj = {
+            "method": "DiagonalBlockConstructor",
+            "block": "json_list_" + str(block_json_list_index),
+            "total_shape": total_shape.tolist() if isinstance(total_shape, torch.Tensor) else list(total_shape),
+            "diag_index": self.diag_index,
+            "batch_size": int(self.batch_size),
+            "SparseBlockType":  SparseBlockType,
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        self.json_index = len(json_list) - 1
+        self.json_list = json_list
+
+        if dummy_mode and og_json_list is None:
+            if layer_index is not None and counter is not None:
+                save_capture(f"jit_DiagonalBlock/DiagonalBlock_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json", json_list)
+                self.json_list = None
 
     def get_dense(self, json_list=[], template_index=-1, simulacrum=False):
         if self.diag_index == len(self.total_shape):
@@ -1948,16 +1871,8 @@ class DiagonalBlock(SparseBlock):
         template_index = len(json_list) - 1
         new_block = self.block.expand(*expand_dims)
         repeat_time.update_op_time(time.time() - start_time)
-        json_obj = {
-            "method": "DiagonalBlock",
-            "block": "json_list_" + str(template_index),
-            "total_shape": (self.total_shape*repeat_dims).tolist(),
-            "diag_index": self.diag_index,
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        res_index = len(json_list) - 1
-        res = DiagonalBlock(new_block, self.total_shape*repeat_dims, self.diag_index)
+        res = DiagonalBlock(new_block, self.total_shape*repeat_dims, self.diag_index, json_list, template_index)
+        res_index = res.json_index
         # res = DiagonalBlock(self.block.repeat(*new_repeat_dims), self.total_shape*repeat_dims, self.diag_index)
         if simulacrum:
             return res, res_index
@@ -1988,16 +1903,8 @@ class DiagonalBlock(SparseBlock):
             unsqueeze_time.update_op_time(end_time-start_time)
 
 
-            json_obj = {
-                "method": "DiagonalBlock",
-                "block": "json_list_" + str(len(json_list) - 1),
-                "total_shape": torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]]).tolist(),
-                "diag_index": self.diag_index+1,
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = DiagonalBlock(res, torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]]), self.diag_index+1)
+            res = DiagonalBlock(res, torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]]), self.diag_index+1, json_list, len(json_list) - 1)
+            res_index = res.json_index
             if simulacrum:
                 return res, res_index
             return res
@@ -2022,16 +1929,8 @@ class DiagonalBlock(SparseBlock):
         end_time = time.time()
         unsqueeze_time.update_op_time(end_time-start_time)
 
-        json_obj = {
-            "method": "DiagonalBlock",
-            "block": "json_list_" + str(len(json_list) - 1),
-            "total_shape": torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]]).tolist(),
-            "diag_index": self.diag_index,
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        res_index = len(json_list) - 1
-        res = DiagonalBlock(res, torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]]), self.diag_index)
+        res = DiagonalBlock(res, torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]]), self.diag_index, json_list, len(json_list) - 1)
+        res_index = res.json_index
         if simulacrum:
             return res, res_index
         return res
@@ -2046,14 +1945,8 @@ class DiagonalBlock(SparseBlock):
             }
             json_list.append(json_obj)
             template_index = len(json_list) - 1
-            json_obj = {
-                "method": "DenseBlock",
-                "block": "json_list_" + str(len(json_list) - 1),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = DenseBlock(self.block)
+            res = DenseBlock(self.block, json_list, len(json_list) - 1)
+            res_index = res.json_index
             if simulacrum:
                 return res, res_index
             return res
@@ -2080,16 +1973,8 @@ class DiagonalBlock(SparseBlock):
             end_time = time.time()
             squeeze_time.update_op_time(end_time - start_time)
 
-            json_obj = {
-                "method": "DiagonalBlock",
-                "block": "json_list_" + str(len(json_list) - 1),
-                "total_shape": torch.concat([self.total_shape[:index], self.total_shape[index+1:]]).tolist(),
-                "diag_index": self.diag_index-1,
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = DiagonalBlock(new_block, torch.concat([self.total_shape[:index], self.total_shape[index+1:]]), self.diag_index-1)
+            res = DiagonalBlock(new_block, torch.concat([self.total_shape[:index], self.total_shape[index+1:]]), self.diag_index-1, json_list, len(json_list) - 1)
+            res_index = res.json_index
             if simulacrum:
                 return res, res_index
             return res
@@ -2110,16 +1995,8 @@ class DiagonalBlock(SparseBlock):
             }
             json_list.append(json_obj)
             res = self.block.squeeze(index-1)
-            json_obj = {
-                "method": "DiagonalBlock",
-                "block": "json_list_" + str(len(json_list) - 1),
-                "total_shape": torch.concat([self.total_shape[:index], self.total_shape[index+1:]]).tolist(),
-                "diag_index": self.diag_index,
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = DiagonalBlock(res, torch.concat([self.total_shape[:index], self.total_shape[index+1:]]), self.diag_index)
+            res = DiagonalBlock(res, torch.concat([self.total_shape[:index], self.total_shape[index+1:]]), self.diag_index, json_list, len(json_list) - 1)
+            res_index = res.json_index
             if simulacrum:
                 return res, res_index
             return res
@@ -2143,16 +2020,8 @@ class DiagonalBlock(SparseBlock):
             json_list.append(json_obj)
             template_index = len(json_list) - 1
             res = self.block.sum(dim)
-            json_obj = {
-                "method": "DiagonalBlock",
-                "block": "json_list_" + str(len(json_list) - 1),
-                "total_shape": torch.concat([self.total_shape[:dim], self.total_shape[dim+1:]]).tolist(),
-                "diag_index": self.diag_index,
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = DiagonalBlock(res, torch.concat([self.total_shape[:dim], self.total_shape[dim+1:]]), self.diag_index)
+            res = DiagonalBlock(res, torch.concat([self.total_shape[:dim], self.total_shape[dim+1:]]), self.diag_index, json_list, len(json_list) - 1)
+            res_index = res.json_index
             if simulacrum:
                 return res, res_index
             return res
@@ -2174,16 +2043,8 @@ class DiagonalBlock(SparseBlock):
             json_list.append(json_obj)
             template_index = len(json_list) - 1
             res = self.block.sum(dim-1)
-            json_obj = {
-                "method": "DiagonalBlock",
-                "block": "json_list_" + str(len(json_list) - 1),
-                "total_shape": torch.concat([self.total_shape[:dim], self.total_shape[dim+1:]]).tolist(),
-                "diag_index": self.diag_index,
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = DiagonalBlock(res, torch.concat([self.total_shape[:dim], self.total_shape[dim+1:]]), self.diag_index)
+            res = DiagonalBlock(res, torch.concat([self.total_shape[:dim], self.total_shape[dim+1:]]), self.diag_index, json_list, len(json_list) - 1)
+            res_index = res.json_index
             if simulacrum:
                 return res, res_index
             return res
@@ -2196,14 +2057,8 @@ class DiagonalBlock(SparseBlock):
             }
             json_list.append(json_obj)
             template_index = len(json_list) - 1
-            json_obj = {
-                "method": "DenseBlock",
-                "block": "json_list_" + str(len(json_list) - 1),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = DenseBlock(self.block)
+            res = DenseBlock(self.block, json_list, len(json_list) - 1)
+            res_index = res.json_index
             if simulacrum:
                 return res, res_index
             return res
@@ -2252,14 +2107,8 @@ class DiagonalBlock(SparseBlock):
             # if baseline_gpu_mode:
             #     torch.cuda.synchronize()
             equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
-            json_obj = {
-                "method": "DenseBlock",
-                "block": "json_list_" + str(len(json_list) - 1),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = DenseBlock(c)
+            res = DenseBlock(c, json_list, len(json_list) - 1)
+            res_index = res.json_index
         elif isinstance(sp_block, DiagonalBlock):
             raise NotImplementedError
         elif isinstance(sp_block, KernelBlock):
@@ -2307,37 +2156,12 @@ class DiagonalBlock(SparseBlock):
             # if baseline_gpu_mode:
             #     torch.cuda.synchronize()
             equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
-            json_obj = {
-                "method": "PatchesBlock",
-                "block": "json_list_" + str(len(json_list) - 1),
-                "total_shape": sp_block.total_shape.tolist(),
-                "ix": sp_block.ix,
-                "iy": sp_block.iy,
-                "ox": sp_block.ox,
-                "oy": sp_block.oy,
-                "sx": sp_block.sx,
-                "sy": sp_block.sy,
-                "px": sp_block.px,
-                "py": sp_block.py,
-                "kx": sp_block.kx,
-                "ky": sp_block.ky,
-                "num_channels": sp_block.num_channels,
-                "num_kernels": sp_block.num_kernels,
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = PatchesBlock(block, sp_block.total_shape, sp_block.ix, sp_block.iy, sp_block.ox, sp_block.oy, sp_block.sx, sp_block.sy, sp_block.px, sp_block.py, sp_block.kx, sp_block.ky, sp_block.num_channels, sp_block.num_kernels)
+            res = PatchesBlock(block, sp_block.total_shape, sp_block.ix, sp_block.iy, sp_block.ox, sp_block.oy, sp_block.sx, sp_block.sy, sp_block.px, sp_block.py, sp_block.kx, sp_block.ky, sp_block.num_channels, sp_block.num_kernels, json_list, len(json_list) - 1)
+            res_index = res.json_index
         elif isinstance(sp_block, RepeatBlock) and (sp_block.repeat_dims==1).all():
             sp_block, rhs_index = sp_block.get_dense(json_list=json_list, template_index=rhs_index, simulacrum=True)
-            json_obj = {
-                "method": "DenseBlock",
-                "block": "json_list_" + str(rhs_index),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            rhs_index = len(json_list) - 1
-            sp_block = DenseBlock(sp_block)
+            sp_block = DenseBlock(sp_block, json_list, rhs_index)
+            rhs_index = sp_block.json_index
             res, res_index = self.matmul_equal_dims(sp_block, json_list=json_list, lhs_index=lhs_index, rhs_index=rhs_index)
             return res, res_index
         else:
@@ -2406,24 +2230,12 @@ class DiagonalBlock(SparseBlock):
             json_list.append(json_obj)
             res = res.squeeze(-1)
             unequal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
-            json_obj = {
-                "method": "DenseBlock",
-                "block": "json_list_" + str(len(json_list) - 1),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = DenseBlock(res)
+            res = DenseBlock(res, json_list, len(json_list) - 1)
+            res_index = res.json_index
         elif isinstance(sp_block, RepeatBlock) and (sp_block.repeat_dims==1).all():
             sp_block, rhs_index = sp_block.get_dense(json_list=json_list, template_index=rhs_index, simulacrum=True)
-            json_obj = {
-                "method": "DenseBlock",
-                "block": "json_list_" + str(rhs_index),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            rhs_index = len(json_list) - 1
-            sp_block = DenseBlock(sp_block)
+            sp_block = DenseBlock(sp_block, json_list, rhs_index)
+            rhs_index = sp_block.json_index
             res, res_index = self.matmul_unequal_dims(sp_block, json_list=json_list, lhs_index=lhs_index, rhs_index=rhs_index)
             return res, res_index
         else:
@@ -2441,7 +2253,8 @@ class DiagonalBlock(SparseBlock):
         local_end = r_end - r_block_start
         s = get_slice(local_start, local_end)
         block = self.block[tuple(s)]
-        res = DiagonalBlock(block, torch.concat([torch.tensor(block.shape[:self.diag_index]), torch.tensor(block.shape[self.diag_index-1:])]),  self.diag_index)
+        # Constructed inside the branch now so the tape and the slice's slot can be threaded
+        # in; the untraced path builds the same block without touching json_list.
         if simulacrum:
             json_list.append({
                 "method": "extract_sparse_block",
@@ -2457,27 +2270,14 @@ class DiagonalBlock(SparseBlock):
                 "output": len(json_list),
             })
             slice_index = len(json_list) - 1
-            json_list.append({
-                "method": "DiagonalBlock",
-                "block": "json_list_" + str(slice_index),
-                "total_shape": res.total_shape.tolist(),
-                "diag_index": self.diag_index,
-                "output": len(json_list),
-            })
-            return res, len(json_list) - 1
+            res = DiagonalBlock(block, torch.concat([torch.tensor(block.shape[:self.diag_index]), torch.tensor(block.shape[self.diag_index-1:])]),  self.diag_index, json_list, slice_index)
+            return res, res.json_index
+        res = DiagonalBlock(block, torch.concat([torch.tensor(block.shape[:self.diag_index]), torch.tensor(block.shape[self.diag_index-1:])]),  self.diag_index)
         return res
 
     def create_similar(self, block, json_list=[], template_index=-1, simulacrum=False):
-        json_obj = {
-            "method": "DiagonalBlock",
-            "block": "json_list_" + str(template_index),
-            "total_shape": self.total_shape.tolist(),
-            "diag_index": self.diag_index,
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        res_index = len(json_list) - 1
-        res = DiagonalBlock(block, self.total_shape, self.diag_index)
+        res = DiagonalBlock(block, self.total_shape, self.diag_index, json_list, template_index)
+        res_index = res.json_index
         if simulacrum:
             return res, res_index
         return res
@@ -2574,18 +2374,38 @@ class DiagonalBlock(SparseBlock):
         return super().binary(sp_block, op, json_list=json_list, lhs_index=lhs_index, rhs_index=rhs_index)
         
 class PatchesBlock(SparseBlock):
-    def __new__(cls, block, total_shape, ix, iy, ox, oy, sx, sy, px, py, kx, ky, num_channels, num_kernels):
+    def __new__(cls, block, total_shape, ix, iy, ox, oy, sx, sy, px, py, kx, ky, num_channels, num_kernels, 
+                og_json_list = None, block_index = -1,
+                layer_index = None, counter = None, inside_while = False,
+                while_number = None, while_iteration = None):
         if _should_coerce_to_dense(cls):
             return _coerce_to_dense_block(cls, PatchesBlock.__init__, block, total_shape, ix, iy, ox, oy, sx, sy, px, py, kx, ky, num_channels, num_kernels)
         return super().__new__(cls)
 
-    def __init__(self, block, total_shape, ix, iy, ox, oy, sx, sy, px, py, kx, ky, num_channels, num_kernels):
-        if block.dtype == torch.bool:
-            block = block 
-        else:
-            block = block.type(torch.float)
+    def __init__(self, block, total_shape, ix, iy, ox, oy, sx, sy, px, py, kx, ky, num_channels, num_kernels, 
+                 og_json_list = None, block_index = -1,
+                 layer_index = None, counter = None, inside_while = False,
+                 while_number = None, while_iteration = None):
         # block.shape = batch, num_kernels*ox*oy, num_channels*kx*ky 
         # self.total_shape = total_shape
+
+        if og_json_list is None:
+            json_list = []
+        else:
+            json_list = og_json_list
+        
+        if block_index == -1:
+            json_obj = {
+                "method": "noop",
+                "input": "lhs",
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            block_json_list_index = len(json_list) - 1
+        else:
+            block_json_list_index = block_index
+
+
         super().__init__(block, total_shape, 'P')
         self.ix = ix
         self.iy = iy
@@ -2601,22 +2421,11 @@ class PatchesBlock(SparseBlock):
         self.num_kernels = num_kernels
         self.batch_size = block.shape[0]
 
-    def parameters(self):
-        return [self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels]
-        
-    def repeat(self, repeat_dims, json_list=[], template_index=-1, simulacrum=False):
+        SparseBlockType = identifySparseBlockType(block)
         json_obj = {
-            "method": "sparse_block_extract",
-            "input": "json_list_" + str(template_index),
-            "block_type": self.block_type,
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        template_index = len(json_list) - 1
-        json_obj = {
-            "method": "PatchesBlock",
-            "block": "json_list_" + str(template_index),
-            "total_shape": (self.total_shape*repeat_dims).tolist(),
+            "method": "PatchesBlockConstructor",
+            "block": "json_list_" + str(block_json_list_index),
+            "total_shape": total_shape.tolist() if isinstance(total_shape, torch.Tensor) else list(total_shape),
             "ix": self.ix,
             "iy": self.iy,
             "ox": self.ox,
@@ -2629,11 +2438,32 @@ class PatchesBlock(SparseBlock):
             "ky": self.ky,
             "num_channels": self.num_channels,
             "num_kernels": self.num_kernels,
+            "SparseBlockType":  SparseBlockType,
             "output": len(json_list),
         }
         json_list.append(json_obj)
-        res_index = len(json_list) - 1
-        res =  PatchesBlock(self.block, self.total_shape*repeat_dims, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels)
+        self.json_list = json_list
+        self.json_index = len(json_list) - 1
+
+        if dummy_mode and og_json_list is None:
+            if layer_index is not None and counter is not None:
+                save_capture(f"jit_PatchesBlock/PatchesBlock_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json", json_list)
+                self.json_list = None
+
+    def parameters(self):
+        return [self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels]
+        
+    def repeat(self, repeat_dims, json_list=[], template_index=-1, simulacrum=False):
+        json_obj = {
+            "method": "sparse_block_extract",
+            "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        template_index = len(json_list) - 1
+        res =  PatchesBlock(self.block, self.total_shape*repeat_dims, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels, json_list, template_index)
+        res_index = res.json_index
         if simulacrum:
             return res, res_index
         return res
@@ -2648,27 +2478,8 @@ class PatchesBlock(SparseBlock):
         }
         json_list.append(json_obj)
         template_index = len(json_list) - 1
-        json_obj = {
-            "method": "PatchesBlock",
-            "block": "json_list_" + str(template_index),
-            "total_shape": torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]]).tolist(),
-            "ix": self.ix,
-            "iy": self.iy,
-            "ox": self.ox,
-            "oy": self.oy,
-            "sx": self.sx,
-            "sy": self.sy,
-            "px": self.px,
-            "py": self.py,
-            "kx": self.kx,
-            "ky": self.ky,
-            "num_channels": self.num_channels,
-            "num_kernels": self.num_kernels,
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        res_index = len(json_list) - 1
-        res = PatchesBlock(self.block, torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]]), self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels)
+        res = PatchesBlock(self.block, torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]]), self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels, json_list, template_index)
+        res_index = res.json_index
         if simulacrum:
             return res, res_index
         return res
@@ -2682,27 +2493,8 @@ class PatchesBlock(SparseBlock):
         }
         json_list.append(json_obj)
         template_index = len(json_list) - 1
-        json_obj = {
-            "method": "PatchesBlock",
-            "block": "json_list_" + str(template_index),
-            "total_shape": torch.concat([self.total_shape[:index], self.total_shape[index+1:]]).tolist(),
-            "ix": self.ix,
-            "iy": self.iy,
-            "ox": self.ox,
-            "oy": self.oy,
-            "sx": self.sx,
-            "sy": self.sy,
-            "px": self.px,
-            "py": self.py,
-            "kx": self.kx,
-            "ky": self.ky,
-            "num_channels": self.num_channels,
-            "num_kernels": self.num_kernels,
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        res_index = len(json_list) - 1
-        res = PatchesBlock(self.block, torch.concat([self.total_shape[:index], self.total_shape[index+1:]]), self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels)
+        res = PatchesBlock(self.block, torch.concat([self.total_shape[:index], self.total_shape[index+1:]]), self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels, json_list, template_index)
+        res_index = res.json_index
         if simulacrum:
             return res, res_index
         return res
@@ -2795,27 +2587,8 @@ class PatchesBlock(SparseBlock):
             # assert(ky == (self.ky-1)*sp_block.sy + sp_block.ky)
             new_padding, new_stride = self.compute_patches_stride_padding(patches_padding=(self.px, self.py), patches_stride=(self.sx, self.sy), op_padding=(sp_block.px, sp_block.py), op_stride=(sp_block.sx, sp_block.sy))
             new_total_shape = torch.concat([torch.max(self.total_shape[:-2], sp_block.total_shape[:-2]), self.total_shape[-2:-1], sp_block.total_shape[-1:]])
-            json_obj = {
-                "method": "PatchesBlock",
-                "block": "json_list_" + str(patches_index),
-                "total_shape": new_total_shape.tolist(),
-                "ix": sp_block.ix,
-                "iy": sp_block.iy,
-                "ox": self.ox,
-                "oy": self.oy,
-                "sx": new_stride[0],
-                "sy": new_stride[1],
-                "px": new_padding[0],
-                "py": new_padding[1],
-                "kx": kx,
-                "ky": ky,
-                "num_channels": sp_block.num_channels,
-                "num_kernels": self.num_kernels,
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = PatchesBlock(patches, new_total_shape, sp_block.ix, sp_block.iy, self.ox, self.oy, new_stride[0], new_stride[1], new_padding[0], new_padding[1], kx, ky, sp_block.num_channels, self.num_kernels)
+            res = PatchesBlock(patches, new_total_shape, sp_block.ix, sp_block.iy, self.ox, self.oy, new_stride[0], new_stride[1], new_padding[0], new_padding[1], kx, ky, sp_block.num_channels, self.num_kernels, json_list, patches_index)
+            res_index = res.json_index
 
         elif isinstance(sp_block, DiagonalBlock):
             json_obj = {
@@ -2912,27 +2685,8 @@ class PatchesBlock(SparseBlock):
             # if baseline_gpu_mode:
             #     torch.cuda.synchronize()
             equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
-            json_obj = {
-                "method": "PatchesBlock",
-                "block": "json_list_" + str(mul_index),
-                "total_shape": self.total_shape.tolist(),
-                "ix": self.ix,
-                "iy": self.iy,
-                "ox": self.ox,
-                "oy": self.oy,
-                "sx": self.sx,
-                "sy": self.sy,
-                "px": self.px,
-                "py": self.py,
-                "kx": self.kx,
-                "ky": self.ky,
-                "num_channels": self.num_channels,
-                "num_kernels": self.num_kernels,
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = PatchesBlock(patches, self.total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels)
+            res = PatchesBlock(patches, self.total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels, json_list, mul_index)
+            res_index = res.json_index
         else:
             raise NotImplementedError
 
@@ -3048,35 +2802,16 @@ class PatchesBlock(SparseBlock):
             ret = patches.sum(dim=-1)
 
             unequal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
-            json_obj = {
-                "method": "DenseBlock",
-                "block": "json_list_" + str(sum_index),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = DenseBlock(ret)
+            res = DenseBlock(ret, json_list, sum_index)
+            res_index = res.json_index
         elif isinstance(sp_block, ConstBlock) and sp_block.block == 0:
-            json_obj = {
-                "method": "ConstBlock",
-                "block": 0,
-                "total_shape": self.total_shape[:-1].tolist(),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = ConstBlock(0, self.total_shape[:-1])
+            res = ConstBlock(0, self.total_shape[:-1], json_list)
+            res_index = res.json_index
         elif isinstance(sp_block, RepeatBlock):
             # warnings.warn(f'Matmul with unequal dims inefficient for {type(self)} and {type(sp_block)}')
             sp_block, rhs_index = sp_block.get_dense(json_list=json_list, template_index=rhs_index, simulacrum=True)
-            json_obj = {
-                "method": "DenseBlock",
-                "block": "json_list_" + str(rhs_index),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            rhs_index = len(json_list) - 1
-            sp_block = DenseBlock(sp_block)
+            sp_block = DenseBlock(sp_block, json_list, rhs_index)
+            rhs_index = sp_block.json_index
             res, res_index = self.matmul_unequal_dims(sp_block, json_list=json_list, lhs_index=lhs_index, rhs_index=rhs_index)
             return res, res_index
         else:
@@ -3250,27 +2985,8 @@ class PatchesBlock(SparseBlock):
     
     
     def create_similar(self, block, json_list=[], template_index=-1, simulacrum=False):
-        json_obj = {
-            "method": "PatchesBlock",
-            "block": "json_list_" + str(template_index),
-            "total_shape": self.total_shape.tolist(),
-            "ix": self.ix,
-            "iy": self.iy,
-            "ox": self.ox,
-            "oy": self.oy,
-            "sx": self.sx,
-            "sy": self.sy,
-            "px": self.px,
-            "py": self.py,
-            "kx": self.kx,
-            "ky": self.ky,
-            "num_channels": self.num_channels,
-            "num_kernels": self.num_kernels,
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        res_index = len(json_list) - 1
-        res = PatchesBlock(block, self.total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels)
+        res = PatchesBlock(block, self.total_shape, self.ix, self.iy, self.ox, self.oy, self.sx, self.sy, self.px, self.py, self.kx, self.ky, self.num_channels, self.num_kernels, json_list, template_index)
+        res_index = res.json_index
         if simulacrum:
             return res, res_index
         return res
@@ -3295,14 +3011,8 @@ class PatchesBlock(SparseBlock):
             json_list.append(json_obj)
             sum_index = len(json_list) - 1
             block = self.block.sum(dim)
-            json_obj = {
-                "method": "DenseBlock",
-                "block": "json_list_" + str(sum_index),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = DenseBlock(block)
+            res = DenseBlock(block, json_list, sum_index)
+            res_index = res.json_index
             return res, res_index
         else:
             denseblock, denseblock_index = self.get_dense(json_list=json_list, template_index=template_index, simulacrum=True)
@@ -3314,14 +3024,8 @@ class PatchesBlock(SparseBlock):
             }
             json_list.append(json_obj)
             sum_index = len(json_list) - 1
-            json_obj = {
-                "method": "DenseBlock",
-                "block": "json_list_" + str(sum_index),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = DenseBlock(denseblock.sum(dim))
+            res = DenseBlock(denseblock.sum(dim), json_list, sum_index)
+            res_index = res.json_index
             return res, res_index
         
     def binary(self, sp_block, op, json_list=[], lhs_index=-1, rhs_index=-1):
@@ -3402,14 +3106,48 @@ class PatchesBlock(SparseBlock):
 
 
 class ConstBlock(SparseBlock):
-    def __new__(cls, block, total_shape):
+    def __new__(cls, block, total_shape,
+                og_json_list = None, block_index = -1,
+                layer_index = None, counter = None, inside_while = False,
+                while_number = None, while_iteration = None):
         if _should_coerce_to_dense(cls):
             return _coerce_to_dense_block(cls, ConstBlock.__init__, block, total_shape)
         return super().__new__(cls)
 
-    def __init__(self, block, total_shape):
+    def __init__(self, block, total_shape,
+                og_json_list = None, block_index = -1,
+                layer_index = None, counter = None, inside_while = False,
+                while_number = None, while_iteration = None):
+
+        if og_json_list is None:
+            json_list = []
+        else:
+            json_list = og_json_list
+
         super().__init__(block, total_shape, 'C')
         # assert total_shape.dtype in {torch.int8, torch.int16, torch.int32, torch.int64}
+
+        if block_index == -1:
+            block_json_list_entry = self.block.tolist() if isinstance(self.block, torch.Tensor) else self.block
+        else:
+            block_json_list_entry = "json_list_" + str(block_index)
+
+        SparseBlockType = identifySparseBlockType(self.block)
+        json_obj = {
+            "method": "ConstBlockConstructor",
+            "block": block_json_list_entry,
+            "total_shape": total_shape.tolist() if isinstance(total_shape, torch.Tensor) else list(total_shape),
+            "SparseBlockType":  SparseBlockType,
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        self.json_index = len(json_list) - 1
+        self.json_list = json_list
+
+        if dummy_mode and og_json_list is None:
+            if layer_index is not None and counter is not None:
+                save_capture(f"jit_ConstBlock/ConstBlock_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json", json_list)
+                self.json_list = None
 
     # Done
     def get_dense(self, json_list=[], template_index=-1, simulacrum = False):
@@ -3445,15 +3183,8 @@ class ConstBlock(SparseBlock):
         }
         json_list.append(json_obj)
         block_index = len(json_list) - 1
-        json_obj = {
-            "method": "ConstBlock",
-            "block": "json_list_" + str(block_index),
-            "total_shape": (self.total_shape*repeat_dims).tolist(),
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        const_index = len(json_list) - 1
-        res = ConstBlock(self.block, self.total_shape*repeat_dims)
+        res = ConstBlock(self.block, self.total_shape*repeat_dims, json_list, block_index)
+        const_index = res.json_index
         if simulacrum:
             return res, const_index
         return res
@@ -3468,14 +3199,8 @@ class ConstBlock(SparseBlock):
         })
         res_index = len(json_list) - 1
 
-        json_list.append({
-            "method": "ConstBlock",
-            "block": "json_list_" + str(res_index),
-            "total_shape": torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]]).tolist(),
-            "output": len(json_list),
-        })
-        res_index = len(json_list) - 1
-        res = ConstBlock(self.block, torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]]))
+        res = ConstBlock(self.block, torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]]), json_list, res_index)
+        res_index = res.json_index
         
         if simulacrum:
             return res, res_index
@@ -3492,14 +3217,8 @@ class ConstBlock(SparseBlock):
         })
         extract_index = len(json_list) - 1
 
-        json_list.append({
-            "method": "ConstBlock",
-            "block": "json_list_" + str(extract_index),
-            "total_shape": torch.concat([self.total_shape[:index], self.total_shape[index+1:]]).tolist(),
-            "output": len(json_list),
-        })
-        res_index = len(json_list) - 1
-        res = ConstBlock(self.block, torch.concat([self.total_shape[:index], self.total_shape[index+1:]]))
+        res = ConstBlock(self.block, torch.concat([self.total_shape[:index], self.total_shape[index+1:]]), json_list, extract_index)
+        res_index = res.json_index
         
         if simulacrum:
             return res, res_index
@@ -3635,14 +3354,17 @@ class ConstBlock(SparseBlock):
 
 
     # Done
-    def float(self):
+    def float(self, json_list=[], template_index=-1, simulacrum=False):
         if self.block == False:
-            return self.create_similar(0.0)
+            res, res_index = self.create_similar(0.0, json_list=json_list, template_index=-1, simulacrum=True)
         elif self.block == True:
-            return self.create_similar(1.0)
+            res, res_index = self.create_similar(1.0, json_list=json_list, template_index=-1, simulacrum=True)
         else:
             # assert False
-            pass
+            return None
+        if simulacrum:
+            return res, res_index
+        return res
 
     # Done
     def clamp(self, const, min_true, json_list=[], template_index=-1, simulacrum=False):
@@ -3651,11 +3373,6 @@ class ConstBlock(SparseBlock):
             unchanged = self.block >= const
         else:
             unchanged = self.block <= const
-        if unchanged:
-            res = self
-        else:
-            res = ConstBlock(const, self.total_shape)
-        clamp_const_block_expense.update_total_time(time.perf_counter() - start_time)
         if simulacrum:
             if unchanged:
                 json_list.append({
@@ -3665,20 +3382,20 @@ class ConstBlock(SparseBlock):
                     "output": len(json_list),
                 })
                 block_index = len(json_list) - 1
-                json_list.append({
-                    "method": "ConstBlock",
-                    "block": "json_list_" + str(block_index),
-                    "total_shape": self.total_shape.tolist(),
-                    "output": len(json_list),
-                })
+                # res stays self, as before; the record describes rebuilding it from the
+                # extracted block, so the constructed block is only there to emit it.
+                res = self
+                traced = ConstBlock(self.block, self.total_shape, json_list, block_index)
             else:
-                json_list.append({
-                    "method": "ConstBlock",
-                    "block": const,
-                    "total_shape": self.total_shape.tolist(),
-                    "output": len(json_list),
-                })
-            return res, len(json_list) - 1
+                res = ConstBlock(const, self.total_shape, json_list)
+                traced = res
+            clamp_const_block_expense.update_total_time(time.perf_counter() - start_time)
+            return res, traced.json_index
+        if unchanged:
+            res = self
+        else:
+            res = ConstBlock(const, self.total_shape)
+        clamp_const_block_expense.update_total_time(time.perf_counter() - start_time)
         return res
 
 
@@ -3689,15 +3406,8 @@ class ConstBlock(SparseBlock):
             new_total_shape = self.total_shape.clone()
             new_total_shape[-1] = sp_block.total_shape[-1]
 
-            json_obj = {
-                "method": "ConstBlock",
-                "block": 0,
-                "total_shape": new_total_shape.tolist(),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = ConstBlock(0, new_total_shape)
+            res = ConstBlock(0, new_total_shape, json_list)
+            res_index = res.json_index
         else:
             raise NotImplementedError
         # matmul_time.update_op_time(time.time() - start_time)
@@ -3709,15 +3419,8 @@ class ConstBlock(SparseBlock):
         if self.block == 0:
             new_total_shape = self.total_shape.clone()[:-1]
 
-            json_obj = {
-                "method": "ConstBlock",
-                "block": 0,
-                "total_shape": new_total_shape.tolist(),
-                "output": len(json_list),
-            }
-            json_list.append(json_obj)
-            res_index = len(json_list) - 1
-            res = ConstBlock(0, new_total_shape)
+            res = ConstBlock(0, new_total_shape, json_list)
+            res_index = res.json_index
         else:
             raise NotImplementedError
         # matmul_time.update_op_time(time.time() - start_time) 
@@ -3727,7 +3430,8 @@ class ConstBlock(SparseBlock):
     # Done        
     def get_sub_block_custom_range(self, start_index, end_index, block_start_index, json_list=[], template_index=-1, simulacrum=False):
         new_total_shape = end_index - start_index
-        res = ConstBlock(self.block, new_total_shape)
+        # Constructed inside the branch now so the tape and the looked-up const's slot can be
+        # threaded in; the untraced path builds the same block without touching json_list.
         if simulacrum:
             json_list.append({
                 "method": "object_lookup",
@@ -3736,14 +3440,9 @@ class ConstBlock(SparseBlock):
                 "output": len(json_list),
             })
             const_value_index = len(json_list) - 1
-            json_list.append({
-                "method": "ConstBlock",
-                "block": "json_list_" + str(const_value_index),
-                "total_shape": new_total_shape.tolist(),
-                "output": len(json_list),
-            })
-            return res, len(json_list) - 1
-        return res
+            res = ConstBlock(self.block, new_total_shape, json_list, const_value_index)
+            return res, res.json_index
+        return ConstBlock(self.block, new_total_shape)
     
     # Done
     def get_patches(self, batch_size, total_shape, ix, iy, ox, oy, sx, sy, px, py, kx, ky, num_channels, num_kernels):
@@ -3752,15 +3451,10 @@ class ConstBlock(SparseBlock):
 
     # Done     
     def create_similar(self, block, json_list=[], template_index=-1, simulacrum = False):
-        json_list.append({
-            "method": "ConstBlock",
-            "block": "json_list_" + str(template_index),
-            "total_shape": self.total_shape.tolist(),
-            "output": len(json_list)
-        })
+        res = ConstBlock(block, self.total_shape, json_list, template_index)
         if simulacrum:
-            return ConstBlock(block, self.total_shape), len(json_list) - 1
-        return ConstBlock(block, self.total_shape)
+            return res, res.json_index
+        return res
     
     # Done
     def sum(self, dim, json_list=[], template_index=-1, simulacrum=False):
@@ -3779,15 +3473,8 @@ class ConstBlock(SparseBlock):
         }
         json_list.append(json_obj)
         mul_index = len(json_list) - 1
-        json_obj = {
-            "method": "ConstBlock",
-            "block": "json_list_" + str(mul_index),
-            "total_shape": torch.concat([self.total_shape[:dim], self.total_shape[dim+1:]]).tolist(),
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        const_index = len(json_list) - 1
-        res = ConstBlock(self.block * self.total_shape[dim], torch.concat([self.total_shape[:dim], self.total_shape[dim+1:]]))
+        res = ConstBlock(self.block * self.total_shape[dim], torch.concat([self.total_shape[:dim], self.total_shape[dim+1:]]), json_list, mul_index)
+        const_index = res.json_index
         if simulacrum:
             return res, const_index
         return res
@@ -3795,16 +3482,58 @@ class ConstBlock(SparseBlock):
 
 
 class RepeatBlock(SparseBlock):
-    def __new__(cls, block, total_shape):
+    def __new__(cls, block, total_shape,
+                og_json_list = None, block_index = -1,
+                layer_index = None, counter = None, inside_while = False,
+                while_number = None, while_iteration = None):
         if _should_coerce_to_dense(cls):
             return _coerce_to_dense_block(cls, RepeatBlock.__init__, block, total_shape)
         return super().__new__(cls)
 
-    def __init__(self, block, total_shape):
+    def __init__(self, block, total_shape,
+                og_json_list = None, block_index = -1,
+                layer_index = None, counter = None, inside_while = False,
+                while_number = None, while_iteration = None):
+
+        if og_json_list is None:
+            json_list = []
+        else:
+            json_list = og_json_list
+
+        if block_index == -1:
+            json_obj = {
+                "method": "noop",
+                "input": "lhs",
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            block_json_list_index = len(json_list) - 1
+        else:
+            block_json_list_index = block_index
+
         super().__init__(block, total_shape, block_type='R')
-        # assert total_shape.dtype in {torch.int8, torch.int16, torch.int32, torch.int64}
         self.repeat_dims = self.total_shape / torch.tensor(self.block.shape)
         self.only_one_repeat = (self.repeat_dims != 1).sum() == 1
+        SparseBlockType = identifySparseBlockType(block)
+        json_obj = {
+            "method": "RepeatBlockConstructor",
+            "block": "json_list_" + str(block_json_list_index),
+            "total_shape": total_shape.tolist() if isinstance(total_shape, torch.Tensor) else list(total_shape),
+            "repeat_dims": self.repeat_dims.tolist() if isinstance(self.repeat_dims, torch.Tensor) else list(self.repeat_dims),
+            "only_one_repeat": bool(self.only_one_repeat),
+            "SparseBlockType": SparseBlockType,
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        self.json_list = json_list
+        self.json_index = len(json_list) - 1
+
+        if dummy_mode and og_json_list is None:
+            if layer_index is not None and counter is not None:
+                save_capture(f"jit_RepeatBlock/RepeatBlock_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json", json_list)
+                self.json_list = None
+        # assert total_shape.dtype in {torch.int8, torch.int16, torch.int32, torch.int64}
+        
 
     def __str__(self):
         ret = f'RepeatBlock: {self.block.shape} with total shape {self.total_shape} and repeat dims {self.repeat_dims}'
@@ -3843,15 +3572,8 @@ class RepeatBlock(SparseBlock):
         json_list.append(json_obj)
         template_index = len(json_list) - 1
 
-        json_obj = {
-            "method": "RepeatBlock",
-            "block": "json_list_" + str(template_index),
-            "total_shape": (self.total_shape*repeat_dims).tolist(),
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        repeat_index = len(json_list) - 1
-        repeat_block = RepeatBlock(self.block, self.total_shape*repeat_dims)
+        repeat_block = RepeatBlock(self.block, self.total_shape*repeat_dims, json_list, template_index)
+        repeat_index = repeat_block.json_index
         if simulacrum:
             return repeat_block, repeat_index
         return repeat_block
@@ -3875,15 +3597,8 @@ class RepeatBlock(SparseBlock):
         unsqueeze_index = len(json_list) - 1
 
         new_total_shape = torch.concat([self.total_shape[:index], torch.ones(1, dtype=int), self.total_shape[index:]])
-        json_obj = {
-            "method": "RepeatBlock",
-            "block": "json_list_" + str(unsqueeze_index),
-            "total_shape": new_total_shape.tolist(),
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        repeat_index = len(json_list) - 1
-        repeat_block = RepeatBlock(self.block.unsqueeze(index), new_total_shape)
+        repeat_block = RepeatBlock(self.block.unsqueeze(index), new_total_shape, json_list, unsqueeze_index)
+        repeat_index = repeat_block.json_index
         if simulacrum:
             return repeat_block, repeat_index
         return repeat_block
@@ -3907,29 +3622,15 @@ class RepeatBlock(SparseBlock):
         json_list.append(json_obj)
         squeeze_index = len(json_list) - 1
         new_total_shape = torch.concat([self.total_shape[:index], self.total_shape[index+1:]])
-        json_obj = {
-            "method": "RepeatBlock",
-            "block": "json_list_" + str(squeeze_index),
-            "total_shape": new_total_shape.tolist(),
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        repeat_index = len(json_list) - 1
-        repeat_block = RepeatBlock(self.block.squeeze(index), new_total_shape)
+        repeat_block = RepeatBlock(self.block.squeeze(index), new_total_shape, json_list, squeeze_index)
+        repeat_index = repeat_block.json_index
         if simulacrum:
             return repeat_block, repeat_index
         return repeat_block
     
     def create_similar(self, block, json_list=[], template_index=-1, simulacrum=False):
-        json_obj = {
-            "method": "RepeatBlock",
-            "block": "json_list_" + str(template_index),
-            "total_shape": self.total_shape.tolist(),
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        repeat_index = len(json_list) - 1
-        repeat_block = RepeatBlock(block, self.total_shape)
+        repeat_block = RepeatBlock(block, self.total_shape, json_list, template_index)
+        repeat_index = repeat_block.json_index
         if simulacrum:
             return repeat_block, repeat_index
         return repeat_block
@@ -3942,7 +3643,8 @@ class RepeatBlock(SparseBlock):
         slice_end = torch.where(self.repeat_dims > 1, 1, slice_end)
         s = get_slice(slice_start, slice_end)
         b = self.block[tuple(s)]
-        res = RepeatBlock(b, new_total_shape)
+        # Constructed inside the branch now so the tape and the slice's slot can be threaded
+        # in; the untraced path builds the same block without touching json_list.
         if simulacrum:
             json_list.append({
                 "method": "extract_sparse_block",
@@ -3958,39 +3660,22 @@ class RepeatBlock(SparseBlock):
                 "output": len(json_list),
             })
             slice_index = len(json_list) - 1
-            json_list.append({
-                "method": "RepeatBlock",
-                "block": "json_list_" + str(slice_index),
-                "total_shape": new_total_shape.tolist(),
-                "output": len(json_list),
-            })
-            return res, len(json_list) - 1
-        return res
+            res = RepeatBlock(b, new_total_shape, json_list, slice_index)
+            return res, res.json_index
+        return RepeatBlock(b, new_total_shape)
     
     def matmul_equal_dims(self, sp_block, json_list=[], lhs_index=-1, rhs_index=-1):
 
         block_1, block_1_index = self.get_dense(json_list=json_list, template_index=lhs_index, simulacrum=True)
-        json_obj = {
-            "method": "DenseBlock",
-            "block": "json_list_" + str(block_1_index),
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        dense_block_index = len(json_list) - 1
-        d_block = DenseBlock(block_1)
+        d_block = DenseBlock(block_1, json_list, block_1_index)
+        dense_block_index = d_block.json_index
         res, res_index = d_block.matmul_equal_dims(sp_block, json_list=json_list, lhs_index=dense_block_index, rhs_index=rhs_index)
         return res, res_index
     
     def matmul_unequal_dims(self, sp_block, json_list=[], lhs_index=-1, rhs_index=-1):
         block_1, block_1_index = self.get_dense(json_list=json_list, template_index=lhs_index, simulacrum=True)
-        json_obj = {
-            "method": "DenseBlock",
-            "block": "json_list_" + str(block_1_index),
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        dense_block_index = len(json_list) - 1
-        d_block = DenseBlock(block_1)
+        d_block = DenseBlock(block_1, json_list, block_1_index)
+        dense_block_index = d_block.json_index
         res, res_index = d_block.matmul_unequal_dims(sp_block, json_list=json_list, lhs_index=dense_block_index, rhs_index=rhs_index)
         return res, res_index
     
@@ -4137,14 +3822,8 @@ class RepeatBlock(SparseBlock):
                 return res, res_index
         
         block, block_index = self.get_dense(json_list=json_list, template_index=lhs_index, simulacrum=True)
-        json_obj = {
-            "method": "DenseBlock",
-            "block": "json_list_" + str(block_index),
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        dense_block_index = len(json_list) - 1
-        block_1 = DenseBlock(block)
+        block_1 = DenseBlock(block, json_list, block_index)
+        dense_block_index = block_1.json_index
         binary_block_expenses.just_update_total_time(time.perf_counter() - start_time)
         res, res_index = block_1.binary(sp_block, op, json_list=json_list, lhs_index=dense_block_index, rhs_index=rhs_index)
         return res, res_index
@@ -4236,15 +3915,8 @@ class RepeatBlock(SparseBlock):
         start_time = time.perf_counter()
         # _sync()
         clamp_repeat_block_expense.update_total_time(time.perf_counter() - start_time)
-        json_obj = {
-            "method": "RepeatBlock",
-            "block": "json_list_" + str(clamp_index),
-            "total_shape": self.total_shape.tolist(),
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        repeat_index = len(json_list) - 1
-        repeat_block = RepeatBlock(new_block, self.total_shape)
+        repeat_block = RepeatBlock(new_block, self.total_shape, json_list, clamp_index)
+        repeat_index = repeat_block.json_index
         if simulacrum:
             return repeat_block, repeat_index
         return repeat_block
@@ -4368,13 +4040,8 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                 y_dense, y_dense_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
                 z_dense, z_dense_index = z.get_dense(json_list=json_list, template_index=z_index, simulacrum=True)
                 w, w_index = where_block(x.block, y_dense, z_dense, json_list=json_list, cond_index=x_block_index, lhs_index=y_dense_index, rhs_index=z_dense_index)
-                json_list.append({
-                    "method": "DenseBlock",
-                    "block": "json_list_" + str(w_index),
-                    "output": len(json_list),
-                })
-                res_index = len(json_list) - 1
-                res = DenseBlock(w)
+                res = DenseBlock(w, json_list, w_index)
+                res_index = res.json_index
                 # res = y.create_similar(block=where_block(x.convert_to_patches(*y.parameters()).block, y.block, z.block))
                 return (res, res_index) if simulacrum else res
             block_1, block_1_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
@@ -4387,13 +4054,8 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
             })
             x_block_index = len(json_list) - 1
             w, w_index = where_block(x.block, block_1, block_2, json_list=json_list, cond_index=x_block_index, lhs_index=block_1_index, rhs_index=block_2_index)
-            json_list.append({
-                "method": "DenseBlock",
-                "block": "json_list_" + str(w_index),
-                "output": len(json_list),
-            })
-            res_index = len(json_list) - 1
-            res = DenseBlock(w)
+            res = DenseBlock(w, json_list, w_index)
+            res_index = res.json_index
             return (res, res_index) if simulacrum else res
         elif not isinstance(y, type(z)):
             block_1 = y
@@ -4415,13 +4077,8 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                     block_1, block_1_index = z.create_similar(torch.zeros(z.block.shape), json_list=json_list, template_index=zeros_index, simulacrum=True)
                 else:
                     self_block, self_block_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
-                    json_list.append({
-                        "method": "DenseBlock",
-                        "block": "json_list_" + str(self_block_index),
-                        "output": len(json_list),
-                    })
-                    block_1_index = len(json_list) - 1
-                    block_1 = DenseBlock(self_block)
+                    block_1 = DenseBlock(self_block, json_list, self_block_index)
+                    block_1_index = block_1.json_index
                 flag = True
             if isinstance(z, KernelBlock):
                 block_2, block_2_index = z.convert_to_patches(json_list=json_list, template_index=z_index, simulacrum=True)
@@ -4437,13 +4094,8 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                     block_2, block_2_index = y.create_similar(torch.zeros(y.block.shape), json_list=json_list, template_index=zeros_index, simulacrum=True)
                 else:
                     z_block, z_block_index = z.get_dense(json_list=json_list, template_index=z_index, simulacrum=True)
-                    json_list.append({
-                        "method": "DenseBlock",
-                        "block": "json_list_" + str(z_block_index),
-                        "output": len(json_list),
-                    })
-                    block_2_index = len(json_list) - 1
-                    block_2 = DenseBlock(z_block)
+                    block_2 = DenseBlock(z_block, json_list, z_block_index)
+                    block_2_index = block_2.json_index
                 flag = True
             if flag:
                 res, res_index = sp_where_block(x, block_1, block_2, json_list=json_list, x_index=x_index, y_index=block_1_index, z_index=block_2_index, simulacrum=True)
@@ -4458,13 +4110,8 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
         })
         x_block_index = len(json_list) - 1
         w, w_index = where_block(x.block, block_1, block_2, json_list=json_list, cond_index=x_block_index, lhs_index=block_1_index, rhs_index=block_2_index)
-        json_list.append({
-            "method": "DenseBlock",
-            "block": "json_list_" + str(w_index),
-            "output": len(json_list),
-        })
-        res_index = len(json_list) - 1
-        res = DenseBlock(w)
+        res = DenseBlock(w, json_list, w_index)
+        res_index = res.json_index
         return (res, res_index) if simulacrum else res
 
     elif isinstance(x, RepeatBlock):
@@ -4632,13 +4279,8 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                     y_dense, y_dense_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
                     z_dense, z_dense_index = z.get_dense(json_list=json_list, template_index=z_index, simulacrum=True)
                     w, w_index = where_block(x.block, y_dense, z_dense, json_list=json_list, cond_index=x_block_index, lhs_index=y_dense_index, rhs_index=z_dense_index)
-                    json_list.append({
-                        "method": "DenseBlock",
-                        "block": "json_list_" + str(w_index),
-                        "output": len(json_list),
-                    })
-                    res_index = len(json_list) - 1
-                    res = DenseBlock(w)
+                    res = DenseBlock(w, json_list, w_index)
+                    res_index = res.json_index
                 return (res, res_index) if simulacrum else res
             block_1, block_1_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
             block_2, block_2_index = z.get_dense(json_list=json_list, template_index=z_index, simulacrum=True)
@@ -4650,13 +4292,8 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
             })
             x_block_index = len(json_list) - 1
             w, w_index = where_block(x.block, block_1, block_2, json_list=json_list, cond_index=x_block_index, lhs_index=block_1_index, rhs_index=block_2_index)
-            json_list.append({
-                "method": "DenseBlock",
-                "block": "json_list_" + str(w_index),
-                "output": len(json_list),
-            })
-            res_index = len(json_list) - 1
-            res = DenseBlock(w)
+            res = DenseBlock(w, json_list, w_index)
+            res_index = res.json_index
             return (res, res_index) if simulacrum else res
         elif not isinstance(y, type(z)):
             block_1 = y
@@ -4678,13 +4315,8 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                     block_1, block_1_index = z.create_similar(torch.zeros(z.block.shape), json_list=json_list, template_index=zeros_index, simulacrum=True)
                 else:
                     self_block, self_block_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
-                    json_list.append({
-                        "method": "DenseBlock",
-                        "block": "json_list_" + str(self_block_index),
-                        "output": len(json_list),
-                    })
-                    block_1_index = len(json_list) - 1
-                    block_1 = DenseBlock(self_block)
+                    block_1 = DenseBlock(self_block, json_list, self_block_index)
+                    block_1_index = block_1.json_index
                 flag = True
             if isinstance(z, KernelBlock):
                 block_2, block_2_index = z.convert_to_patches(json_list=json_list, template_index=z_index, simulacrum=True)
@@ -4700,13 +4332,8 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                     block_2, block_2_index = y.create_similar(torch.zeros(y.block.shape), json_list=json_list, template_index=zeros_index, simulacrum=True)
                 else:
                     z_block, z_block_index = z.get_dense(json_list=json_list, template_index=z_index, simulacrum=True)
-                    json_list.append({
-                        "method": "DenseBlock",
-                        "block": "json_list_" + str(z_block_index),
-                        "output": len(json_list),
-                    })
-                    block_2_index = len(json_list) - 1
-                    block_2 = DenseBlock(z_block)
+                    block_2 = DenseBlock(z_block, json_list, z_block_index)
+                    block_2_index = block_2.json_index
                 flag = True
             if flag:
                 res, res_index = sp_where_block(x, block_1, block_2, json_list=json_list, x_index=x_index, y_index=block_1_index, z_index=block_2_index, simulacrum=True)
@@ -4715,13 +4342,8 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
         block_2, block_2_index = z.get_dense(json_list=json_list, template_index=z_index, simulacrum=True)
         x_dense, x_dense_index = x.get_dense(json_list=json_list, template_index=x_index, simulacrum=True)
         w, w_index = where_block(x_dense, block_1, block_2, json_list=json_list, cond_index=x_dense_index, lhs_index=block_1_index, rhs_index=block_2_index)
-        json_list.append({
-            "method": "DenseBlock",
-            "block": "json_list_" + str(w_index),
-            "output": len(json_list),
-        })
-        res_index = len(json_list) - 1
-        res = DenseBlock(w)
+        res = DenseBlock(w, json_list, w_index)
+        res_index = res.json_index
         return (res, res_index) if simulacrum else res
 
 
@@ -4741,15 +4363,8 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                 })
                 x_block_index = len(json_list) - 1
                 w, w_index = where_block(x.block, y_diag, z_diag, json_list=json_list, cond_index=x_block_index, lhs_index=y_diag_index, rhs_index=z_diag_index)
-                json_list.append({
-                    "method": "DiagonalBlock",
-                    "block": "json_list_" + str(w_index),
-                    "total_shape": x.total_shape.tolist(),
-                    "diag_index": x.diag_index,
-                    "output": len(json_list),
-                })
-                res_index = len(json_list) - 1
-                res = DiagonalBlock(w, x.total_shape, x.diag_index)
+                res = DiagonalBlock(w, x.total_shape, x.diag_index, json_list, w_index)
+                res_index = res.json_index
                 return (res, res_index) if simulacrum else res
             elif isinstance(z, DiagonalBlock):
                 y_dense, y_dense_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
@@ -4770,15 +4385,8 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                 z_block_index = len(json_list) - 1
                 z_block = z.block
                 w, w_index = where_block(x.block, y_diag, z_block, json_list=json_list, cond_index=x_block_index, lhs_index=y_diag_index, rhs_index=z_block_index)
-                json_list.append({
-                    "method": "DiagonalBlock",
-                    "block": "json_list_" + str(w_index),
-                    "total_shape": x.total_shape.tolist(),
-                    "diag_index": x.diag_index,
-                    "output": len(json_list),
-                })
-                res_index = len(json_list) - 1
-                res = DiagonalBlock(w, x.total_shape, x.diag_index)
+                res = DiagonalBlock(w, x.total_shape, x.diag_index, json_list, w_index)
+                res_index = res.json_index
                 return (res, res_index) if simulacrum else res
             elif isinstance(z, DenseBlock):
                 x_dense, x_dense_index = x.get_dense(json_list=json_list, template_index=x_index, simulacrum=True)
@@ -4792,13 +4400,8 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                 z_block_index = len(json_list) - 1
                 z_block = z.block
                 w, w_index = where_block(x_dense, y_dense, z_block, json_list=json_list, cond_index=x_dense_index, lhs_index=y_dense_index, rhs_index=z_block_index)
-                json_list.append({
-                    "method": "DenseBlock",
-                    "block": "json_list_" + str(w_index),
-                    "output": len(json_list),
-                })
-                res_index = len(json_list) - 1
-                res = DenseBlock(w)
+                res = DenseBlock(w, json_list, w_index)
+                res_index = res.json_index
                 return (res, res_index) if simulacrum else res
             else:
                 raise NotImplementedError
@@ -4822,15 +4425,8 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                 y_block_index = len(json_list) - 1
                 y_block = y.block
                 w, w_index = where_block(x.block, y_block, z_diag, json_list=json_list, cond_index=x_block_index, lhs_index=y_block_index, rhs_index=z_diag_index)
-                json_list.append({
-                    "method": "DiagonalBlock",
-                    "block": "json_list_" + str(w_index),
-                    "total_shape": y.total_shape.tolist(),
-                    "diag_index": y.diag_index,
-                    "output": len(json_list),
-                })
-                res_index = len(json_list) - 1
-                res = DiagonalBlock(w, y.total_shape, y.diag_index)
+                res = DiagonalBlock(w, y.total_shape, y.diag_index, json_list, w_index)
+                res_index = res.json_index
                 return (res, res_index) if simulacrum else res
             elif isinstance(z, DiagonalBlock):
                 json_list.append({
@@ -4857,15 +4453,8 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                 z_block_index = len(json_list) - 1
                 z_block = z.block
                 w, w_index = where_block(x.block, y_block, z_block, json_list=json_list, cond_index=x_block_index, lhs_index=y_block_index, rhs_index=z_block_index)
-                json_list.append({
-                    "method": "DiagonalBlock",
-                    "block": "json_list_" + str(w_index),
-                    "total_shape": y.total_shape.tolist(),
-                    "diag_index": y.diag_index,
-                    "output": len(json_list),
-                })
-                res_index = len(json_list) - 1
-                res = DiagonalBlock(w, y.total_shape, y.diag_index)
+                res = DiagonalBlock(w, y.total_shape, y.diag_index, json_list, w_index)
+                res_index = res.json_index
                 return (res, res_index) if simulacrum else res
             elif isinstance(z, DenseBlock):
                 x_dense, x_dense_index = x.get_dense(json_list=json_list, template_index=x_index, simulacrum=True)
@@ -4879,13 +4468,8 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                 z_block_index = len(json_list) - 1
                 z_block = z.block
                 w, w_index = where_block(x_dense, y_dense, z_block, json_list=json_list, cond_index=x_dense_index, lhs_index=y_dense_index, rhs_index=z_block_index)
-                json_list.append({
-                    "method": "DenseBlock",
-                    "block": "json_list_" + str(w_index),
-                    "output": len(json_list),
-                })
-                res_index = len(json_list) - 1
-                res = DenseBlock(w)
+                res = DenseBlock(w, json_list, w_index)
+                res_index = res.json_index
                 return (res, res_index) if simulacrum else res
             else:
                 raise NotImplementedError
@@ -4901,13 +4485,8 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
             y_block_index = len(json_list) - 1
             y_block = y.block
             w, w_index = where_block(x_dense, y_block, z_dense, json_list=json_list, cond_index=x_dense_index, lhs_index=y_block_index, rhs_index=z_dense_index)
-            json_list.append({
-                "method": "DenseBlock",
-                "block": "json_list_" + str(w_index),
-                "output": len(json_list),
-            })
-            res_index = len(json_list) - 1
-            res = DenseBlock(w)
+            res = DenseBlock(w, json_list, w_index)
+            res_index = res.json_index
             return (res, res_index) if simulacrum else res
         else:
             raise NotImplementedError
@@ -4915,11 +4494,6 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
     y_dense, y_dense_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
     z_dense, z_dense_index = z.get_dense(json_list=json_list, template_index=z_index, simulacrum=True)
     w, w_index = where_block(x_dense, y_dense, z_dense, json_list=json_list, cond_index=x_dense_index, lhs_index=y_dense_index, rhs_index=z_dense_index)
-    json_list.append({
-        "method": "DenseBlock",
-        "block": "json_list_" + str(w_index),
-        "output": len(json_list),
-    })
-    res_index = len(json_list) - 1
-    res = DenseBlock(w)
+    res = DenseBlock(w, json_list, w_index)
+    res_index = res.json_index
     return (res, res_index) if simulacrum else res
