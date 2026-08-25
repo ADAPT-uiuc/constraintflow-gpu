@@ -6,7 +6,7 @@ from constraintflow.lib.polyexp import *
 from constraintflow.lib.network import LayerType
 from constraintflow.gbcsr.sparse_block import DenseBlock, KernelBlock, ConstBlock, DiagonalBlock
 from constraintflow.gbcsr.sparse_tensor import SparseTensor
-from constraintflow.lib.globals import dummy_mode
+from constraintflow.lib.globals import dummy_mode, save_capture
 
 
 class Llist:
@@ -64,40 +64,17 @@ class Llist:
                             'output': kth_weight
                         }
                         json_list.append(json_obj)
-                        block = DenseBlock(self.network[k].weight)
-                        dense_idx: int = len(json_list)
-                        json_obj: dict[str, Any] = {
-                            'method': 'DenseBlock',
-                            'input': kth_weight,
-                            'output': dense_idx
-                        }
-                        json_list.append(json_obj)
+                        block = DenseBlock(self.network[k].weight, json_list, kth_weight)
+                        dense_idx: int = block.json_index
                         if not self.network[k].last_layer:
-                            unsqueeze_idcs: list[int] = []
                             for i in range(len(self.initial_shape)):
-                                block = block.unsqueeze(0)
-                                unsqueeze_idcs.append(len(json_list))
-                                json_obj: dict[str, Any] = {
-                                    'method': 'block_unsqueeze',
-                                    'input': 'json_list_' + str(unsqueeze_idcs[-1] - 1),
-                                    'index': 0,
-                                    'output': unsqueeze_idcs[-1]
-                                }
-                                json_list.append(json_obj)
+                                block = block.unsqueeze(0, json_list, block.json_index)
                             repeat_dims = [batch_size]
                             for i in range(len(block.total_shape)-1):
                                 repeat_dims.append(1)
                             repeat_dims = torch.tensor(repeat_dims)
-                            block = block.repeat(repeat_dims)
-                            json_obj: dict[str, Any] = {
-                                'method': 'repeat',
-                                'input': 'json_list_' + str(unsqueeze_idcs[-1]),
-                                'repeat_dims': repeat_dims.tolist(),
-                                'output': len(json_list),
-                                'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
-                            }
-                            dense_idx = len(json_list)
-                            json_list.append(json_obj)
+                            block = block.repeat(repeat_dims, json_list, block.json_index)
+                            dense_idx = block.json_index
                         ret.append(block)
                         json_obj: dict[str, Any] = {
                             'method': 'append_list',
@@ -115,7 +92,6 @@ class Llist:
                         ox, oy = self.network[k].shape[-2:]
                         sx, sy = self.network[k].stride
                         px, py = self.network[k].padding
-                        block = KernelBlock(self.network[k].weight, torch.tensor([self.network[k].size, self.network[self.network[k].parents[0]].size]), ix, iy, ox, oy, sx, sy, px, py)
                         kth_weight: int = len(json_list)
                         json_obj: dict[str, Any] = {
                             'method': 'get_kth_layer_weight',
@@ -123,16 +99,10 @@ class Llist:
                             'output': kth_weight
                         }
                         json_list.append(json_obj)
-                        kernel_idx: int = len(json_list)
-                        json_obj: dict[str, Any] = {
-                            'method': 'KernelBlock',
-                            'block': kth_weight,
-                            'total_shape': [self.network[k].size, self.network[self.network[k].parents[0]].size],
-                            'ix': ix, 'iy': iy, 'ox': ox, 'oy': oy,
-                            'sx': sx, 'sy': sy, 'px': px, 'py': py,
-                            'output': kernel_idx
-                        }
-                        json_list.append(json_obj)
+                        # Constructed after the weight lookup rather than before it, so that
+                        # record's slot can be threaded in as the payload ref.
+                        block = KernelBlock(self.network[k].weight, torch.tensor([self.network[k].size, self.network[self.network[k].parents[0]].size]), ix, iy, ox, oy, sx, sy, px, py, json_list, kth_weight)
+                        kernel_idx: int = block.json_index
                         if self.network.no_sparsity:
                             dense_idx: int = len(json_list)
                             json_obj: dict[str, Any] = {
@@ -149,40 +119,17 @@ class Llist:
                                 'output': squeeze_idx
                             }
                             json_list.append(json_obj)
-                            block = DenseBlock(block.get_dense().squeeze(0))
-                            dense_idx: int = len(json_list)
-                            json_obj: dict[str, Any] = {
-                                'method': 'DenseBlock',
-                                'input': 'json_list_' + str(squeeze_idx),
-                                'output': dense_idx
-                            }
-                            json_list.append(json_obj)
+                            block = DenseBlock(block.get_dense().squeeze(0), json_list, squeeze_idx)
+                            dense_idx: int = block.json_index
                             kernel_idx = dense_idx
-                        unsqueeze_idcs: list[int] = []
                         for i in range(len(self.initial_shape)):
-                            unsqueeze_idcs.append(len(json_list))
-                            block = block.unsqueeze(0)
-                            json_obj: dict[str, Any] = {
-                                'method': 'block_unsqueeze',
-                                'input': 'json_list_' + str(unsqueeze_idcs[-1] - 1),
-                                'index': 0,
-                                'output': unsqueeze_idcs[-1]
-                            }
-                            json_list.append(json_obj)
+                            block = block.unsqueeze(0, json_list, block.json_index)
                         repeat_dims = [batch_size]
                         for i in range(len(block.total_shape)-1):
                             repeat_dims.append(1)
                         repeat_dims = torch.tensor(repeat_dims)
-                        block = block.repeat(repeat_dims)
-                        repeat_idx: int = len(json_list)
-                        json_obj: dict[str, Any] = {
-                            'method': 'repeat',
-                            'input': 'json_list_' + str(unsqueeze_idcs[-1]),
-                            'repeat_dims': repeat_dims.tolist(),
-                            'output': repeat_idx,
-                            'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
-                        }
-                        json_list.append(json_obj)
+                        block = block.repeat(repeat_dims, json_list, block.json_index)
+                        repeat_idx: int = block.json_index
                         ret.append(block)
                         json_obj: dict[str, Any] = {
                             'method': 'append_list',
@@ -198,7 +145,6 @@ class Llist:
                     else:
                         raise NotImplementedError
                 elif elem == 'bias' or elem == 'b':
-                    block = DenseBlock(self.network[k].bias)
                     bias_idx: int = len(json_list)
                     json_obj: dict[str, Any] = {
                         'method': 'get_kth_layer_bias',
@@ -206,25 +152,13 @@ class Llist:
                         'output': bias_idx
                     }
                     json_list.append(json_obj)
-                    dense_idx: int = len(json_list)
-                    json_obj: dict[str, Any] = {
-                        'method': 'DenseBlock',
-                        'input': bias_idx,
-                        'output': dense_idx
-                    }
-                    json_list.append(json_obj)
-                    unsqueeze_idcs: list[int] = []
+                    # Constructed after the bias lookup rather than before it, so that
+                    # record's slot can be threaded in as the payload ref.
+                    block = DenseBlock(self.network[k].bias, json_list, bias_idx)
+                    dense_idx: int = block.json_index
                     for i in range(len(self.initial_shape)):
-                        unsqueeze_idcs.append(len(json_list))
-                        block = block.unsqueeze(0)
-                        json_obj: dict[str, Any] = {
-                            'method': 'block_unsqueeze',
-                            'input': 'json_list_' + str(unsqueeze_idcs[-1] - 1),
-                            'index': 0,
-                            'output': unsqueeze_idcs[-1]
-                        }
-                        dense_idx = unsqueeze_idcs[-1]
-                        json_list.append(json_obj)
+                        block = block.unsqueeze(0, json_list, block.json_index)
+                        dense_idx = block.json_index
                     ret.append(block)
                     json_obj: dict[str, Any] = {
                         'method': 'append_list',
@@ -240,27 +174,11 @@ class Llist:
                 elif elem == 'layer':
                     # When elem == 'layer', give the layer number of the layer
                     #   which the neuron belongs to.
-                    block = ConstBlock(k, torch.tensor([self.network[k].size]))
-                    const_idx: int = len(json_list)
-                    json_obj: dict[str, Any] = {
-                        'method': 'ConstBlock',
-                        'block': k,
-                        'total_shape': [self.network[k].size],
-                        'output': const_idx
-                    }
-                    json_list.append(json_obj)
-                    unsqueeze_idcs: list[int] = []
+                    block = ConstBlock(k, torch.tensor([self.network[k].size]), json_list)
+                    const_idx: int = block.json_index
                     for i in range(len(self.initial_shape)):
-                        unsqueeze_idcs.append(len(json_list))
-                        block = block.unsqueeze(0)
-                        json_obj: dict[str, Any] = {
-                            'method': 'block_unsqueeze',
-                            'input': 'json_list_' + str(unsqueeze_idcs[-1] - 1),
-                            'index': 0,
-                            'output': unsqueeze_idcs[-1]
-                        }
-                        const_idx = unsqueeze_idcs[-1]
-                        json_list.append(json_obj)
+                        block = block.unsqueeze(0, json_list, block.json_index)
+                        const_idx = block.json_index
                     ret.append(block)
                     json_obj: dict[str, Any] = {
                         'method': 'append_list',
@@ -277,27 +195,11 @@ class Llist:
                     # When elem == 'last_layer', give whether the neuron
                     #   belongs to the last layer or not.
                     mat = (k == len(self.network)-1)
-                    block = ConstBlock(int(mat), torch.tensor([self.network[k].size]))
-                    const_idx: int = len(json_list)
-                    json_obj: dict[str, Any] = {
-                        'method': 'ConstBlock',
-                        'block': int(mat),
-                        'total_shape': [self.network[k].size],
-                        'output': const_idx
-                    }
-                    json_list.append(json_obj)
-                    unsqueeze_idcs: list[int] = []
+                    block = ConstBlock(int(mat), torch.tensor([self.network[k].size]), json_list)
+                    const_idx: int = block.json_index
                     for i in range(len(self.initial_shape)):
-                        unsqueeze_idcs.append(len(json_list))
-                        block = block.unsqueeze(0)
-                        json_obj: dict[str, Any] = {
-                            'method': 'block_unsqueeze',
-                            'input': 'json_list_' + str(unsqueeze_idcs[-1] - 1),
-                            'index': 0,
-                            'output': unsqueeze_idcs[-1]
-                        }
-                        const_idx = unsqueeze_idcs[-1]
-                        json_list.append(json_obj)
+                        block = block.unsqueeze(0, json_list, block.json_index)
+                        const_idx = block.json_index
                     ret.append(block)
                     json_obj: dict[str, Any] = {
                         'method': 'append_list',
@@ -314,18 +216,8 @@ class Llist:
                     raise NotImplementedError
             total_shape = start_indices[-1] + ret[-1].total_shape
             dim = len(total_shape)
-            ret_st = SparseTensor(start_indices, ret, dim, total_shape)
-            st_idx = len(json_list)
-            json_obj: dict[str, Any] = {
-                'method': 'SparseTensor',
-                'start_indices': [idx.tolist() for idx in start_indices],
-                'blocks': 'json_list_' + str(json_obj_representing_ret_list_idx),
-                'dims': dim,
-                'total_size': total_shape.tolist(),
-                'output': st_idx,
-                'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
-            }
-            json_list.append(json_obj)
+            ret_st = SparseTensor(start_indices, ret, dim, total_shape, og_json_list=json_list, blocks_index=json_obj_representing_ret_list_idx)
+            st_idx = ret_st.json_index
             if owns_capture:
                 write_jit_capture_file(
                     'jit_llist_get_metadata',
@@ -385,31 +277,14 @@ class Llist:
                         }
                         json_list.append(json_obj)
                         if not self.network[k].last_layer:
-                            unsqueeze_idcs: list[int] = []
                             for i in range(len(self.initial_shape)):
-                                block = block.unsqueeze(0)
-                                unsqueeze_idcs.append(len(json_list))
-                                json_obj: dict[str, Any] = {
-                                    'method': 'block_unsqueeze',
-                                    'input': 'json_list_' + str(unsqueeze_idcs[-1] - 1),
-                                    'index': 0,
-                                    'output': unsqueeze_idcs[-1]
-                                }
-                                json_list.append(json_obj)
+                                block = block.unsqueeze(0, json_list, block.json_index)
                             repeat_dims = [batch_size]
                             for i in range(len(block.total_shape)-1):
                                 repeat_dims.append(1)
                             repeat_dims = torch.tensor(repeat_dims)
-                            block = block.repeat(repeat_dims)
-                            json_obj: dict[str, Any] = {
-                                'method': 'repeat',
-                                'input': 'json_list_' + str(unsqueeze_idcs[-1]),
-                                'repeat_dims': repeat_dims.tolist(),
-                                'output': len(json_list),
-                                'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
-                            }
-                            dense_idx = len(json_list)
-                            json_list.append(json_obj)
+                            block = block.repeat(repeat_dims, json_list, block.json_index)
+                            dense_idx = block.json_index
                         ret.append(block)
                         json_obj: dict[str, Any] = {
                             'method': 'append_list',
@@ -470,31 +345,14 @@ class Llist:
                             }
                             json_list.append(json_obj)
                             kernel_idx = dense_idx
-                        unsqueeze_idcs: list[int] = []
                         for i in range(len(self.initial_shape)):
-                            unsqueeze_idcs.append(len(json_list))
-                            block = block.unsqueeze(0)
-                            json_obj: dict[str, Any] = {
-                                'method': 'block_unsqueeze',
-                                'input': 'json_list_' + str(unsqueeze_idcs[-1] - 1),
-                                'index': 0,
-                                'output': unsqueeze_idcs[-1]
-                            }
-                            json_list.append(json_obj)
+                            block = block.unsqueeze(0, json_list, block.json_index)
                         repeat_dims = [batch_size]
                         for i in range(len(block.total_shape)-1):
                             repeat_dims.append(1)
                         repeat_dims = torch.tensor(repeat_dims)
-                        block = block.repeat(repeat_dims)
-                        repeat_idx: int = len(json_list)
-                        json_obj: dict[str, Any] = {
-                            'method': 'repeat',
-                            'input': 'json_list_' + str(unsqueeze_idcs[-1]),
-                            'repeat_dims': repeat_dims.tolist(),
-                            'output': repeat_idx,
-                            'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
-                        }
-                        json_list.append(json_obj)
+                        block = block.repeat(repeat_dims, json_list, block.json_index)
+                        repeat_idx: int = block.json_index
                         ret.append(block)
                         json_obj: dict[str, Any] = {
                             'method': 'append_list',
@@ -598,18 +456,8 @@ class Llist:
                     raise NotImplementedError
             total_shape = start_indices[-1] + ret[-1].total_shape
             dim = len(total_shape)
-            ret_st = SparseTensor(start_indices, ret, dim, total_shape)
-            st_idx = len(json_list)
-            json_obj: dict[str, Any] = {
-                'method': 'SparseTensor',
-                'start_indices': [idx.tolist() for idx in start_indices],
-                'blocks': 'json_list_' + str(json_obj_representing_ret_list_idx),
-                'dims': dim,
-                'total_size': total_shape.tolist(),
-                'output': st_idx,
-                'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
-            }
-            json_list.append(json_obj)
+            ret_st = SparseTensor(start_indices, ret, dim, total_shape, og_json_list=json_list, blocks_index=json_obj_representing_ret_list_idx)
+            st_idx = ret_st.json_index
             # print(f'ret_st: {ret_st}')
             if owns_capture:
                 write_jit_capture_file(
@@ -723,16 +571,10 @@ class Llist:
             json_list.append(json_obj)
             res_blocks_idx = new_res_blocks_idx
         res_blocks = [i.copy() for i in mats[0].blocks]
-        st_idx = len(json_list)
-        json_obj: dict[str, Any] = {
-            'method': 'SparseTensor',
-            'start_indices': [idx.tolist() for idx in start_indices],
-            'blocks': 'json_list_' + str(res_blocks_idx),
-            'dims': len(self.initial_shape) + 1,
-            'total_size': new_total_size.tolist(),
-            'output': st_idx,
-        }
-        json_list.append(json_obj)
+        # Both were built in the return statement below, after the capture was written; they
+        # are built here instead so their own records land in that capture.
+        res_st = SparseTensor(start_indices, res_blocks, len(self.initial_shape)+1, new_total_size, og_json_list=json_list, blocks_index=res_blocks_idx)
+        st_idx = res_st.json_index
         const_idx = len(json_list)
         json_obj: dict[str, Any] = {
             'method': 'scalar_const',
@@ -740,14 +582,8 @@ class Llist:
             'output': const_idx
         }
         json_list.append(json_obj)
-        pes_idx = len(json_list)
-        json_obj: dict[str, Any] = {
-            'method': 'PolyExpSparse',
-            'mat': 'json_list_' + str(st_idx),
-            'const': 'json_list_' + str(const_idx),
-            'output': pes_idx,
-        }
-        json_list.append(json_obj)
+        res_pes = PolyExpSparse(self.network, res_st, polyexp_const, json_list, mat_index=st_idx, const_index=const_idx)
+        pes_idx = res_pes.json_index
         if owns_capture:
             write_jit_capture_file(
                 'jit_Llist_dot',
@@ -759,20 +595,50 @@ class Llist:
                 while_iteration,
                 json_list
             )
-        return PolyExpSparse(self.network, SparseTensor(start_indices, res_blocks, len(self.initial_shape)+1, new_total_size), polyexp_const)
-    
-    def convert_to_poly(self, abs_elem):
+        return res_pes
+
+    def convert_to_poly(self, abs_elem, layer_index=None, counter=None, inside_while=False,
+                        while_number=None, while_iteration=None):
+        json_list: list[dict[str, Any]] = []
+        json_list.append({'method': 'initialise', 'name': 'mats', 'value': '[]', 'output': 0})
+        mats_idx = 0
+
         mats = []
         start_indices = []
         index = 0
         if self.llist:
             for i in self.llist:
+                json_list.append({
+                    'method': 'tensor_ones',
+                    'repeat_dims': [self.network[i].size],
+                    'output': len(json_list),
+                })
+                json_list.append({
+                    'method': 'torch_reshape',
+                    'input': 'json_list_' + str(len(json_list) - 1),
+                    'shape': [*self.initial_shape, self.network[i].size],
+                    'output': len(json_list),
+                })
+                reshape_idx = len(json_list) - 1
                 mat = torch.ones(self.network[i].size).reshape(*self.initial_shape, self.network[i].size)
-                mats.append(DiagonalBlock(mat, total_shape=torch.tensor([*self.initial_shape, self.network[i].size, self.network[i].size]), diag_index=len(self.initial_shape) + 1))
+                block = DiagonalBlock(mat, total_shape=torch.tensor([*self.initial_shape, self.network[i].size, self.network[i].size]), diag_index=len(self.initial_shape) + 1, og_json_list=json_list, block_index=reshape_idx)
+                mats.append(block)
+                json_list.append({
+                    'method': 'append_list',
+                    'list': 'json_list_' + str(mats_idx),
+                    'value': 'json_list_' + str(block.json_index),
+                    'output': len(json_list),
+                })
+                mats_idx = len(json_list) - 1
                 start_indices.append(torch.tensor([0]*len(self.initial_shape) + [index, self.network[i].start]))
                 index += self.network[i].size
         else:
             raise NotImplementedError
-    
-        polyexp_const = SparseTensor([], [], len(self.initial_shape)+1, torch.tensor(self.initial_shape+[index]))
-        return PolyExpSparse(self.network, SparseTensor(start_indices, mats, len(self.initial_shape)+2, torch.tensor(self.initial_shape+[index, abs_elem.get_poly_size()])), polyexp_const)
+
+        polyexp_const = SparseTensor([], [], len(self.initial_shape)+1, torch.tensor(self.initial_shape+[index]), og_json_list=json_list)
+        mat_st = SparseTensor(start_indices, mats, len(self.initial_shape)+2, torch.tensor(self.initial_shape+[index, abs_elem.get_poly_size()]), og_json_list=json_list, blocks_index=mats_idx)
+        res = PolyExpSparse(self.network, mat_st, polyexp_const, og_json_list=json_list, mat_index=mat_st.json_index, const_index=polyexp_const.json_index)
+
+        if dummy_mode and layer_index is not None and counter is not None:
+            save_capture(f"jit_convert_to_poly/convert_to_poly_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json", json_list)
+        return res

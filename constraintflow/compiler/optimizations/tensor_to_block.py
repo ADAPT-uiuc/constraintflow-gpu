@@ -116,9 +116,9 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         IrBinaryOp, IrMult, IrInnerProduct, IrRepeat, IrClamp,
         IrDot, IrTernary, IrUnaryOp, IrGetDefaultStop,
         IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop,
-        IrAddDimension, IrRemoveDimension, IrAccess,
+        IrAddDimension, IrAddDimensionConst, IrRemoveDimension, IrAccess,
         IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff,
-        IrReduce, IrEpsilon
+        IrReduce, IrEpsilon, IrConvertNeuronToPoly
         # IrGetAbsElemSparseDKey, # IrGetPolyExpSparseConst,
         # IrGetPolyExpSparseMat
     )
@@ -153,6 +153,8 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         filename = f"jit_clamp/clamp_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrAddDimension):
         filename = f"jit_unsqueeze/unsqueeze_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
+    elif isinstance(expr, IrAddDimensionConst):
+        filename = f"jit_add_dim_const/add_dim_const_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrRemoveDimension):
         filename = f"jit_squeeze/squeeze_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json"
     elif isinstance(expr, IrTernary):
@@ -188,7 +190,9 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         filename = f'jit_poly_exp_sparse_get_mat/poly_exp_sparse_get_mat_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
     elif isinstance(expr, IrMapCoeff):
         filename = f'jit_poly_exp_sparse_get_mat/poly_exp_sparse_get_mat_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
-    
+    elif isinstance(expr, IrConvertNeuronToPoly):
+        filename = f'jit_convert_to_poly/convert_to_poly_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
+
     json_list = load_capture(filename)
     if isinstance(expr, IrTernary):
         cond = expr.children[0]
@@ -215,16 +219,28 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         lhs_input = expr.children[0]
         rhs_input = expr.children[1]
         lhs = IrPolyExpMat(lhs_input)
-        rhs = IrConvertBoolToFloat(rhs_input)
+        # The tape now carries the bool-to-float conversion, so bind the raw stop.
+        rhs = rhs_input
     elif isinstance(expr, IrGetPolyexpNotStop):
         cond = None
         lhs_input = expr.children[0]
         rhs_input = expr.children[1]
         lhs = IrPolyExpMat(lhs_input)
-        rhs = IrPolyExpNotStopFloat(rhs_input)
+        rhs = rhs_input
     elif isinstance(expr, IrAddDimension) or isinstance(expr, IrRemoveDimension) or isinstance(expr, IrReduce):
         cond = None
         lhs = expr.children[0]
+        rhs = None
+    elif isinstance(expr, IrAddDimensionConst):
+        # The constant is baked into each record's dense_const, so the tape never refers back to
+        # an operand -- there is nothing to bind here.
+        cond = None
+        lhs = None
+        rhs = None
+    elif isinstance(expr, IrConvertNeuronToPoly):
+        # Built from the llist alone; the tape refers to no operand.
+        cond = None
+        lhs = None
         rhs = None
     elif isinstance(expr, IrAccess) and (not expr.isMetadata):
         cond = None
@@ -247,6 +263,10 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
     elif isinstance(expr, IrAccess):
         irMetadata = expr.irMetadata
     elif isinstance(expr, IrEpsilon):
+        irMetadata = expr.irMetadata
+    elif isinstance(expr, IrAddDimensionConst):
+        irMetadata = expr.irMetadata
+    elif isinstance(expr, IrConvertNeuronToPoly):
         irMetadata = expr.irMetadata
     elif isinstance(rhs, IrAst):
         irMetadata = rhs.irMetadata
@@ -273,45 +293,30 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 # print(json_obj["input"])
                 raise Exception("NOT IMPLEMENTED")
         
-        elif json_obj["method"] == "SparseTensor":
-            if "json_list_" in json_obj['blocks']:
-                blocksIr = output_vars[int(json_obj['blocks'].split("_")[-1])]
-            elif json_obj['blocks'] == []:
+        elif json_obj["method"] == "SparseTensorConstructor":
+            if isinstance(json_obj["blocks"], list):
                 blocksIr = []
+            elif "json_list_" in json_obj["blocks"]:
+                blocksIr = output_vars[int(json_obj["blocks"].split("_")[-1])]
             else:
-                raise Exception("NOT IMPLEMENTED")
-            total_size = json_obj["total_size"]
-            if isinstance(total_size, list) and len(total_size) > 0 and total_size[0] == 1:
-                total_sizeIr = "torch.tensor([batch_size" + "".join([", " + str(total_size[i]) for i in range(1, len(total_size))]) + "], dtype=torch.int64)"
-            else:
-                total_sizeIr = torch.tensor(total_size, dtype=torch.int64)
+                raise Exception("NOT IMPLEMENTED SparseTensorConstructor blocks ref")
 
-            args = [
+            total_sizeIr = torch.tensor(json_obj["total_size"], dtype=torch.int64)
+
+            end_indices = [torch.tensor(end_index, dtype=torch.int64) for end_index in json_obj["end_indices"]]
+
+            output = IrSparseTensor(
                 [torch.tensor(json_obj["start_indices"][i], dtype=torch.int64) for i in range(len(json_obj["start_indices"]))],
                 blocksIr,
                 json_obj["dims"],
                 total_sizeIr,
-            ]
+                end_indices=end_indices,
+                type=getattr(builtins, json_obj["type"]),
+                dense_const=json_obj["dense_const"],
+                delete_indices=json_obj["delete_indices"],
+            )
 
-            kwargs = {}
 
-            if "end_indices" in json_obj and json_obj["end_indices"] is not None:
-                end_indices = []
-                for end_index in json_obj["end_indices"]:
-                    if isinstance(end_index, list) and len(end_index) > 0 and end_index[0] == 1:
-                        end_indices.append("torch.tensor([batch_size" + "".join([", " + str(end_index[i]) for i in range(1, len(end_index))]) + "], dtype=torch.int64)")
-                    else:
-                        end_indices.append(torch.tensor(end_index, dtype=torch.int64))
-                kwargs["end_indices"] = end_indices
-
-            if "type" in json_obj and json_obj["type"] is not None:
-                kwargs["type"] = getattr(builtins, json_obj["type"])
-
-            if "dense_const" in json_obj and json_obj["dense_const"] is not None:
-                kwargs["dense_const"] = json_obj["dense_const"]
-
-            output = IrSparseTensor(*args, **kwargs)
-        
         elif json_obj["method"] == "initialise":
             output = json_obj["value"]
             if output == "[]":
@@ -486,39 +491,70 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             rhsIr = output_vars[int(json_obj["rhs"].split("_")[-1])]
             output = IrTorchWhere(condIr, lhsIr, rhsIr)
 
-        elif json_obj["method"] == "DenseBlock":
-            ref = json_obj["input"] if "input" in json_obj else json_obj["block"]
-            if isinstance(ref, int) and ref < len(output_vars):
-                inputIr = output_vars[ref]
-            elif isinstance(ref, int):
-                inputIr = IrGetKthLayerNetworkParam(ref, "weight")
-            elif "json_list_" in str(ref):
-                inputIr = output_vars[int(str(ref).split("_")[-1])]
-            else:
-                raise Exception("NOT IMPLEMENTED DenseBlock ref")
-            output = IrDenseBlock(inputIr)
+        elif json_obj["method"] == "DenseBlockConstructor":
+            if "json_list_" not in str(json_obj["block"]):
+                raise Exception("NOT IMPLEMENTED DenseBlockConstructor block ref")
+            blockIr = output_vars[int(str(json_obj["block"]).split("_")[-1])]
+            output = IrDenseBlock(
+                blockIr,
+                total_shape="torch.tensor(" + str(json_obj["total_shape"]) + ", dtype=torch.int64)",
+                batch_size=json_obj["batch_size"],
+                sparse_block_type=json_obj["SparseBlockType"],
+            )
 
-        elif json_obj["method"] == "DiagonalBlock":
-            if "json_list_" not in json_obj["block"]:
-                raise Exception("NOT IMPLEMENTED DiagonalBlock block ref")
-            blockIr = output_vars[int(json_obj["block"].split("_")[-1])]
-            if isinstance(json_obj["total_shape"], list) and len(json_obj["total_shape"]) > 0 and json_obj["total_shape"][0] == 1:
-                shape = "torch.tensor([batch_size" + "".join([", " + str(json_obj["total_shape"][i]) for i in range(1, len(json_obj["total_shape"]))]) + "], dtype=torch.int64)"
-            else:
-                shape = torch.tensor(json_obj["total_shape"], dtype=torch.int64)
-            output = IrDiagonalBlock(blockIr, shape, json_obj["diag_index"])
+        elif json_obj["method"] == "DiagonalBlockConstructor":
+            if "json_list_" not in str(json_obj["block"]):
+                raise Exception("NOT IMPLEMENTED DiagonalBlockConstructor block ref")
+            blockIr = output_vars[int(str(json_obj["block"]).split("_")[-1])]
+            output = IrDiagonalBlock(
+                blockIr,
+                "torch.tensor(" + str(json_obj["total_shape"]) + ", dtype=torch.int64)",
+                json_obj["diag_index"],
+                batch_size=json_obj["batch_size"],
+                sparse_block_type=json_obj["SparseBlockType"],
+            )
 
-        elif json_obj["method"] == "PatchesBlock":
-            if "json_list_" not in json_obj["block"]:
-                raise Exception("NOT IMPLEMENTED PatchesBlock block ref")
-            blockIr = output_vars[int(json_obj["block"].split("_")[-1])]
-            if isinstance(json_obj["total_shape"], list) and len(json_obj["total_shape"]) > 0 and json_obj["total_shape"][0] == 1:
-                shape = "torch.tensor([batch_size" + "".join([", " + str(json_obj["total_shape"][i]) for i in range(1, len(json_obj["total_shape"]))]) + "], dtype=torch.int64)"
-            else:
-                shape = torch.tensor(json_obj["total_shape"], dtype=torch.int64)
+        elif json_obj["method"] == "RepeatBlockConstructor":
+            if "json_list_" not in str(json_obj["block"]):
+                raise Exception("NOT IMPLEMENTED RepeatBlockConstructor block ref")
+            blockIr = output_vars[int(str(json_obj["block"]).split("_")[-1])]
+            output = IrRepeatBlock(
+                blockIr,
+                "torch.tensor(" + str(json_obj["total_shape"]) + ", dtype=torch.int64)",
+                repeat_dims="torch.tensor(" + str(json_obj["repeat_dims"]) + ")",
+                only_one_repeat=json_obj["only_one_repeat"],
+                sparse_block_type=json_obj["SparseBlockType"],
+            )
+
+        elif json_obj["method"] == "KernelBlockConstructor":
+            if "json_list_" not in str(json_obj["block"]):
+                raise Exception("NOT IMPLEMENTED KernelBlockConstructor block ref")
+            blockIr = output_vars[int(str(json_obj["block"]).split("_")[-1])]
+            output = IrKernelBlock(
+                blockIr,
+                "torch.tensor(" + str(json_obj["total_shape"]) + ", dtype=torch.int64)",
+                json_obj["ix"],
+                json_obj["iy"],
+                json_obj["ox"],
+                json_obj["oy"],
+                json_obj["sx"],
+                json_obj["sy"],
+                json_obj["px"],
+                json_obj["py"],
+                kx=json_obj["kx"],
+                ky=json_obj["ky"],
+                num_channels=json_obj["num_channels"],
+                num_kernels=json_obj["num_kernels"],
+                sparse_block_type=json_obj["SparseBlockType"],
+            )
+
+        elif json_obj["method"] == "PatchesBlockConstructor":
+            if "json_list_" not in str(json_obj["block"]):
+                raise Exception("NOT IMPLEMENTED PatchesBlockConstructor block ref")
+            blockIr = output_vars[int(str(json_obj["block"]).split("_")[-1])]
             output = IrPatchesBlock(
                 blockIr,
-                shape,
+                "torch.tensor(" + str(json_obj["total_shape"]) + ", dtype=torch.int64)",
                 json_obj["ix"],
                 json_obj["iy"],
                 json_obj["ox"],
@@ -531,41 +567,20 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 json_obj["ky"],
                 json_obj["num_channels"],
                 json_obj["num_kernels"],
+                sparse_block_type=json_obj["SparseBlockType"],
             )
 
-        elif json_obj["method"] == "KernelBlock":
-            if isinstance(json_obj["block"], int):
-                blockIr = output_vars[json_obj["block"]]
-            elif "json_list_" in str(json_obj["block"]):
-                blockIr = output_vars[int(str(json_obj["block"]).split("_")[-1])]
+        elif json_obj["method"] == "ConstBlockConstructor":
+            # A bare literal payload is kept as a plain Python value.
+            if isinstance(json_obj["block"], str) and "json_list_" in json_obj["block"]:
+                blockIr = output_vars[int(json_obj["block"].split("_")[-1])]
             else:
-                raise Exception("NOT IMPLEMENTED KernelBlock block ref")
-            if isinstance(json_obj["total_shape"], list) and len(json_obj["total_shape"]) > 0 and json_obj["total_shape"][0] == 1:
-                shape = "[batch_size" + "".join([", " + str(json_obj["total_shape"][i]) for i in range(1, len(json_obj["total_shape"]))]) + "]"
-            else:
-                shape = json_obj["total_shape"]
-            output = IrKernelBlock(
+                blockIr = json_obj["block"]
+            output = IrConstBlock(
                 blockIr,
-                shape,
-                json_obj["ix"],
-                json_obj["iy"],
-                json_obj["ox"],
-                json_obj["oy"],
-                json_obj["sx"],
-                json_obj["sy"],
-                json_obj["px"],
-                json_obj["py"],
+                "torch.tensor(" + str(json_obj["total_shape"]) + ", dtype=torch.int64)",
+                sparse_block_type=json_obj["SparseBlockType"],
             )
-
-        elif json_obj["method"] == "RepeatBlock":
-            if "json_list_" not in json_obj["block"]:
-                raise Exception("NOT IMPLEMENTED RepeatBlock block ref")
-            blockIr = output_vars[int(json_obj["block"].split("_")[-1])]
-            if isinstance(json_obj["total_shape"], list) and len(json_obj["total_shape"]) > 0 and json_obj["total_shape"][0] == 1:
-                shape = "torch.tensor([batch_size" + "".join([", " + str(json_obj["total_shape"][i]) for i in range(1, len(json_obj["total_shape"]))]) + "], dtype=torch.int64)"
-            else:
-                shape = torch.tensor(json_obj["total_shape"], dtype=torch.int64)
-            output = IrRepeatBlock(blockIr, shape)
 
         elif json_obj["method"] == "matmul_unequal_dims":
             if "json_list_" in json_obj["lhs"]:
@@ -609,30 +624,6 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             
             output = IrBlockInnerProduct(lhsIr, rhsIr, type='equal_dims')
         
-        elif json_obj["method"] == "ConstBlock":
-            if isinstance(json_obj["total_shape"], list) and len(json_obj["total_shape"]) > 0 and json_obj["total_shape"][0] == 1:
-                shape = "torch.tensor([batch_size" + "".join([", " + str(json_obj["total_shape"][i]) for i in range(1, len(json_obj["total_shape"]))]) + "], dtype=torch.int64)"
-            else:
-                shape = torch.tensor(json_obj["total_shape"], dtype=torch.int64)
-            if isinstance(json_obj["block"], str) and "json_list_" in json_obj["block"]:
-                blockIr = output_vars[int(json_obj["block"].split("_")[-1])]
-                output = IrConstBlock(blockIr, shape)
-            else:
-                blockIr = json_obj["block"]
-                output = IrConstBlock(blockIr, shape)
-        
-        elif json_obj["method"] == "repeat":
-            if "json_list_" in json_obj["input"]:
-                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
-            elif json_obj["input"] == "lhs":
-                inputIr = lhs
-            elif json_obj["input"] == "rhs":
-                inputIr = rhs
-            else:
-                raise Exception("NOT IMPLEMENTED")
-            repeat_dims = torch.tensor(json_obj["repeat_dims"], dtype=torch.int64)
-            output = IrBlockRepeat(inputIr, repeat_dims)
-
         elif json_obj["method"] == "block_clamp":
             if "json_list_" in json_obj["input"]:
                 inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
@@ -654,17 +645,6 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             else:
                 raise Exception("NOT IMPLEMENTED")
             output = IrBlockSqueeze(inputIr, json_obj["index"])
-
-        elif json_obj["method"] == "block_unsqueeze":
-            if "json_list_" in json_obj["input"]:
-                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
-            elif json_obj["input"] == "lhs":
-                inputIr = lhs
-            elif json_obj["input"] == "rhs":
-                inputIr = rhs
-            else:
-                raise Exception("NOT IMPLEMENTED")
-            output = IrBlockUnsqueeze(inputIr, json_obj["index"])
 
         elif json_obj["method"] == "tensor_ones":
             if isinstance(json_obj["repeat_dims"], list) and len(json_obj["repeat_dims"]) > 0 and json_obj["repeat_dims"][0] == 1:
@@ -1228,7 +1208,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             new_assignments.append(new_assignment)
             output_vars.append(new_var)
             continue
-        elif json_obj["method"] == "PolyExpSparse":
+        elif json_obj["method"] == "PolyExpSparseConstructor":
             if "json_list_" in json_obj["mat"]:
                 mat_ir = output_vars[int(json_obj["mat"].split("_")[-1])]
             else:

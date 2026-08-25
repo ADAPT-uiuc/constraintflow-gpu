@@ -436,7 +436,7 @@ class IrVar(IrExpression):
         return self.hash_str
     
 class IrSparseTensor(IrExpression):
-    def __init__(self, start_indices, blocksIr, dims, total_size, end_indices=None, type=None, dense_const=None):
+    def __init__(self, start_indices, blocksIr, dims, total_size, end_indices=None, type=None, dense_const=None, delete_indices=None):
         super().__init__()
         self.start_indices = start_indices
         self.dims = dims
@@ -447,6 +447,9 @@ class IrSparseTensor(IrExpression):
             self.type = type
         if dense_const is not None:
             self.dense_const = dense_const
+        # Recorded by SparseTensorConstructor only; the hand-written records predate it.
+        if delete_indices is not None:
+            self.delete_indices = delete_indices
         self.update_parent_child([blocksIr])
 
 
@@ -476,20 +479,20 @@ class IrSparseTensor(IrExpression):
 
 
 class IrConstBlock(IrExpression):
-    def __init__(self, inputIr, total_shape):
+    def __init__(self, inputIr, total_shape, sparse_block_type=None):
         super().__init__()
         self.total_shape = total_shape
+        if sparse_block_type is not None:
+            self.sparse_block_type = sparse_block_type
         self.update_parent_child([inputIr])
 
-class IrDenseBlock(IrExpression):
-    def __init__(self, blockIr):
-        super().__init__()
-        self.update_parent_child([blockIr])
-
 class IrPatchesBlock(IrExpression):
-    def __init__(self, blockIr, total_shape, ix, iy, ox, oy, sx, sy, px, py, kx, ky, num_channels, num_kernels):
+    def __init__(self, blockIr, total_shape, ix, iy, ox, oy, sx, sy, px, py, kx, ky, num_channels, num_kernels,
+                 sparse_block_type=None):
         super().__init__()
         self.total_shape = total_shape
+        if sparse_block_type is not None:
+            self.sparse_block_type = sparse_block_type
         self.ix = ix
         self.iy = iy
         self.ox = ox
@@ -504,24 +507,16 @@ class IrPatchesBlock(IrExpression):
         self.num_kernels = num_kernels
         self.update_parent_child([blockIr])
 
-class IrKernelBlock(IrExpression):
-    def __init__(self, blockIr, total_shape, ix, iy, ox, oy, sx, sy, px, py):
-        super().__init__()
-        self.total_shape = total_shape
-        self.ix = ix
-        self.iy = iy
-        self.ox = ox
-        self.oy = oy
-        self.sx = sx
-        self.sy = sy
-        self.px = px
-        self.py = py
-        self.update_parent_child([blockIr])
-
 class IrRepeatBlock(IrExpression):
-    def __init__(self, blockIr, total_shape):
+    def __init__(self, blockIr, total_shape, repeat_dims=None, only_one_repeat=None, sparse_block_type=None):
         super().__init__()
         self.total_shape = total_shape
+        if repeat_dims is not None:
+            self.repeat_dims = repeat_dims
+        if only_one_repeat is not None:
+            self.only_one_repeat = only_one_repeat
+        if sparse_block_type is not None:
+            self.sparse_block_type = sparse_block_type
         self.update_parent_child([blockIr])
 
 
@@ -674,10 +669,14 @@ class IrAssignToView(IrStatement):
 
 # create_similar_diagonal trace: wrap tensor payload as DiagonalBlock.
 class IrDiagonalBlock(IrExpression):
-    def __init__(self, blockIr, total_shape, diag_index):
+    def __init__(self, blockIr, total_shape, diag_index, batch_size=None, sparse_block_type=None):
         super().__init__()
         self.total_shape = total_shape
         self.diag_index = diag_index
+        if batch_size is not None:
+            self.batch_size = batch_size
+        if sparse_block_type is not None:
+            self.sparse_block_type = sparse_block_type
         self.update_parent_child([blockIr])
 
 
@@ -749,13 +748,21 @@ class IrGetKthLayerNetworkParam(IrExpression):
         self.update_parent_child([])
 
 class IrDenseBlock(IrExpression):
-    def __init__(self, inputIr):
+    def __init__(self, inputIr, total_shape=None, batch_size=None, sparse_block_type=None):
         super().__init__()
+        if total_shape is not None:
+            self.total_shape = total_shape
+        if batch_size is not None:
+            self.batch_size = batch_size
+        if sparse_block_type is not None:
+            self.sparse_block_type = sparse_block_type
         self.update_parent_child([inputIr])
 
 class IrKernelBlock(IrExpression):
     def __init__(self, inputIr, total_shape: list[int],
-                 ix, iy, ox, oy, sx, sy, px, py):
+                 ix, iy, ox, oy, sx, sy, px, py,
+                 kx=None, ky=None, num_channels=None, num_kernels=None,
+                 sparse_block_type=None):
         """inputIr: the parameter `block` of the `KernelBlock` constructor"""
         super().__init__()
         self.total_shape = total_shape
@@ -767,6 +774,16 @@ class IrKernelBlock(IrExpression):
         self.sy = sy
         self.px = px
         self.py = py
+        if kx is not None:
+            self.kx = kx
+        if ky is not None:
+            self.ky = ky
+        if num_channels is not None:
+            self.num_channels = num_channels
+        if num_kernels is not None:
+            self.num_kernels = num_kernels
+        if sparse_block_type is not None:
+            self.sparse_block_type = sparse_block_type
         self.update_parent_child([inputIr])
 
 class IrEpsilon(IrExpression):
@@ -1339,27 +1356,6 @@ class IrTensorClamp(IrExpression):
                     return False
         return False
     
-class IrBlockRepeat(IrExpression):
-    def __init__(self, inputIr, repeat_dims):
-        super().__init__()
-        self.repeat_dims = repeat_dims
-        self.update_parent_child([inputIr])
-
-    def __hash__(self):
-        return 0   
-    
-    def __eq__(self, obj):
-        if type(self)==type(obj) and self.repeat_dims == obj.repeat_dims:
-            if len(self.children) == len(obj.children):
-                for i in range(len(self.children)):
-                    if self.children[i] != obj.children[i]:
-                        return False 
-                if checkEqualMetadata(self.irMetadata, obj.irMetadata):
-                    return True 
-                else:
-                    return False
-        return False
-
 class IrBlockClamp(IrExpression):
     def __init__(self, inputIr, const, min_true):
         super().__init__()
@@ -1383,27 +1379,6 @@ class IrBlockClamp(IrExpression):
         return False
 
 class IrBlockSqueeze(IrExpression):
-    def __init__(self, inputIr, index):
-        super().__init__()
-        self.index = index
-        self.update_parent_child([inputIr])
-
-    def __hash__(self):
-        return 0
-
-    def __eq__(self, obj):
-        if type(self)==type(obj) and self.index == obj.index:
-            if len(self.children) == len(obj.children):
-                for i in range(len(self.children)):
-                    if self.children[i] != obj.children[i]:
-                        return False
-                if checkEqualMetadata(self.irMetadata, obj.irMetadata):
-                    return True
-                else:
-                    return False
-        return False
-
-class IrBlockUnsqueeze(IrExpression):
     def __init__(self, inputIr, index):
         super().__init__()
         self.index = index

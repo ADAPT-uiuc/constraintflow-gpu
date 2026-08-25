@@ -26,10 +26,12 @@ class Abs_elem_sparse:
         self.network = network
         self.batch_size = batch_size
         self.no_sparsity = no_sparsity
-    
+        # Plain list: torch.compile cannot trace nonzero on a data-dependent shape.
+        self.live_layers = torch.nonzero(self.d['llist']).flatten().tolist()
+
     def filter_non_live(self, llist):
         start_time = time.time()
-        live_layers = torch.nonzero(self.d['llist']).flatten().tolist()
+        live_layers = self.live_layers
         # res = copy.deepcopy(llist)
         if llist.llist_flag:
             res_llist = list(set(llist.llist).intersection(set(live_layers)))
@@ -48,7 +50,7 @@ class Abs_elem_sparse:
         return res
     
     def get_poly_size(self):
-        l = list(torch.nonzero(self.d['llist']))[-1].item()
+        l = self.live_layers[-1]
         return self.network[l].end
         
 
@@ -62,7 +64,7 @@ class Abs_elem_sparse:
         """
         start_time = time.time()
         llist = self.filter_non_live(llist)
-        llist_compressed = torch.nonzero(self.d['llist']).flatten().tolist()
+        llist_compressed = self.live_layers
         owns_capture = json_list is None and dummy_mode
         if json_list is None:
             json_list = []
@@ -78,7 +80,6 @@ class Abs_elem_sparse:
                     blocks = self.d[key].blocks
                     if 0 in llist.llist:
                         total_size = torch.tensor([self.batch_size, self.network[max(llist.llist)].end])
-                        val_const = SparseTensor(start_indices, blocks, self.d[key].dims, total_size, end_indices, self.d[key].type, self.d[key].dense_const)
                         d_key_idx = len(json_list)
                         json_obj: dict[str, Any] = {
                             'method': 'get_abs_elem_sparse_d_key',
@@ -94,20 +95,8 @@ class Abs_elem_sparse:
                             'output': blocks_idx
                         }
                         json_list.append(json_obj)
-                        val_const_idx = len(json_list)
-                        json_obj: dict[str, Any] = {
-                            'method': 'SparseTensor',
-                            'start_indices': [start_idx.tolist() for start_idx in start_indices],
-                            'blocks': 'json_list_' + str(blocks_idx),
-                            'dims': self.d[key].dims,
-                            'total_size': total_size.tolist(),
-                            'end_indices': [end_idx.tolist() for end_idx in end_indices],
-                            'type': self.d[key].type.__name__,
-                            'dense_const': self.d[key].dense_const,
-                            'output': val_const_idx,
-                            'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
-                        }
-                        json_list.append(json_obj)
+                        val_const = SparseTensor(start_indices, blocks, self.d[key].dims, total_size, end_indices, self.d[key].type, self.d[key].dense_const, og_json_list=json_list, blocks_index=blocks_idx)
+                        val_const_idx = val_const.json_index
                     assert val_const_idx != -1
                 else:
                     for l in llist.llist:
@@ -143,21 +132,8 @@ class Abs_elem_sparse:
                             'output': res_blocks_idx
                         }
                         json_list.append(json_obj)
-                    val_const = SparseTensor(start_indices, blocks, res.dims, res.total_size, end_indices, res.type, res.dense_const)
-                    val_const_idx = len(json_list)
-                    json_obj: dict[str, Any] = {
-                        'method': 'SparseTensor',
-                        'start_indices': [start_idx.tolist() for start_idx in start_indices],
-                        'blocks': 'json_list_' + str(len(json_list) - 1),
-                        'dims': res.dims,
-                        'total_size': res.total_size.tolist(),
-                        'end_indices': [end_idx.tolist() for end_idx in end_indices],
-                        'type': res.type.__name__,
-                        'dense_const': res.dense_const,
-                        'output': val_const_idx,
-                        'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
-                    }
-                    json_list.append(json_obj)
+                    val_const = SparseTensor(start_indices, blocks, res.dims, res.total_size, end_indices, res.type, res.dense_const, og_json_list=json_list, blocks_index=len(json_list) - 1)
+                    val_const_idx = val_const.json_index
 
                     start_index = torch.tensor([0, self.network[min(llist.llist)].start])
                     end_index = torch.tensor([self.batch_size, self.network[max(llist.llist)].end])
@@ -212,7 +188,6 @@ class Abs_elem_sparse:
                     blocks = self.d[key].const.blocks
                     if 0 in llist.llist:
                         total_size = torch.tensor([self.batch_size, self.network[max(llist.llist)].end])
-                        val_const = SparseTensor(start_indices, blocks, self.d[key].const.dims, total_size, end_indices, self.d[key].const.type, self.d[key].const.dense_const)
                         d_key_idx = len(json_list)
                         json_obj: dict[str, Any] = {
                             'method': 'get_abs_elem_sparse_d_key',
@@ -235,20 +210,8 @@ class Abs_elem_sparse:
                             'output': blocks_idx
                         }
                         json_list.append(json_obj)
-                        val_const_idx = len(json_list)
-                        json_obj: dict[str, Any] = {
-                            'method': 'SparseTensor',
-                            'start_indices': [start_idx.tolist() for start_idx in start_indices],
-                            'blocks': 'json_list_' + str(blocks_idx),
-                            'dims': self.d[key].const.dims,
-                            'total_size': total_size.tolist(),
-                            'end_indices': [end_idx.tolist() for end_idx in end_indices],
-                            'type': self.d[key].const.type.__name__,
-                            'dense_const': self.d[key].const.dense_const,
-                            'output': val_const_idx,
-                            'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
-                        }
-                        json_list.append(json_obj)
+                        val_const = SparseTensor(start_indices, blocks, self.d[key].const.dims, total_size, end_indices, self.d[key].const.type, self.d[key].const.dense_const, og_json_list=json_list, blocks_index=blocks_idx)
+                        val_const_idx = val_const.json_index
                     assert val_const_idx != -1
                 else:
                     blocks_idx = len(json_list)
@@ -309,21 +272,8 @@ class Abs_elem_sparse:
                             blocks_idx = new_blocks_idx
                             json_list.append(json_obj)
                     assert blocks_idx != blocks_idx_original
-                    val_const = SparseTensor(start_indices, blocks, res.dims, res.total_size, end_indices, res.type, res.dense_const)
-                    val_const_idx = len(json_list)
-                    json_obj: dict[str, Any] = {
-                        'method': 'SparseTensor',
-                        'start_indices': [start_idx.tolist() for start_idx in start_indices],
-                        'blocks': 'json_list_' + str(blocks_idx),
-                        'dims': res.dims,
-                        'total_size': res.total_size.tolist(),
-                        'end_indices': [end_idx.tolist() for end_idx in end_indices],
-                        'type': res.type.__name__,
-                        'dense_const': res.dense_const,
-                        'output': val_const_idx,
-                        'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
-                    }
-                    json_list.append(json_obj)
+                    val_const = SparseTensor(start_indices, blocks, res.dims, res.total_size, end_indices, res.type, res.dense_const, og_json_list=json_list, blocks_index=blocks_idx)
+                    val_const_idx = val_const.json_index
 
                     start_index = torch.tensor([0, self.network[min(llist.llist)].start])
                     end_index = torch.tensor([self.batch_size, self.network[max(llist.llist)].end])
@@ -387,21 +337,8 @@ class Abs_elem_sparse:
                     json_list.append(json_obj)
                     if 0 in llist.llist:
                         total_size = torch.tensor([self.batch_size, self.network[max(llist.llist)].end, self.d[key].mat.total_size[-1]])
-                        val_mat = SparseTensor(start_indices, blocks, self.d[key].mat.dims, total_size, end_indices, self.d[key].mat.type, self.d[key].mat.dense_const)
-                        val_mat_idx = len(json_list)
-                        json_obj: dict[str, Any] = {
-                            'method': 'SparseTensor',
-                            'start_indices': [start_idx.tolist() for start_idx in start_indices],
-                            'blocks': 'json_list_' + str(blocks_idx),
-                            'dims': self.d[key].mat.dims,
-                            'total_size': total_size.tolist(),
-                            'end_indices': [end_idx.tolist() for end_idx in end_indices],
-                            'type': self.d[key].mat.type.__name__,
-                            'dense_const': self.d[key].mat.dense_const,
-                            'output': val_mat_idx,
-                            'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
-                        }
-                        json_list.append(json_obj)
+                        val_mat = SparseTensor(start_indices, blocks, self.d[key].mat.dims, total_size, end_indices, self.d[key].mat.type, self.d[key].mat.dense_const, og_json_list=json_list, blocks_index=blocks_idx)
+                        val_mat_idx = val_mat.json_index
                 else:
                     start_indices = []
                     end_indices = []
@@ -456,21 +393,8 @@ class Abs_elem_sparse:
                             blocks_idx = new_blocks_idx
                             json_list.append(json_obj)
                     
-                    val_mat = SparseTensor(start_indices, blocks, len(start_indices[0]), torch.tensor([self.batch_size, self.network[llist.llist[0]].size, self.d[key].mat.total_size[-1]]), end_indices, self.d[key].mat.type, self.d[key].mat.dense_const)
-                    val_mat_idx = len(json_list)
-                    json_obj: dict[str, Any] = {
-                        'method': 'SparseTensor',
-                        'start_indices': [start_idx.tolist() for start_idx in start_indices],
-                        'blocks': 'json_list_' + str(blocks_idx),
-                        'dims': len(start_indices[0]),
-                        'total_size': val_mat.total_size.tolist(),
-                        'end_indices': [end_idx.tolist() for end_idx in end_indices],
-                        'type': self.d[key].mat.type.__name__,
-                        'dense_const': self.d[key].mat.dense_const,
-                        'output': val_mat_idx,
-                        'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
-                    }
-                    json_list.append(json_obj)
+                    val_mat = SparseTensor(start_indices, blocks, len(start_indices[0]), torch.tensor([self.batch_size, self.network[llist.llist[0]].size, self.d[key].mat.total_size[-1]]), end_indices, self.d[key].mat.type, self.d[key].mat.dense_const, og_json_list=json_list, blocks_index=blocks_idx)
+                    val_mat_idx = val_mat.json_index
                     
                     start_index = torch.tensor([0, self.network[min(llist.llist)].start, 0])
                     end_index = torch.tensor([self.batch_size, self.network[max(llist.llist)].end, val_mat.total_size[-1]])
@@ -500,15 +424,8 @@ class Abs_elem_sparse:
                 end_time = time.time()
                 
                 get_elem_time.update_total_time(end_time-start_time)
-                ret_pes = PolyExpSparse(self.network, val_mat, val_const)
-                pes_idx = len(json_list)
-                json_obj: dict[str, Any] = {
-                    'method': 'PolyExpSparse',
-                    'mat': 'json_list_' + str(val_mat_idx),
-                    'const': 'json_list_' + str(val_const_idx),
-                    'output': pes_idx,
-                }
-                json_list.append(json_obj)
+                ret_pes = PolyExpSparse(self.network, val_mat, val_const, json_list, mat_index=val_mat_idx, const_index=val_const_idx)
+                pes_idx = ret_pes.json_index
                 if owns_capture:
                     write_jit_capture_file(
                         'jit_Abs_elem_sparse_get_elem',
@@ -533,7 +450,6 @@ class Abs_elem_sparse:
                     blocks = self.d[key].const.blocks
                     if 0 in llist.llist:
                         total_size = torch.tensor([self.batch_size, self.network[max(llist.llist)].end])
-                        val_const = SparseTensor(start_indices, blocks, self.d[key].const.dims, total_size, end_indices, self.d[key].const.type, self.d[key].const.dense_const)
                         d_key_idx = len(json_list)
                         json_obj: dict[str, Any] = {
                             'method': 'get_abs_elem_sparse_d_key',
@@ -556,20 +472,8 @@ class Abs_elem_sparse:
                             'output': blocks_idx
                         }
                         json_list.append(json_obj)
-                        val_const_idx = len(json_list)
-                        json_obj: dict[str, Any] = {
-                            'method': 'SparseTensor',
-                            'start_indices': [start_idx.tolist() for start_idx in start_indices],
-                            'blocks': 'json_list_' + str(blocks_idx),
-                            'dims': self.d[key].const.dims,
-                            'total_size': total_size.tolist(),
-                            'end_indices': [end_idx.tolist() for end_idx in end_indices],
-                            'type': self.d[key].const.type.__name__,
-                            'dense_const': self.d[key].const.dense_const,
-                            'output': val_const_idx,
-                            'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
-                        }
-                        json_list.append(json_obj)
+                        val_const = SparseTensor(start_indices, blocks, self.d[key].const.dims, total_size, end_indices, self.d[key].const.type, self.d[key].const.dense_const, og_json_list=json_list, blocks_index=blocks_idx)
+                        val_const_idx = val_const.json_index
                     assert val_const_idx != -1
                 else:
                     blocks_idx = len(json_list)
@@ -629,21 +533,8 @@ class Abs_elem_sparse:
                             }
                             blocks_idx = new_blocks_idx
                             json_list.append(json_obj)
-                    val_const = SparseTensor(start_indices, blocks, res.dims, res.total_size, end_indices, res.type, res.dense_const)
-                    val_const_idx = len(json_list)
-                    json_obj: dict[str, Any] = {
-                        'method': 'SparseTensor',
-                        'start_indices': [start_idx.tolist() for start_idx in start_indices],
-                        'blocks': 'json_list_' + str(blocks_idx),
-                        'dims': res.dims,
-                        'total_size': res.total_size.tolist(),
-                        'end_indices': [end_idx.tolist() for end_idx in end_indices],
-                        'type': res.type.__name__,
-                        'dense_const': res.dense_const,
-                        'output': val_const_idx,
-                        'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
-                    }
-                    json_list.append(json_obj)
+                    val_const = SparseTensor(start_indices, blocks, res.dims, res.total_size, end_indices, res.type, res.dense_const, og_json_list=json_list, blocks_index=blocks_idx)
+                    val_const_idx = val_const.json_index
 
                     start_index = torch.tensor([0, self.network[min(llist.llist)].start])
                     end_index = torch.tensor([self.batch_size, self.network[max(llist.llist)].end])
@@ -704,21 +595,8 @@ class Abs_elem_sparse:
                     json_list.append(json_obj)
                     if 0 in llist.llist:
                         total_size = torch.tensor([self.batch_size, self.network[max(llist.llist)].end, self.d[key].mat.total_size[-1]])
-                        val_mat = SparseTensor(start_indices, blocks, self.d[key].mat.dims, total_size, end_indices, self.d[key].mat.type, self.d[key].mat.dense_const)
-                        val_mat_idx = len(json_list)
-                        json_obj: dict[str, Any] = {
-                            'method': 'SparseTensor',
-                            'start_indices': [start_idx.tolist() for start_idx in start_indices],
-                            'blocks': 'json_list_' + str(blocks_idx),
-                            'dims': self.d[key].mat.dims,
-                            'total_size': total_size.tolist(),
-                            'end_indices': [end_idx.tolist() for end_idx in end_indices],
-                            'type': self.d[key].mat.type.__name__,
-                            'dense_const': self.d[key].mat.dense_const,
-                            'output': val_mat_idx,
-                            'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
-                        }
-                        json_list.append(json_obj)
+                        val_mat = SparseTensor(start_indices, blocks, self.d[key].mat.dims, total_size, end_indices, self.d[key].mat.type, self.d[key].mat.dense_const, og_json_list=json_list, blocks_index=blocks_idx)
+                        val_mat_idx = val_mat.json_index
                 else:
                     start_indices = []
                     end_indices = []
@@ -773,23 +651,8 @@ class Abs_elem_sparse:
                             blocks_idx = new_blocks_idx
                             json_list.append(json_obj)
 
-                    val_mat = SparseTensor(start_indices, blocks, 3, torch.tensor([self.batch_size, self.network[llist.llist[0]].size, self.d[key].mat.total_size[-1]]), end_indices, self.d[key].mat.type, self.d[key].mat.dense_const)
-                    val_mat_idx = len(json_list)
-                    json_obj: dict[str, Any] = {
-                        'method': 'SparseTensor',
-                        'start_indices': [start_idx.tolist() for start_idx in start_indices],
-                        'blocks': 'json_list_' + str(blocks_idx),
-                        'dims': 3,
-                        'total_size': [self.batch_size,
-                                       self.network[llist.llist[0]].size,
-                                       self.d[key].mat.total_size[-1].item()],
-                        'end_indices': [end_idx.tolist() for end_idx in end_indices],
-                        'type': self.d[key].mat.type.__name__,
-                        'dense_const': self.d[key].mat.dense_const,
-                        'output': val_mat_idx,
-                        'debug_pos': f'{inspect.getframeinfo(inspect.currentframe()).filename}:{inspect.currentframe().f_lineno}'
-                    }
-                    json_list.append(json_obj)
+                    val_mat = SparseTensor(start_indices, blocks, 3, torch.tensor([self.batch_size, self.network[llist.llist[0]].size, self.d[key].mat.total_size[-1]]), end_indices, self.d[key].mat.type, self.d[key].mat.dense_const, og_json_list=json_list, blocks_index=blocks_idx)
+                    val_mat_idx = val_mat.json_index
 
                     start_index = torch.tensor([0, self.network[min(llist.llist)].start, 0])
                     end_index = torch.tensor([self.batch_size, self.network[max(llist.llist)].end, val_mat.total_size[-1]])
@@ -959,6 +822,7 @@ class Abs_elem_sparse:
                 else:
                     raise Exception(f'Unrecognized type {self.types[key]}')
             self.d['llist'][llist.llist] = True
+            self.live_layers = torch.nonzero(self.d['llist']).flatten().tolist()
         else:
             raise Exception('NOT NEEDED')
     
@@ -1039,5 +903,6 @@ class Abs_elem_sparse:
                 else:
                     raise Exception(f'Unrecognized type {self.types[key]}')
             self.d['llist'][llist.llist] = True
+            self.live_layers = torch.nonzero(self.d['llist']).flatten().tolist()
         else:
             raise Exception('NOT NEEDED')

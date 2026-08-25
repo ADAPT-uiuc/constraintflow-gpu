@@ -22,18 +22,9 @@ def get_new_eps(network, initial_shape, json_list=None, layer_index=None,
         json_list = []
 
     num = initial_shape[-1].item()
-    const = SparseTensor([], [], len(initial_shape), initial_shape)
-    if trace:
-        const_idx = len(json_list)
-        json_obj: dict[str, Any] = {
-            'method': 'SparseTensor',
-            'start_indices': [],
-            'blocks': [],
-            'dims': len(initial_shape),
-            'total_size': initial_shape.tolist(),
-            'output': const_idx,
-        }
-        json_list.append(json_obj)
+    # json_list is a throwaway list when not tracing, so the record simply goes nowhere.
+    const = SparseTensor([], [], len(initial_shape), initial_shape, og_json_list=json_list)
+    const_idx = const.json_index
     start_index = torch.concat([torch.zeros(len(initial_shape), dtype=int), torch.tensor([SymExpSparse.count])])
 
     mat_tensor = torch.ones(num, dtype=int)
@@ -70,17 +61,14 @@ def get_new_eps(network, initial_shape, json_list=None, layer_index=None,
         mat_tensor_idx = repeat_idx
 
     mat_total_shape = torch.tensor(list(initial_shape) + [num])
-    mat = DiagonalBlock(mat_tensor, mat_total_shape, diag_index=len(initial_shape))
+    # mat_tensor_idx only exists under trace, so the threaded call is guarded the same way
+    # the hand-written record was.
     if trace:
-        diag_idx = len(json_list)
-        json_obj: dict[str, Any] = {
-            'method': 'DiagonalBlock',
-            'block': 'json_list_' + str(mat_tensor_idx),
-            'total_shape': mat_total_shape.tolist(),
-            'diag_index': len(initial_shape),
-            'output': diag_idx,
-        }
-        json_list.append(json_obj)
+        mat = DiagonalBlock(mat_tensor, mat_total_shape, len(initial_shape), json_list, mat_tensor_idx)
+        diag_idx = mat.json_index
+    else:
+        mat = DiagonalBlock(mat_tensor, mat_total_shape, diag_index=len(initial_shape))
+    if trace:
         block_list_idx = len(json_list)
         json_obj: dict[str, Any] = {
             'method': 'initialise',
@@ -99,37 +87,28 @@ def get_new_eps(network, initial_shape, json_list=None, layer_index=None,
         block_list_idx = len(json_list) - 1
 
     mat_total_size = torch.tensor(list(initial_shape) + [num+SymExpSparse.count])
-    mat = SparseTensor([start_index], [mat], len(initial_shape)+1, mat_total_size)
+    # block_list_idx only exists under trace, so the threaded call is guarded the same way
+    # the hand-written record was.
     if trace:
-        mat_idx = len(json_list)
-        json_obj: dict[str, Any] = {
-            'method': 'SparseTensor',
-            'start_indices': [start_index.tolist()],
-            'blocks': 'json_list_' + str(block_list_idx),
-            'dims': len(initial_shape)+1,
-            'total_size': mat_total_size.tolist(),
-            'end_indices': [mat.end_indices[0].tolist()],
-            'type': mat.type.__name__,
-            'dense_const': mat.dense_const,
-            'output': mat_idx,
-        }
-        json_list.append(json_obj)
+        mat = SparseTensor([start_index], [mat], len(initial_shape)+1, mat_total_size, og_json_list=json_list, blocks_index=block_list_idx)
+        mat_idx = mat.json_index
+    else:
+        mat = SparseTensor([start_index], [mat], len(initial_shape)+1, mat_total_size)
 
     if network.no_sparsity:
         if trace:
             dense_mat, dense_mat_idx = mat.blocks[0].get_dense(json_list=json_list, template_index=diag_idx, simulacrum=True)
         else:
             dense_mat = mat.blocks[0].get_dense()
-        mat.blocks[0] = DenseBlock(dense_mat)
+        # dense_mat_idx only exists under trace, so the threaded call is guarded the same way
+        # the hand-written record was.
+        if trace:
+            mat.blocks[0] = DenseBlock(dense_mat, json_list, dense_mat_idx)
+            dense_block_idx = mat.blocks[0].json_index
+        else:
+            mat.blocks[0] = DenseBlock(dense_mat)
         mat.end_indices[0] = start_index + torch.tensor(dense_mat.shape)
         if trace:
-            dense_block_idx = len(json_list)
-            json_obj: dict[str, Any] = {
-                'method': 'DenseBlock',
-                'block': 'json_list_' + str(dense_mat_idx),
-                'output': dense_block_idx,
-            }
-            json_list.append(json_obj)
             block_list_idx = len(json_list)
             json_obj: dict[str, Any] = {
                 'method': 'initialise',
@@ -146,19 +125,8 @@ def get_new_eps(network, initial_shape, json_list=None, layer_index=None,
             }
             json_list.append(json_obj)
             block_list_idx = len(json_list) - 1
-            mat_idx = len(json_list)
-            json_obj: dict[str, Any] = {
-                'method': 'SparseTensor',
-                'start_indices': [start_index.tolist()],
-                'blocks': 'json_list_' + str(block_list_idx),
-                'dims': len(initial_shape)+1,
-                'total_size': mat_total_size.tolist(),
-                'end_indices': [mat.end_indices[0].tolist()],
-                'type': mat.type.__name__,
-                'dense_const': mat.dense_const,
-                'output': mat_idx,
-            }
-            json_list.append(json_obj)
+            traced_mat = SparseTensor([start_index], mat.blocks, len(initial_shape)+1, mat_total_size, type=mat.type, dense_const=mat.dense_const, og_json_list=json_list, blocks_index=block_list_idx)
+            mat_idx = traced_mat.json_index
 
     if trace:
         new_eps_idx = len(json_list)
@@ -216,17 +184,8 @@ class SymExpSparse:
             assert lhs_index != -1
 
         if self.mat == None:
-            if trace:
-                st_idx = len(json_list)
-                json_obj: dict[str, Any] = {
-                    'method': 'SparseTensor',
-                    'start_indices': [],
-                    'blocks': [],
-                    'dims': 0,
-                    'total_size': [],
-                    'output': st_idx,
-                }
-                json_list.append(json_obj)
+            empty_mat = SparseTensor([], [], 0, torch.tensor([]), og_json_list=json_list)
+            st_idx = empty_mat.json_index
             if owns_capture:
                 write_jit_capture_file(
                     'jit_poly_exp_sparse_get_mat',
@@ -238,7 +197,7 @@ class SymExpSparse:
                     while_iteration,
                     json_list
                 )
-            return SparseTensor([], [], 0, torch.tensor([]))
+            return empty_mat
 
         self.expand_mat()
         if trace:
