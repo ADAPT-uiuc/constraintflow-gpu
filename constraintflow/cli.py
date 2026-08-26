@@ -347,7 +347,7 @@ def run(
         typer.echo("Error: --aot-save builds the kernels and --aot loads them; pass one or the other.")
         raise typer.Exit(code=1)
     if (aot_save or aot) and not inductor:
-        typer.echo("Error: --aot-save/--aot only apply to the inductor build; pass --inductor.")
+        typer.echo("Error: --aot-save/--aot is not possible without inductor")
         raise typer.Exit(code=1)
     if aot_save and warmup:
         typer.echo("Error: --aot-save measures build time and returns before the timed run; --warmup does not apply.")
