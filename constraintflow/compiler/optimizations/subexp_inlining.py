@@ -280,10 +280,23 @@ def is_safe_to_inline(
     return True
 
 
+_FIELD_READ_TYPES = (
+    IrGetPolyExpSparseMat, IrGetPolyExpSparseConst,
+    IrGetSymExpSparseMat, IrGetSymExpSparseConst,
+    IrPolyExpMat, IrExtractPolyConst, IrExtractSymConst,
+)
+
+
 def is_trivial(expr) -> bool:
     """A leaf that is free to recompute. Only these may be folded into more than one
-    use site; copying anything heavier would duplicate real work."""
-    return isinstance(expr, (IrVar, IrConst))
+    use site; copying anything heavier would duplicate real work. In reuse mode the
+    .mat/.const reads are __slots__ loads on the emitted data-only classes, so they
+    are as cheap as a bare variable."""
+    if isinstance(expr, (IrVar, IrConst)):
+        return True
+    return (isinstance(expr, _FIELD_READ_TYPES)
+            and len(expr.children) == 1
+            and is_trivial(expr.children[0]))
 
 
 def copy_leaf(expr):
@@ -293,6 +306,10 @@ def copy_leaf(expr):
         return IrVar(expr.name, expr.irMetadata)
     if isinstance(expr, IrConst):
         return IrConst(expr.const, expr.irMetadata[-1].type)
+    if isinstance(expr, _FIELD_READ_TYPES):
+        clone = copy.copy(expr)
+        clone.update_parent_child([copy_leaf(c) for c in expr.children])
+        return clone
     return expr
 
 
@@ -300,44 +317,45 @@ def try_inline_definition(
         instructions: list[IrStatement], def_indices: dict[str, list[int]],
         reads_of: dict[str, frozenset], storage_defs: list,
         storage_def_keys: list, var: IrVar, def_stmt_index: int,
-        use_indices: list[int], to_delete_indices: list[int]) -> None:
+        use_indices: list[int]) -> bool:
     """
     Fold `var`'s definition (at `def_stmt_index`, used at `use_indices`) into its
-    use sites:
+    use sites, reporting whether anything was rewritten:
 
-      - 0 uses  -> dead definition; delete it.
+      - 0 uses  -> nothing to fold; `drop_dead_assignments` collects it.
       - 1 use   -> inline if the move is value-preserving.
       - >1 uses -> only if the resolved value is a trivial leaf (free to
-                   duplicate); inline into every safe use, and delete the
-                   definition only if all uses were inlined.
+                   duplicate). When it is not but this definition is itself a
+                   bare copy, propagate the copied variable instead:
+                   `resolve_value` looks through it to the root value, and that
+                   variable is a trivial leaf even when the root is not.
     """
     if not use_indices:
-        to_delete_indices.append(def_stmt_index)
-        return
+        return False
     inline_expr, value_def_index = resolve_value(
         instructions, def_indices, var, use_indices[0])
     if len(use_indices) > 1 and not is_trivial(inline_expr):
-        return
-    inlined_all = True
+        rhs = instructions[def_stmt_index].children[1]
+        if not isinstance(rhs, IrVar):
+            return False
+        inline_expr, value_def_index = rhs, def_stmt_index
+    substituted = False
     for use_index in use_indices:
         if is_safe_to_inline(def_indices, reads_of, storage_defs, storage_def_keys,
                              var, inline_expr, value_def_index, use_index):
             replace_var_with_expr(
                 instructions, use_index, copy_leaf(inline_expr), var)
-        else:
-            inlined_all = False
-    if inlined_all:
-        to_delete_indices.append(def_stmt_index)
+            substituted = True
+    return substituted
 
 
-def indices_to_delete_and_replace_single_use(
-        instructions: list[IrStatement]):
+def substitute_definitions(instructions: list[IrStatement]) -> bool:
     def_indices: dict[str, list[int]] = compute_def_indices(instructions)
     reads_of, storage_defs, storage_def_keys = compute_storage_reads_and_defs(
         instructions)
     current_vars_def_index: dict[str, int] = {}
     uses_instr_count: dict[str, list[int]] = {}
-    to_delete_indices: list[int] = []
+    substituted = False
     name_to_var: dict[str, IrVar] = {}
     for i in range(len(instructions)):
         if isinstance(instructions[i], IrDel):
@@ -376,34 +394,64 @@ def indices_to_delete_and_replace_single_use(
             name_to_var[defined_var.name] = defined_var
             assert isinstance(defined_var, IrVar)
             if defined_var.name in current_vars_def_index.keys():
-                try_inline_definition(
+                substituted |= try_inline_definition(
                     instructions, def_indices, reads_of, storage_defs,
                     storage_def_keys, defined_var,
                     current_vars_def_index[defined_var.name],
-                    uses_instr_count[defined_var.name], to_delete_indices)
+                    uses_instr_count[defined_var.name])
             current_vars_def_index[defined_var.name] = i
             uses_instr_count[defined_var.name] = []
 
     for var in current_vars_def_index.keys():
-        try_inline_definition(
+        substituted |= try_inline_definition(
             instructions, def_indices, reads_of, storage_defs, storage_def_keys,
             name_to_var[var], current_vars_def_index[var],
-            uses_instr_count.get(var, []), to_delete_indices)
+            uses_instr_count.get(var, []))
 
-    return to_delete_indices
-                
+    return substituted
+
+
+def drop_dead_assignments(instructions: list[IrStatement]) -> bool:
+    """Delete every assignment whose target is never read, against a use map built
+    fresh from `instructions`. A name assigned more than once is kept if any of its
+    definitions is read, since one live use keeps the whole name live."""
+    used: set[str] = set()
+    for instr in instructions:
+        if isinstance(instr, IrDel):
+            continue
+        if isinstance(instr, IrAssignment):
+            operands = [instr.children[1]]
+        else:
+            operands = instr.children
+        for operand in operands:
+            for v in get_vars_expr_occurrences(operand):
+                used.add(v.name)
+    kept: list[IrStatement] = []
+    for instr in instructions:
+        if (isinstance(instr, IrAssignment)
+                and isinstance(instr.children[0], IrVar)
+                and instr.children[0].name not in used):
+            continue
+        kept.append(instr)
+    dropped = len(kept) != len(instructions)
+    instructions[:] = kept
+    return dropped
 
 
 def inline_fixpoint(instructions: list[IrStatement]) -> None:
-    """Iterate the delete/replace pass to a fixpoint. Both the rewritten uses and the
-    deleted definitions are applied in place, so a caller holding the list sees them."""
+    """Iterate to a fixpoint, in place so a caller holding the list sees the result.
+
+    Substitution and deletion are separate phases on purpose: substituting creates
+    references the walk's use map does not know about, so deciding deletions from
+    that same stale map drops definitions the round has just made live again.
+    `drop_dead_assignments` rebuilds the map from the mutated list, so it is correct
+    however the preceding phase rewrote things.
+    """
     while True:
-        to_delete_indices = indices_to_delete_and_replace_single_use(
-            instructions)
-        if len(to_delete_indices) == 0:
+        substituted = substitute_definitions(instructions)
+        dropped = drop_dead_assignments(instructions)
+        if not substituted and not dropped:
             break
-        for i in sorted(set(to_delete_indices), reverse=True):
-            del instructions[i]
 
 
 def inline_subexp_block(block: IrBlock) -> None:
@@ -445,13 +493,6 @@ def inline_subexp(ir: IrProgram) -> None:
 
 
 # Liveness-based name recycling (linear-scan register allocation).
-#
-# tensor_to_block gives every temporary a unique name and Python frees locals only at
-# function return, so temporaries inlining could not fold pile up (peak = sum of all
-# of them). Reusing a name frees the previous tensor on rebind (refcount drop, no
-# del/gc), dropping peak to the max simultaneously-live set.
-
-
 def _temp_liveness(instructions, prefix):
     """
     Per `prefix` temporary: its def index, last-use index, and every IrVar node naming
