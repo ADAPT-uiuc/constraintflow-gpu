@@ -64,6 +64,15 @@ def _stitched_mat_metadata(prev1):
     return m
 
 
+def _stitched_sym_mat_metadata(prev1):
+    # Mirrors IrExtractSymCoeff's metadata transform (ir.py:1056-1065) applied
+    # to a SymExp-typed 2-D value: appends the trailing sym_size dimension.
+    m = _stitched_2d_metadata(prev1, 'Float')
+    m[-1].shape.append(IrAst.sym_size)
+    m[-1].broadcast.append(1)
+    return m
+
+
 def _build_concat_cfg(converter, ir_shape):
     prev1 = _relu_shaped_operand('prev1')
     prev2 = _relu_shaped_operand('prev2')
@@ -77,11 +86,14 @@ def _build_concat_cfg(converter, ir_shape):
             const_ir = IrConcatStitch(prev1, prev2, key, 'const', _stitched_2d_metadata(prev1, 'Float'))
             mat_ir = IrConcatStitchMat(prev1, prev2, key, _stitched_mat_metadata(prev1))
             exprIrs.append(IrCombineToPoly(mat_ir, const_ir))
+        elif key_type == 'SymExp':
+            const_ir = IrConcatStitch(prev1, prev2, key, 'const', _stitched_2d_metadata(prev1, 'Float'))
+            mat_ir = IrConcatStitchMat(prev1, prev2, key, _stitched_sym_mat_metadata(prev1))
+            exprIrs.append(IrCombineToSym(mat_ir, const_ir))
         else:
             raise NotImplementedError(
                 f"Concat: shape key {key!r} has type {key_type!r}; only "
-                "Float/Int/Bool/PolyExp are supported (SymExp Concat is a "
-                "known gap -- see the Add/Concat/Sigmoid JIT plan's M4 notes)")
+                "Float/Int/Bool/PolyExp/SymExp are supported")
 
     tail_seqIr, retlist = converter.build_trans_ret(exprIrs)
     tail_seqIr.append(IrTransRetBasic(retlist))
