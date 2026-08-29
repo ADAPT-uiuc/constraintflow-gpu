@@ -1,11 +1,19 @@
 import json
 import operator
 import os
+import re
 
-from . import irVisitor 
+from . import irVisitor
 import copy
-from .ir import * 
+from .ir import *
 from constraintflow.lib.globals import dummy_mode, reuse_mode, load_capture, capture_exists, inductor_mode
+
+# Matches a torch.tensor(...) call whose contents are a pure numeric literal
+# (no identifiers), e.g. torch.tensor([1, 6272], dtype=torch.int64) or
+# torch.tensor([1.0, 1.0]). Anything referencing a runtime variable -- a layer
+# size, a poly_size -- fails this match and is left inline, since only a pure
+# literal is safe to dedupe into a module-level constant shared across sites.
+_LITERAL_TENSOR_RE = re.compile(r'^torch\.tensor\(\[[0-9,\.\-\s\[\]]*\](?:, dtype=torch\.\w+)?\)$')
 
 # One prefix per payload kind: tier class is prefix+'Sparse', leaf is prefix+kind.
 SPARSE_TIER = {'FloatTensorSparse': 'FloatTensor', 'BoolTensorSparse': 'BoolTensor',
@@ -70,6 +78,37 @@ class CodeGen(irVisitor.IRVisitor):
 
         # Reuse mode inlines its own class; normal mode imports the real one.
         self.polyexp_cls = 'JitPolyExpSparse' if reuse_mode.get_flag() else 'PolyExpSparse'
+
+        # literal torch.tensor(...) text -> hoisted module-level name (_K<n>).
+        # Populated by _const, flushed to jit_constants.py by finish().
+        self.const_pool = {}
+
+    def _const(self, text):
+        """Intern a literal torch.tensor(...) expression into the shared constant
+        pool (reuse mode only) and return the reference to use in its place.
+        Non-literal text -- and anything outside reuse mode -- passes through
+        unchanged, so this is safe to call on every torch.tensor(...) site."""
+        if not reuse_mode.get_flag() or not _LITERAL_TENSOR_RE.match(text):
+            return text
+        name = self.const_pool.get(text)
+        if name is None:
+            # No leading underscore: `from jit_constants import *` (in
+            # transformers.py's header) silently drops underscore-prefixed
+            # names under Python's wildcard-import rules.
+            name = 'JITCONST' + str(len(self.const_pool))
+            self.const_pool[text] = name
+        return name
+
+    def finish(self):
+        """Flush the hoisted constant pool to <folder>/jit_constants.py. Called
+        once after visit(ir) completes, since the pool is only complete then."""
+        if not reuse_mode.get_flag():
+            return
+        path = self.folder + '/jit_constants.py'
+        with open(path, 'w') as f:
+            f.write('import torch\n\n')
+            for text, name in self.const_pool.items():
+                f.write(name + ' = ' + text + '\n')
 
 
     def _ttb_comment(self, node):
@@ -152,6 +191,7 @@ class CodeGen(irVisitor.IRVisitor):
         if reuse_mode.get_flag():
             self.write('import operator')
             self.write('import torch.nn.functional as F')
+            self.write('from jit_constants import *')
             # self.write('from constraintflow.gbcsr.tensor_ops import *')
         else:
             self.write('from constraintflow.gbcsr.sparse_tensor import SparseTensor')
@@ -496,12 +536,12 @@ class CodeGen(irVisitor.IRVisitor):
 
     def visitIrSparseTensor(self, node):
         start_indices = '[' + ', '.join(
-            x if isinstance(x, str) else 'torch.tensor(' + str(x.tolist()) + ', dtype=torch.int64)'
+            x if isinstance(x, str) else self._const('torch.tensor(' + str(x.tolist()) + ', dtype=torch.int64)')
             for x in node.start_indices) + ']'
         end_indices = '[' + ', '.join(
-            x if isinstance(x, str) else 'torch.tensor(' + str(x.tolist()) + ', dtype=torch.int64)'
+            x if isinstance(x, str) else self._const('torch.tensor(' + str(x.tolist()) + ', dtype=torch.int64)')
             for x in node.end_indices) + ']'
-        total_size = node.total_size if isinstance(node.total_size, str) else 'torch.tensor(' + str(node.total_size.tolist()) + ', dtype=torch.int64)'
+        total_size = node.total_size if isinstance(node.total_size, str) else self._const('torch.tensor(' + str(node.total_size.tolist()) + ', dtype=torch.int64)')
         # An empty block list is a plain [], not an IR node.
         blocks = '[]' if isinstance(node.children[0], list) else self.visit(node.children[0])
         # repr of these three does not parse back.
@@ -516,12 +556,12 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrConstBlock(self, node):
         self.used_block_classes.add(('ConstBlock', node.sparse_block_type))
         return (SPARSE_TIER[node.sparse_block_type] + 'ConstBlock('
-                + self.visit(node.children[0]) + ', ' + node.total_shape + ')')
+                + self.visit(node.children[0]) + ', ' + self._const(node.total_shape) + ')')
 
     def visitIrPatchesBlock(self, node):
         self.used_block_classes.add(('PatchesBlock', node.sparse_block_type))
         return (SPARSE_TIER[node.sparse_block_type] + 'PatchesBlock('
-                + self.visit(node.children[0]) + ', ' + node.total_shape + ', '
+                + self.visit(node.children[0]) + ', ' + self._const(node.total_shape) + ', '
                 + str(node.ix) + ', ' + str(node.iy) + ', '
                 + str(node.ox) + ', ' + str(node.oy) + ', '
                 + str(node.sx) + ', ' + str(node.sy) + ', '
@@ -532,13 +572,13 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrRepeatBlock(self, node):
         self.used_block_classes.add(('RepeatBlock', node.sparse_block_type))
         return (SPARSE_TIER[node.sparse_block_type] + 'RepeatBlock('
-                + self.visit(node.children[0]) + ', ' + node.total_shape + ', '
-                + node.repeat_dims + ', ' + str(node.only_one_repeat) + ')')
+                + self.visit(node.children[0]) + ', ' + self._const(node.total_shape) + ', '
+                + self._const(node.repeat_dims) + ', ' + str(node.only_one_repeat) + ')')
 
     def visitIrDiagonalBlock(self, node):
         self.used_block_classes.add(('DiagonalBlock', node.sparse_block_type))
         return (SPARSE_TIER[node.sparse_block_type] + 'DiagonalBlock('
-                + self.visit(node.children[0]) + ', ' + node.total_shape + ', '
+                + self.visit(node.children[0]) + ', ' + self._const(node.total_shape) + ', '
                 + str(node.diag_index) + ', ' + str(node.batch_size) + ')')
 
     def visitIrTorchDiagonal(self, node):
@@ -712,13 +752,13 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrDenseBlock(self, node):
         self.used_block_classes.add(('DenseBlock', node.sparse_block_type))
         return (SPARSE_TIER[node.sparse_block_type] + 'DenseBlock('
-                + self.visit(node.children[0]) + ', ' + node.total_shape + ', '
+                + self.visit(node.children[0]) + ', ' + self._const(node.total_shape) + ', '
                 + str(node.batch_size) + ')')
 
     def visitIrKernelBlock(self, node):
         self.used_block_classes.add(('KernelBlock', node.sparse_block_type))
         return (SPARSE_TIER[node.sparse_block_type] + 'KernelBlock('
-                + self.visit(node.children[0]) + ', ' + node.total_shape + ', '
+                + self.visit(node.children[0]) + ', ' + self._const(node.total_shape) + ', '
                 + str(node.ix) + ', ' + str(node.iy) + ', '
                 + str(node.ox) + ', ' + str(node.oy) + ', '
                 + str(node.sx) + ', ' + str(node.sy) + ', '
@@ -775,7 +815,7 @@ class CodeGen(irVisitor.IRVisitor):
         return self.visit(node.children[0]) + '.get_sub_block_custom_range(' + self.visit(node.start_index) + ', ' + self.visit(node.end_index) + ', ' + self.visit(node.block_id) + ', ' + str(node.tensor) + ')'
 
     def visitTorchTensor(self, node):
-        return 'torch.tensor(' + str(node.tolist()) + ')'
+        return self._const('torch.tensor(' + str(node.tolist()) + ')')
 
     def visitIrVar(self, node):
         if node.name == 'sym_size':
@@ -789,9 +829,10 @@ class CodeGen(irVisitor.IRVisitor):
             for j in range(len(node.irMetadata[i].shape)):
                 shape += self.visit(node.irMetadata[i].shape[j]) + ","
         shape += ']'
+        shape = self._const('torch.tensor(' + shape + ')')
         if node.inside_while:
-            return 'get_new_eps(abs_elem.network, torch.tensor(' + shape + '), layer_index = layer_index, counter = ' + str(node.ttb_counter) + ', inside_while = True, while_number = ' + str(node.while_number) + ', while_iteration=while_iteration)' + self._ttb_comment(node)
-        return 'get_new_eps(abs_elem.network, torch.tensor(' + shape + '), layer_index = layer_index, counter = ' + str(node.ttb_counter) + ', inside_while = False, while_number = ' + str(node.while_number) + ')' + self._ttb_comment(node)
+            return 'get_new_eps(abs_elem.network, ' + shape + ', layer_index = layer_index, counter = ' + str(node.ttb_counter) + ', inside_while = True, while_number = ' + str(node.while_number) + ', while_iteration=while_iteration)' + self._ttb_comment(node)
+        return 'get_new_eps(abs_elem.network, ' + shape + ', layer_index = layer_index, counter = ' + str(node.ttb_counter) + ', inside_while = False, while_number = ' + str(node.while_number) + ')' + self._ttb_comment(node)
 
     def visitIrNewEps(self, node):
         [matIr, constIr] = node.children
@@ -817,7 +858,7 @@ class CodeGen(irVisitor.IRVisitor):
             repeat_dims += self.visit(node.children[i])
             if i<len(node.children)-1:
                 repeat_dims += ', '
-        repeat_dims = 'torch.tensor([' + repeat_dims + '])'
+        repeat_dims = self._const('torch.tensor([' + repeat_dims + '])')
         if node.inside_while:
             ret = 'repeat(' + self.visit(node.children[0]) + ', ' + repeat_dims + ', ' + 'layer_index = layer_index, ' + 'counter = ' + str(node.ttb_counter) + ', inside_while = True' + ', while_number = ' + str(node.while_number) + ', while_iteration=while_iteration)' + self._ttb_comment(node)
         else:
@@ -876,11 +917,11 @@ class CodeGen(irVisitor.IRVisitor):
                 trace = ', layer_index = layer_index, counter = ' + str(node.ttb_counter) + ', inside_while = True, while_number = ' + str(node.while_number) + ', while_iteration=while_iteration'
             else:
                 trace = ', layer_index = layer_index, counter = ' + str(node.ttb_counter) + ', inside_while = False, while_number = ' + str(node.while_number)
-            return 'add_dimension_const(' + str(self.visit(inputIr)) + ', torch.tensor([' + repeat_dims + '])' + trace + ')'
+            return 'add_dimension_const(' + str(self.visit(inputIr)) + ', ' + self._const('torch.tensor([' + repeat_dims + '])') + trace + ')'
         ret = str(self.visit(inputIr))
         for i in range(size):
             ret += '.unsqueeze(' + str(i) + ')'
-        ret += '.repeat(torch.tensor([' + repeat_dims + ']))'
+        ret += '.repeat(' + self._const('torch.tensor([' + repeat_dims + '])') + ')'
         return ret
     
     def visitIrBinaryOp(self, node):
@@ -1243,7 +1284,10 @@ class CodeGen(irVisitor.IRVisitor):
         if not reuse_mode.get_flag():
             return self.visit(inputIr) + '.expand_symexp_mat(SymExpSparse.count)'
         var_name = self.visit(inputIr)
-        self.write(var_name + '.total_size[-1] = SymExpSparse.count')
+        # Rebind rather than mutate in place: total_size may alias a hoisted
+        # constant shared by other blocks/tensors, so writing through it would
+        # corrupt every other user of that constant.
+        self.write(var_name + '.total_size = torch.cat([' + var_name + '.total_size[:-1], torch.tensor([SymExpSparse.count], dtype=torch.int64)])')
         return var_name
 
     def visitIrAccess(self, node):
@@ -1306,7 +1350,8 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrSetBlockTotalShapeLastDim(self, node):
         block_var = self.visit(node.children[0])
         value = self.visit(node.children[1])
-        self.write(block_var + ".total_shape[-1] = " + value)
+        # Rebind rather than mutate in place -- see visitIrExpandSymExp.
+        self.write(block_var + ".total_shape = torch.cat([" + block_var + ".total_shape[:-1], torch.tensor([" + value + "], dtype=torch.int64)])")
 
     def visitIrAssignToBlock(self, node):
         block_var = self.visit(node.children[0])

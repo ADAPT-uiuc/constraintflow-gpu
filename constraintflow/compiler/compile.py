@@ -88,5 +88,7 @@ def compile(inputfile, output_path):
         # constant_folding.constant_fold(ir)
         # copyPropagation.copy_proagate(ir)
 
-    codeGen.CodeGen(output_path).visit(ir)
+    cg = codeGen.CodeGen(output_path)
+    cg.visit(ir)
+    cg.finish()
     return True
