@@ -137,6 +137,7 @@ class CodeGen(irVisitor.IRVisitor):
         self.write('import json')
         self.write('import os')
         self.write('import torch')
+        # self.write("torch.set_float32_matmul_precision('high')")
         self.write('import operator')
         self.write('from constraintflow.lib.globals import device_mode')
         if not reuse_mode.get_flag():
