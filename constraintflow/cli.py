@@ -63,6 +63,26 @@ def get_network(network: str, network_format: str, dataset: str) -> str:
     return network
 
 
+def _perturbed_network_copy(onnx_path: str, std: float, out_dir: str, tag: str, rng) -> str:
+    """Write a copy of `onnx_path` with iid Gaussian noise (given std) added to every
+    initializer tensor, and return its path. Shapes/dtypes are unchanged, so it loads
+    through the same compiled kernel as the original -- see the recompile smoke test in
+    scratchpad/recompile_check.py, which found no recompilation from a value-only change."""
+    import onnx
+    from onnx import numpy_helper
+    model = onnx.load(onnx_path)
+    for init in model.graph.initializer:
+        arr = numpy_helper.to_array(init).copy()
+        arr = arr + std * rng.standard_normal(arr.shape).astype(arr.dtype)
+        init.CopyFrom(numpy_helper.from_array(arr, name=init.name))
+    out_path = os.path.join(out_dir, f"{_stem(onnx_path)}_{tag}.onnx")
+    onnx.save(model, out_path)
+    return out_path
+
+
+def _stem(path: str) -> str:
+    return os.path.splitext(os.path.basename(path))[0]
+
 
 def get_dataset(batch_size: int, dataset: str, train: bool = False):
     if dataset == "mnist":
@@ -208,6 +228,11 @@ def simulacrum_compile(
     except OSError as e:
         typer.echo(f"Error creating folder '{output_path}': {e}")
         raise typer.Exit(code=1)
+    
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    from bench import configs as bench_configs
+    onnx_path = network if os.path.isfile(network) else os.path.join(bench_configs.REPO_ROOT, network)
+    network = onnx_path
 
     globals.set_jit_root(jit_dir)
     globals.in_memory_captures.set_flag() if in_memory else globals.in_memory_captures.reset_flag()
@@ -311,12 +336,35 @@ def run(
     jit_dir: str = typer.Option("jit_captures", help="Common parent folder for all jit_* capture files"),
     no_barriers: bool = typer.Option(False, "--no-barriers", help="Inline every single-use temporary unconditionally (skip is_safe_to_inline's safety analysis). Lower peak memory, not guaranteed value-preserving."),
     warmup: int = typer.Option(0, help="Number of warmup runs on different data before the timed run"),
+    repeat: int = typer.Option(1, "--repeat", help="Number of timed runs, each reported separately. Independent of --warmup: the warmup runs (if any) still happen once, before the first timed run."),
     aot_save: bool = typer.Option(False, "--aot-save", help="Compile each inductor kernel ahead of time and store it under <output-path>/aot, instead of timing a run."),
     aot: bool = typer.Option(False, "--aot", help="Load the kernels stored by --aot-save instead of compiling them. Errors out if they are missing or stale."),
+    use_cache: bool = typer.Option(False, "--use-cache", help="Point --output-path at the shared kernel_cache entry (see bench/configs.py:kernel_dir), keyed by network/dataset/certifier/batch-size/inductor. Hard errors if that cache entry is missing. Combine with --aot to also load its prebuilt AOT kernels."),
+    perturb_eps: float = typer.Option(0.0, "--perturb-eps", help="Std of iid Gaussian noise added to the network's weights independently before each warmup and each timed run, to test whether weight values (not just shapes) affect measured runtime. 0 (default) disables perturbation and every run uses the unmodified network."),
+    perturb_seed: int = typer.Option(0, "--perturb-seed", help="Seed for --perturb-eps's noise, for reproducible sweeps."),
 ):
     """
     Run a compiled ConstraintFlow program.
     """
+    if use_cache:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        from bench import configs as bench_configs
+
+        if network.endswith(".onnx"):
+            onnx_path = network if os.path.isfile(network) else os.path.join(bench_configs.REPO_ROOT, network)
+        else:
+            onnx_path = bench_configs.network_path(dataset, network)
+        network = onnx_path
+        output_path = bench_configs.require_kernel(
+            bench_configs.kernel_dir("jit", program_file, onnx_path, batch_size, inductor),
+            f"python3 bench/build_kernels.py --tool jit --network {onnx_path} --batch-size {batch_size} --device {device}",
+        )
+
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    from bench import configs as bench_configs
+    onnx_path = network if os.path.isfile(network) else os.path.join(bench_configs.REPO_ROOT, network)
+    network = onnx_path
+
     try:
         os.makedirs(output_path, exist_ok=True)
     except OSError as e:
@@ -352,6 +400,12 @@ def run(
     if aot_save and warmup:
         typer.echo("Error: --aot-save measures build time and returns before the timed run; --warmup does not apply.")
         raise typer.Exit(code=1)
+    if aot_save and repeat != 1:
+        typer.echo("Error: --aot-save measures build time and returns before the timed run; --repeat does not apply.")
+        raise typer.Exit(code=1)
+    if repeat < 1:
+        typer.echo("Error: --repeat must be >= 1.")
+        raise typer.Exit(code=1)
     if aot_save:
         torch._dynamo.config.enable_aot_compile = True
 
@@ -359,146 +413,163 @@ def run(
     from main import run  # compiled code provides this
 
     aot_dir = os.path.join(os.path.abspath(output_path), "aot")
-    if aot_save or aot:
-        import builtins
-        import hashlib
-        import io
-        import json
-        import re
-        import torch._inductor.runtime.triton_heuristics as triton_heuristics
-        autotune_to_one_config = triton_heuristics.CachingAutotuner.autotune_to_one_config
-        transformers_module = sys.modules["transformers"]
-        source_hash = hashlib.sha256(
-            open(os.path.join(os.path.abspath(output_path), "transformers.py"), "rb").read()
-        ).hexdigest()
-        stamp = {
-            "torch": torch.__version__,
-            "transformers_sha256": source_hash,
-            "vec_isa_ok": os.environ.get("TORCHINDUCTOR_VEC_ISA_OK"),
-            "device": device,
-            "capability": list(torch.cuda.get_device_capability()) if device == "gpu" else None,
-        }
+    # if aot_save or aot:
+    #     import builtins
+    #     import hashlib
+    #     import io
+    #     import json
+    #     import re
+    #     import torch._inductor.runtime.triton_heuristics as triton_heuristics
+    #     autotune_to_one_config = triton_heuristics.CachingAutotuner.autotune_to_one_config
+    #     transformers_module = sys.modules["transformers"]
+    #     source_hash = hashlib.sha256(
+    #         open(os.path.join(os.path.abspath(output_path), "transformers.py"), "rb").read()
+    #     ).hexdigest()
+    #     stamp = {
+    #         "torch": torch.__version__,
+    #         "transformers_sha256": source_hash,
+    #         "vec_isa_ok": os.environ.get("TORCHINDUCTOR_VEC_ISA_OK"),
+    #         "device": device,
+    #         "capability": list(torch.cuda.get_device_capability()) if device == "gpu" else None,
+    #     }
 
-    if aot_save:
-        os.makedirs(aot_dir, exist_ok=True)
-        saved = []
-        tuned = {}
+    # if aot_save:
+    #     os.makedirs(aot_dir, exist_ok=True)
+    #     saved = []
+    #     tuned = {}
 
-        def record_tuning(self, *args, **kwargs):
-            autotune_to_one_config(self, *args, **kwargs)
-            kernel_name = (self.inductor_meta or {}).get("kernel_name")
-            if kernel_name and self.launchers:
-                tuned[kernel_name] = str(self.launchers[0].config)
+    #     def record_tuning(self, *args, **kwargs):
+    #         autotune_to_one_config(self, *args, **kwargs)
+    #         kernel_name = (self.inductor_meta or {}).get("kernel_name")
+    #         if kernel_name and self.launchers:
+    #             tuned[kernel_name] = str(self.launchers[0].config)
 
-        triton_heuristics.CachingAutotuner.autotune_to_one_config = record_tuning
-        for cls_name, cls in list(vars(transformers_module).items()):
-            if not isinstance(cls, type):
-                continue
-            for method_name, method in list(vars(cls).items()):
-                if not hasattr(method, "aot_compile"):
-                    continue
+    #     triton_heuristics.CachingAutotuner.autotune_to_one_config = record_tuning
+    #     for cls_name, cls in list(vars(transformers_module).items()):
+    #         if not isinstance(cls, type):
+    #             continue
+    #         for method_name, method in list(vars(cls).items()):
+    #             if not hasattr(method, "aot_compile"):
+    #                 continue
 
-                def shim(_cls_name=cls_name, _method_name=method_name, _method=method, _state={}):
-                    def call(*args, **kwargs):
-                        if "fn" not in _state:
-                            name = f"{_cls_name}.{_method_name}"
-                            typer.echo(f"  compiling {name} ...")
-                            compiled = _method.aot_compile((args, kwargs))
-                            compiled.save_compiled_function(os.path.join(aot_dir, name + ".pt"))
-                            _state["fn"] = compiled
-                            saved.append(name)
-                        return _state["fn"](*args, **kwargs)
+    #             def shim(_cls_name=cls_name, _method_name=method_name, _method=method, _state={}):
+    #                 def call(*args, **kwargs):
+    #                     if "fn" not in _state:
+    #                         name = f"{_cls_name}.{_method_name}"
+    #                         typer.echo(f"  compiling {name} ...")
+    #                         compiled = _method.aot_compile((args, kwargs))
+    #                         compiled.save_compiled_function(os.path.join(aot_dir, name + ".pt"))
+    #                         _state["fn"] = compiled
+    #                         saved.append(name)
+    #                     return _state["fn"](*args, **kwargs)
 
-                    return call
+    #                 return call
 
-                setattr(cls, method_name, shim())
+    #             setattr(cls, method_name, shim())
 
-    if aot:
-        manifest_path = os.path.join(aot_dir, "manifest.json")
-        if not os.path.exists(manifest_path):
-            typer.echo(f"Error: no AOT kernels found at {aot_dir}. Build them with --aot-save.")
-            raise typer.Exit(code=1)
-        with open(manifest_path) as f:
-            manifest = json.load(f)
-        for key, value in stamp.items():
-            if manifest.get(key) != value:
-                typer.echo(
-                    f"Error: AOT kernels in {aot_dir} are stale: {key} was "
-                    f"{manifest.get(key)!r} at build time, is {value!r} now. Rebuild with --aot-save."
-                )
-                raise typer.Exit(code=1)
-        tuned = manifest.get("tuned_configs", {})
+    # if aot:
+    #     manifest_path = os.path.join(aot_dir, "manifest.json")
+    #     if not os.path.exists(manifest_path):
+    #         typer.echo(f"Error: no AOT kernels found at {aot_dir}. Build them with --aot-save.")
+    #         raise typer.Exit(code=1)
+    #     with open(manifest_path) as f:
+    #         manifest = json.load(f)
+    #     for key, value in stamp.items():
+    #         if manifest.get(key) != value:
+    #             typer.echo(
+    #                 f"Error: AOT kernels in {aot_dir} are stale: {key} was "
+    #                 f"{manifest.get(key)!r} at build time, is {value!r} now. Rebuild with --aot-save."
+    #             )
+    #             raise typer.Exit(code=1)
+    #     tuned = manifest.get("tuned_configs", {})
 
-        def replay_tuning(self, *args, **kwargs):
-            kernel_name = (self.inductor_meta or {}).get("kernel_name")
-            wanted = tuned.get(kernel_name)
-            if wanted and self.launchers:
-                for launcher in self.launchers:
-                    if str(launcher.config) == wanted:
-                        self.launchers = [launcher]
-                        return
-            autotune_to_one_config(self, *args, **kwargs)
+    #     def replay_tuning(self, *args, **kwargs):
+    #         kernel_name = (self.inductor_meta or {}).get("kernel_name")
+    #         wanted = tuned.get(kernel_name)
+    #         if wanted and self.launchers:
+    #             for launcher in self.launchers:
+    #                 if str(launcher.config) == wanted:
+    #                     self.launchers = [launcher]
+    #                     return
+    #         autotune_to_one_config(self, *args, **kwargs)
 
-        triton_heuristics.CachingAutotuner.autotune_to_one_config = replay_tuning
+    #     triton_heuristics.CachingAutotuner.autotune_to_one_config = replay_tuning
 
-        module_globals = dict(vars(transformers_module))
-        for name in manifest["methods"]:
-            with open(os.path.join(aot_dir, name + ".pt"), "rb") as f:
-                blob = f.read()
-            while True:
-                try:
-                    loaded = torch.compiler.load_compiled_function(
-                        io.BytesIO(blob), f_globals=module_globals
-                    )
-                    break
-                except RuntimeError as e:
-                    missing = re.findall(r"__builtins_dict___\d+", str(e))
-                    if not missing or "Missing required external references" not in str(e):
-                        raise
-                    for ref in missing:
-                        module_globals[ref] = vars(builtins)
-            cls_name, method_name = name.split(".")
-            setattr(
-                getattr(transformers_module, cls_name),
-                method_name,
-                (lambda _f: lambda *a, **k: _f(*a, **k))(loaded),
-            )
-        typer.echo(f"Loaded {len(manifest['methods'])} AOT kernels from {aot_dir}")
+    #     module_globals = dict(vars(transformers_module))
+    #     for name in manifest["methods"]:
+    #         with open(os.path.join(aot_dir, name + ".pt"), "rb") as f:
+    #             blob = f.read()
+    #         while True:
+    #             try:
+    #                 loaded = torch.compiler.load_compiled_function(
+    #                     io.BytesIO(blob), f_globals=module_globals
+    #                 )
+    #                 break
+    #             except RuntimeError as e:
+    #                 missing = re.findall(r"__builtins_dict___\d+", str(e))
+    #                 if not missing or "Missing required external references" not in str(e):
+    #                     raise
+    #                 for ref in missing:
+    #                     module_globals[ref] = vars(builtins)
+    #         cls_name, method_name = name.split(".")
+    #         setattr(
+    #             getattr(transformers_module, cls_name),
+    #             method_name,
+    #             (lambda _f: lambda *a, **k: _f(*a, **k))(loaded),
+    #         )
+    #     typer.echo(f"Loaded {len(manifest['methods'])} AOT kernels from {aot_dir}")
 
     network_file = get_network(network, network_format, dataset)
     X, y = get_dataset(batch_size * (warmup + 1), dataset, train=train)
 
-    if aot_save:
-        start_time = time.perf_counter()
-        lb, ub = run(
-            network_file,
-            batch_size,
-            eps,
-            X,
-            y,
-            dataset=dataset,
-            train=train,
-            print_intermediate_results=print_intermediate_results,
-            no_sparsity=no_sparsity,
-        )
-        if device_mode.get_device() == "cuda":
-            torch.cuda.synchronize()
-        stamp["methods"] = saved
-        stamp["tuned_configs"] = tuned
-        with open(os.path.join(aot_dir, "manifest.json"), "w") as f:
-            json.dump(stamp, f, indent=2)
-        typer.echo(f"Saved {len(saved)} AOT kernels and {len(tuned)} tuned configs to {aot_dir}")
-        typer.echo(f"Build time: {time.perf_counter() - start_time:.6f} seconds")
-        typer.echo(f"Lower bounds: {lb}")
-        typer.echo(f"Upper bounds: {ub}")
-        return
+    perturb_rng = None
+    perturb_dir = None
+    if perturb_eps > 0:
+        import numpy as np
+        import tempfile
+        perturb_rng = np.random.default_rng(perturb_seed)
+        perturb_dir = tempfile.mkdtemp(prefix="cf_perturb_")
+
+    def _network_for(tag: str) -> str:
+        """The network path to hand `run()` for one warmup/repeat call: a fresh perturbed
+        copy per call when --perturb-eps is set, else the unmodified network every time."""
+        if perturb_eps <= 0:
+            return network_file
+        return _perturbed_network_copy(network_file, perturb_eps, perturb_dir, tag, perturb_rng)
+
+    # if aot_save:
+    #     start_time = time.perf_counter()
+    #     lb, ub = run(
+    #         network_file,
+    #         batch_size,
+    #         eps,
+    #         X,
+    #         y,
+    #         dataset=dataset,
+    #         train=train,
+    #         print_intermediate_results=print_intermediate_results,
+    #         no_sparsity=no_sparsity,
+    #     )
+    #     if device_mode.get_device() == "cuda":
+    #         torch.cuda.synchronize()
+    #     stamp["methods"] = saved
+    #     stamp["tuned_configs"] = tuned
+    #     with open(os.path.join(aot_dir, "manifest.json"), "w") as f:
+    #         json.dump(stamp, f, indent=2)
+    #     typer.echo(f"Saved {len(saved)} AOT kernels and {len(tuned)} tuned configs to {aot_dir}")
+    #     typer.echo(f"Build time: {time.perf_counter() - start_time:.6f} seconds")
+    #     typer.echo(f"Lower bounds: {lb}")
+    #     typer.echo(f"Upper bounds: {ub}")
+    #     return
 
     is_cuda = device_mode.get_device() == "cuda"
+    print(f"WARMMMMMM")
 
     for i in range(warmup):
+        warmup_network = _network_for(f"warmup{i}")
         warmup_start = time.perf_counter()
         run(
-            network_file,
+            warmup_network,
             batch_size,
             eps,
             X[(i + 1) * batch_size : (i + 2) * batch_size],
@@ -512,38 +583,52 @@ def run(
             torch.cuda.synchronize()
         typer.echo(f"Warmup run {i + 1}/{warmup}: {time.perf_counter() - warmup_start:.6f} s")
 
-    if is_cuda:
-        torch.cuda.synchronize()
-        torch.cuda.reset_peak_memory_stats()
+    mem_label = "Peak GPU memory" if is_cuda else "Peak CPU memory"
 
-    start_time = time.perf_counter()
-    lb, ub = run(
-        network_file,
-        batch_size,
-        eps,
-        X[:batch_size],
-        y[:batch_size],
-        dataset=dataset,
-        train=train,
-        print_intermediate_results=print_intermediate_results,
-        no_sparsity=no_sparsity,
-    )
-    if is_cuda:
-        torch.cuda.synchronize()
-    end_time = time.perf_counter()
-    total_time = end_time - start_time
+    def _peak_bytes():
+        if is_cuda:
+            return torch.cuda.max_memory_allocated()
+        import resource
+        maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return maxrss if sys.platform == "darwin" else maxrss * 1024
+
+    repeat_times = []
+    repeat_peaks = []
+    print("REPEAT")
+    for i in range(repeat):
+        repeat_network = _network_for(f"repeat{i}")
+        if is_cuda:
+            torch.cuda.synchronize()
+            torch.cuda.reset_peak_memory_stats()
+
+        start_time = time.perf_counter()
+        lb, ub = run(
+            repeat_network,
+            batch_size,
+            eps,
+            X[:batch_size],
+            y[:batch_size],
+            dataset=dataset,
+            train=train,
+            print_intermediate_results=print_intermediate_results,
+            no_sparsity=no_sparsity,
+        )
+        if is_cuda:
+            torch.cuda.synchronize()
+        run_time = time.perf_counter() - start_time
+        run_peak = _peak_bytes()
+        repeat_times.append(run_time)
+        repeat_peaks.append(run_peak)
+        if repeat > 1:
+            typer.echo(f"Run {i + 1}/{repeat}: {run_time:.6f} s, {mem_label}: {run_peak} bytes")
+
+    total_time = sum(repeat_times)
+    peak_bytes = max(repeat_peaks)
 
     typer.echo(f"Lower bounds: {lb}")
     typer.echo(f"Upper bounds: {ub}")
     typer.echo(f"Total time: {total_time:.6f} seconds")
-    if is_cuda:
-        peak_bytes = torch.cuda.max_memory_allocated()
-        typer.echo(f"Peak GPU memory: {peak_bytes} bytes")
-    else:
-        import resource
-        maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        peak_bytes = maxrss if sys.platform == "darwin" else maxrss * 1024
-        typer.echo(f"Peak CPU memory: {peak_bytes} bytes")
+    typer.echo(f"{mem_label}: {peak_bytes} bytes")
 def main():
     app()
 

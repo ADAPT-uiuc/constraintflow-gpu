@@ -123,7 +123,10 @@ class Flow:
             elif layer.type == LayerType.Linear:
                 prev = Llist(self.model, [1, 1], None, None, layer.parents)
                 curr = Llist(self.model, [1], None, None, [tmp])
+                aaeasdasd
+                print(f"Processing Linear layer at index {tmp}")
                 abs_shape = self.transformer.Affine(self.abs_elem, prev, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size, layer_index = tmp)
+                print(f"Finished processing Linear layer at index {tmp}")
                 json_obj['affine'].append(tmp)
                 
             elif layer.type == LayerType.Conv2D:
