@@ -165,21 +165,22 @@ class CodeGen(irVisitor.IRVisitor):
             transformerIr = node.tstore[transformer_name]
 
             for j, opStmtIr in enumerate(transformerIr):
+                param_list = ', '.join(opStmtIr.params)
                 if opStmtIr.layerwise_cfgs is None:
-                    self.write('def ' + opStmtIr.op + '(self, abs_elem, prev, curr, poly_size, curr_size, prev_size, input_size, batch_size, layer_index = None):')
+                    self.write('def ' + opStmtIr.op + '(self, ' + param_list + ', layer_index = None):')
                     self.indent += 1
                     # self.write('torch.cuda.memory._record_memory_history(')
                     # self.indent += 1
                     # self.write('max_entries=1000000')
                     # self.indent -= 1
                     # self.write(')')
-    
+
                     cfg = opStmtIr.cfg
                     self.visit(cfg.ir[cfg.entry_node])
                     self.indent -= 1
                     self.write('', True)
                 else:
-                    self.write('def ' + opStmtIr.op + '(self, abs_elem, prev, curr, poly_size, curr_size, prev_size, input_size, batch_size, layer_index = None):')
+                    self.write('def ' + opStmtIr.op + '(self, ' + param_list + ', layer_index = None):')
                     self.indent += 1
                     # self.write('torch.cuda.memory._record_memory_history(')
                     # self.indent += 1
@@ -189,15 +190,16 @@ class CodeGen(irVisitor.IRVisitor):
                     for layer_index in opStmtIr.layerwise_cfgs.keys():
                         self.write('if layer_index == ' + str(layer_index) + ':')
                         self.indent += 1
-                        self.write('return self.' + opStmtIr.op + '_' + str(layer_index) + '(abs_elem, prev, curr, poly_size, curr_size, prev_size, input_size, batch_size, layer_index = layer_index)')
+                        self.write('return self.' + opStmtIr.op + '_' + str(layer_index) + '(' + param_list + ', layer_index = layer_index)')
                         self.indent -= 1
+                    self.write("raise RuntimeError(f'no specialized kernel for " + opStmtIr.op + " at layer {layer_index}')")
                     self.indent -= 1
                     self.write('')
-                    
+
                     for layer_index in opStmtIr.layerwise_cfgs.keys():
                         if inductor_mode.get_flag():
                             self.write('@torch.compile(fullgraph=True, backend="inductor")')
-                        self.write('def ' + opStmtIr.op + '_' + str(layer_index) + '(self, abs_elem, prev, curr, poly_size, curr_size, prev_size, input_size, batch_size, layer_index = None):')
+                        self.write('def ' + opStmtIr.op + '_' + str(layer_index) + '(self, ' + param_list + ', layer_index = None):')
                         self.indent += 1
                         self.write('while_iteration = -1')
                         cfg = opStmtIr.layerwise_cfgs[layer_index]
@@ -1209,6 +1211,22 @@ class CodeGen(irVisitor.IRVisitor):
             + ', while_number=' + str(node.while_number) \
             + ', while_iteration=' + while_iteration + ')'
     
+    def visitIrConcatStitch(self, node):
+        [prev1Ir, prev2Ir] = node.children
+        while_iteration = 'while_iteration' if node.inside_while else 'None'
+        return (f"concat_stitch_2d(abs_elem, '{node.key}', '{node.source}', "
+                f"{self.visit(prev1Ir)}, {self.visit(prev2Ir)}, layer_index=layer_index, "
+                f"counter={node.ttb_counter}, inside_while={node.inside_while}, "
+                f"while_number={node.while_number}, while_iteration={while_iteration})")
+
+    def visitIrConcatStitchMat(self, node):
+        [prev1Ir, prev2Ir] = node.children
+        while_iteration = 'while_iteration' if node.inside_while else 'None'
+        return (f"concat_stitch_mat(abs_elem, '{node.key}', "
+                f"{self.visit(prev1Ir)}, {self.visit(prev2Ir)}, layer_index=layer_index, "
+                f"counter={node.ttb_counter}, inside_while={node.inside_while}, "
+                f"while_number={node.while_number}, while_iteration={while_iteration})")
+
     def visitIrConvertConstToPoly(self, node):
         [inputIr, rows] = node.children
         cols = 'poly_size'

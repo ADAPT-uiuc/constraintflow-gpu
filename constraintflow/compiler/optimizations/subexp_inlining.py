@@ -82,6 +82,14 @@ def replace_var_with_expr(
             {var_name: replace_expr})
             new_children.append(new_expr)
         instructions[use_instr_index].update_parent_child(new_children)
+    elif isinstance(instructions[use_instr_index], IrSetBlockTotalShapeLastDim):
+        new_children = []
+        for j in range(len(instructions[use_instr_index].children)):
+            new_expr = replace_all_occurrences_expr(
+            instructions[use_instr_index].children[j],
+            {var_name: replace_expr})
+            new_children.append(new_expr)
+        instructions[use_instr_index].update_parent_child(new_children)
     else:
         assert False, f'Unexpected instruction type: {type(instructions[use_instr_index])}'
 
@@ -167,7 +175,7 @@ def compute_storage_reads_and_defs(instructions: list[IrStatement]):
                 reads_of[lhs.name] = roots if prev is None else (prev | roots)
     storage_defs: list = []
     for idx, instr in enumerate(instructions):
-        if isinstance(instr, (IrAssignToView, IrAssignToBlock)):
+        if isinstance(instr, (IrAssignToView, IrAssignToBlock, IrSetBlockTotalShapeLastDim)):
             # an in-place write defs the storage its target touches
             roots = _resolve_storage(instr.children[0], reads_of)
             if roots:
@@ -266,14 +274,22 @@ def is_safe_to_inline(
     Read roots are those of the resolved `expr` plus `reads_of[var]`, the storage the
     value *is*. Keying the latter on `var` keeps the alias case covered after
     `resolve_value` has collapsed the chain to a var-free `torch.zeros`.
+
+    The storage check is skipped entirely when `expr` is a bare IrVar: substituting
+    `var`'s use-site with a different *name for the same object*, at that same fixed
+    program point, moves no evaluation and so cannot observe a value the original
+    name would not also have observed -- regardless of any storage mutation between
+    def_index and use_index. Only `redefined_between` (name rebinding, not in-place
+    mutation) can matter for a bare-var substitution.
     """
     if no_barriers:
         return True
-    read_roots: set = set(_expr_eval_roots(expr, reads_of))
-    read_roots |= reads_of.get(var.name, frozenset((var.name,)))
-    if storage_redefd_between(storage_defs, storage_def_keys, read_roots,
-                              def_index, use_index):
-        return False
+    if not isinstance(expr, IrVar):
+        read_roots: set = set(_expr_eval_roots(expr, reads_of))
+        read_roots |= reads_of.get(var.name, frozenset((var.name,)))
+        if storage_redefd_between(storage_defs, storage_def_keys, read_roots,
+                                  def_index, use_index):
+            return False
     for v in get_vars_expr_occurrences(expr):
         if redefined_between(def_indices, v.name, def_index, use_index):
             return False
@@ -375,6 +391,11 @@ def substitute_definitions(instructions: list[IrStatement]) -> bool:
                 temp.extend(
                     get_vars_expr_occurrences(instructions[i].children[j]))
         elif isinstance(instructions[i], IrAssignToBlock):
+            temp = []
+            for j in range(len(instructions[i].children)):
+                temp.extend(
+                    get_vars_expr_occurrences(instructions[i].children[j]))
+        elif isinstance(instructions[i], IrSetBlockTotalShapeLastDim):
             temp = []
             for j in range(len(instructions[i].children)):
                 temp.extend(
@@ -508,6 +529,18 @@ def _temp_liveness(instructions, prefix):
         if isinstance(instr, IrAssignment):
             occ = get_vars_expr_occurrences(instr.children[1])
         elif isinstance(instr, IrTransRetBasic):
+            occ = []
+            for child in instr.children:
+                occ.extend(get_vars_expr_occurrences(child))
+        elif isinstance(instr, (IrAssignToView, IrSetBlockTotalShapeLastDim, IrAssignToBlock)):
+            # In-place mutations (`view[idx] = value`, `block.total_shape[-1] = value`,
+            # `block.block = value`): unlike IrAssignment, children[0] here is itself a
+            # *use* -- e.g. IrAssignToView's target is the buffer being strided over/
+            # mutated, not a name being bound -- so both children must be scanned, or
+            # the liveness scan sees neither, undercounting last_use for whatever they
+            # reference. That let the pool allocator below recycle a still-needed name
+            # mid-block (reproduced with a Conv2D "Patches" block scatter sequence,
+            # several IrAssignToView statements deep, in the TinyImageNet resnet).
             occ = []
             for child in instr.children:
                 occ.extend(get_vars_expr_occurrences(child))

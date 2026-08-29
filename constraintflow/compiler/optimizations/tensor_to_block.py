@@ -118,7 +118,8 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         IrGetPriorityLList, IrGetPolyexpStop, IrGetPolyexpNotStop,
         IrAddDimension, IrAddDimensionConst, IrRemoveDimension, IrAccess,
         IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff,
-        IrReduce, IrEpsilon, IrConvertNeuronToPoly
+        IrReduce, IrEpsilon, IrConvertNeuronToPoly,
+        IrConcatStitch, IrConcatStitchMat
         # IrGetAbsElemSparseDKey, # IrGetPolyExpSparseConst,
         # IrGetPolyExpSparseMat
     )
@@ -192,6 +193,10 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         filename = f'jit_poly_exp_sparse_get_mat/poly_exp_sparse_get_mat_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
     elif isinstance(expr, IrConvertNeuronToPoly):
         filename = f'jit_convert_to_poly/convert_to_poly_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
+    elif isinstance(expr, IrConcatStitch):
+        filename = f'jit_concat/concat_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
+    elif isinstance(expr, IrConcatStitchMat):
+        filename = f'jit_concat/concat_mat_{layer_index}_{binary_instance}_{expr.inside_while}_{expr.while_number}_{while_iteration}.json'
 
     json_list = load_capture(filename)
     if isinstance(expr, IrTernary):
@@ -242,6 +247,12 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
         cond = None
         lhs = None
         rhs = None
+    elif isinstance(expr, (IrConcatStitch, IrConcatStitchMat)):
+        # Everything (which block ids to extract, the parent layout) is baked
+        # into the captured tape; the tape refers to no operand.
+        cond = None
+        lhs = None
+        rhs = None
     elif isinstance(expr, IrAccess) and (not expr.isMetadata):
         cond = None
         lhs = expr.children[0]
@@ -267,6 +278,8 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
     elif isinstance(expr, IrAddDimensionConst):
         irMetadata = expr.irMetadata
     elif isinstance(expr, IrConvertNeuronToPoly):
+        irMetadata = expr.irMetadata
+    elif isinstance(expr, (IrConcatStitch, IrConcatStitchMat)):
         irMetadata = expr.irMetadata
     elif isinstance(rhs, IrAst):
         irMetadata = rhs.irMetadata
@@ -1564,14 +1577,14 @@ def tensor_to_block(ir):
     for transformer in ir.tstore.keys():
         for i in range(len(ir.tstore[transformer])):
             transformerIr = ir.tstore[transformer][i]
-            if transformerIr.op == 'Affine':
-                layer_indices = json_obj['affine']
-            elif transformerIr.op == 'Relu':
-                layer_indices = json_obj['relu']
-            else:
-                print("NOT IMPLEMENTED for op " + transformerIr.op)
-                continue
-            
+            key = transformerIr.op.lower()
+            if key not in json_obj:
+                raise RuntimeError(
+                    f"reuse: op {transformerIr.op!r} is declared in the certifier but "
+                    f"flow() recorded no layer list for it; layers.json has {sorted(json_obj)}")
+            layer_indices = json_obj[key]
+
+
             new_cfgs = {}
             for j, layer_index in enumerate(layer_indices):
                 cfg = deepcopy_cfg_with_fresh_identifiers(transformerIr.cfg)

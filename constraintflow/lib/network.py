@@ -85,3 +85,21 @@ class LayerType(Enum):
     Concat = 10
     Sigmoid = 11
     Add = 12
+
+
+# Single source of truth for which generated transformer method a given
+# LayerType dispatches to in Flow.flow() (constraintflow/lib/flow_sparse.py),
+# and for which key of jit_layers/layers.json records its per-layer index
+# during simulacrum. tensor_to_block.tensor_to_block() reads that same key
+# to decide which layer indices get specialized during reuse -- keeping both
+# derived from this one table is what prevents an op (e.g. Sigmoid,
+# previously) from being profiled but never specialized.
+JIT_OP_FOR_LAYER = {
+    LayerType.ReLU: 'Relu',
+    LayerType.Sigmoid: 'Sigmoid',
+    LayerType.Linear: 'Affine',
+    LayerType.Conv2D: 'Affine',
+    LayerType.Add: 'Add',
+    LayerType.Concat: 'Concat',
+}
+JIT_OPS = sorted(set(JIT_OP_FOR_LAYER.values()))

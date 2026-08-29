@@ -974,7 +974,53 @@ class IrConvertNeuronToPoly(IrExpression):
         self.irMetadata = copy_metadata(inputIr.irMetadata)
         self.irMetadata[-1].type = 'PolyExp'
         self.update_parent_child([inputIr])
-    
+
+
+class IrConcatStitch(IrExpression):
+    """Opaque, traced 2-D Concat block re-stitch (see
+    constraintflow/gbcsr/tensor_ops.py:concat_stitch_2d). `prev1Ir`/`prev2Ir`
+    are only used by this node's own (non-reuse) codegen -- at reuse time
+    tensor_to_block.py discards them and rebuilds the expression entirely
+    from the captured tape, exactly like IrGetPriorityLList and friends.
+
+    __eq__ always returns False (matching IrExpandSymExp/IrEmptyList): the
+    base IrAst.__eq__ compares only type+children+irMetadata, which does NOT
+    see `key`/`source` -- two keys of the same type (e.g. 'l' and 'u', both
+    Float) share identical prev1/prev2 children and identical metadata, so
+    without this override CSE merges them into one node and silently drops
+    one key's data."""
+    def __init__(self, prev1Ir, prev2Ir, key, source, irMetadata):
+        super().__init__()
+        assert source in ('direct', 'const')
+        self.key = key
+        self.source = source
+        self.irMetadata = irMetadata
+        self.update_parent_child([prev1Ir, prev2Ir])
+
+    def __eq__(self, obj):
+        return False
+
+    def __hash__(self):
+        return 0
+
+
+class IrConcatStitchMat(IrExpression):
+    """Opaque, traced 3-D Concat block re-stitch for a PolyExp's .mat (see
+    constraintflow/gbcsr/tensor_ops.py:concat_stitch_mat). See IrConcatStitch
+    for why __eq__ must always return False here too."""
+    def __init__(self, prev1Ir, prev2Ir, key, irMetadata):
+        super().__init__()
+        self.key = key
+        self.irMetadata = irMetadata
+        self.update_parent_child([prev1Ir, prev2Ir])
+
+    def __eq__(self, obj):
+        return False
+
+    def __hash__(self):
+        return 0
+
+
 
 class IrConvertConstToPoly(IrExpression):
     def __init__(self, inputIr):
@@ -1836,12 +1882,22 @@ class IrWhileBlock(IrBlock):
             self.loopBody = [self]
 
 
+
+# The parameter names for the generated method's signature (and the matching
+# call-site args). Every DSL-declared op (Affine, Relu, Sigmoid, ...) uses this;
+# ops synthesized outside the DSL (Add, Concat -- see builtin_ops.py) carry
+# their own params on IrOpStmt because they need more than one `prev`.
+DEFAULT_OP_PARAMS = ['abs_elem', 'prev', 'curr', 'poly_size', 'curr_size',
+                     'prev_size', 'input_size', 'batch_size']
+
+
 class IrOpStmt(IrAst):
-    def __init__(self, op, cfg, layerwise_cfgs = None):
+    def __init__(self, op, cfg, layerwise_cfgs = None, params = None):
         super().__init__()
         self.op = op
         self.cfg = cfg
         self.layerwise_cfgs = layerwise_cfgs
+        self.params = params if params is not None else DEFAULT_OP_PARAMS
 
         # self.update_parent_child(inputIrs)
 
