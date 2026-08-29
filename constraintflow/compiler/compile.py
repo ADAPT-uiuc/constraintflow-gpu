@@ -7,6 +7,7 @@ from constraintflow.ast_cflow import astTC
 from constraintflow.compiler import convertToIr as c2r
 from constraintflow.compiler import representations
 from constraintflow.compiler import codeGen
+from constraintflow.compiler import builtin_ops
 from constraintflow.compiler.optimizations import tensor_to_block
 from constraintflow.compiler.optimizations import polyOpt
 from constraintflow.compiler.optimizations import symexpCount
@@ -66,7 +67,9 @@ def compile(inputfile, output_path):
     ast = astBuilder.ASTBuilder().visit(tree)
     astTC.ASTTC().visit(ast)
     
-    ir = c2r.ConvertToIr().visit(ast)
+    converter = c2r.ConvertToIr()
+    ir = converter.visit(ast)
+    builtin_ops.inject_builtin_ops(ir, converter)
     representations.ssa(ir)
 
     optimizations = optimizations_rewrite

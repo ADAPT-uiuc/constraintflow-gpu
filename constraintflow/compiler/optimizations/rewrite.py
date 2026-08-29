@@ -738,7 +738,7 @@ def hoist_split_targets(expr, inside_while, while_number):
                IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff, IrReduce)
         targets += (IrSparseTensor, IrDenseBlock, IrConstBlock, IrKernelBlock,
                     IrDiagonalBlock, IrPatchesBlock, IrRepeatBlock, IrAddDimensionConst,
-                    IrConvertNeuronToPoly)
+                    IrConvertNeuronToPoly, IrConcatStitch, IrConcatStitchMat)
     if isinstance(expr, targets):
         # IrAccess keeps default while_number=-1 when not in a while body, matching
         # simulacrum JIT filenames for get_metadata/get_elem recorded at Affine sites.
@@ -770,7 +770,7 @@ def assign_ttb_counter(expr):
                IrExtractPolyCoeff, IrExtractSymCoeff, IrMapCoeff, IrReduce, IrEpsilon)
         targets += (IrSparseTensor, IrDenseBlock, IrConstBlock, IrKernelBlock,
                     IrDiagonalBlock, IrPatchesBlock, IrRepeatBlock, IrAddDimensionConst,
-                    IrConvertNeuronToPoly)
+                    IrConvertNeuronToPoly, IrConcatStitch, IrConcatStitchMat)
     if isinstance(expr, targets):
         ttb_counter += 1
         expr.ttb_counter = ttb_counter

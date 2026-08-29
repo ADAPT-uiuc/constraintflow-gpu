@@ -801,7 +801,123 @@ def clamp(mat, const, min_true, layer_index = None, counter = None, inside_while
     if dummy_mode:
         if layer_index is not None and counter is not None:
             capture_path = f"jit_clamp/clamp_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
-            
+
             save_capture(capture_path, json_list)
     # clamp_time.update_total_time(time.perf_counter() - start_time)
+    return res
+
+
+# ---------------------------------------------------------------------------
+# Concat -- traced replacements for flow_sparse.py's original inline Concat
+# block re-stitch (see constraintflow/compiler/builtin_ops.py, which is where
+# these get called from the synthesized `Concat` op's generic CFG, and
+# constraintflow/compiler/ir.py's IrConcatStitch/IrConcatStitchMat, whose
+# codegen (constraintflow/compiler/codeGen.py) emits calls to these).
+#
+# Both parents are assumed -- as the original inline code assumed -- to each
+# match exactly one existing block per relevant dimension; that is true for
+# every certifier/network this repo builds today. get_block_id only compares
+# start/end index tensors (always concrete, never meta, even under
+# simulacrum), so calling it directly here (untraced) is safe; only the
+# *result* -- which block_id was picked -- needs to be captured, since at
+# reuse time there is no live SparseTensor to call get_block_id on again.
+# ---------------------------------------------------------------------------
+
+def concat_stitch_2d(abs_elem, key, source, prev1, prev2, layer_index=None, counter=None,
+                      inside_while=False, while_number=None, while_iteration=None):
+    """2-D case: plain Float/Int/Bool (source='direct', reads abs_elem.d[key])
+    or a PolyExp/SymExp .const (source='const', reads abs_elem.d[key].const)."""
+    assert source in ('direct', 'const')
+    src = abs_elem.d[key] if source == 'direct' else abs_elem.d[key].const
+    model = abs_elem.network
+    batch_size = abs_elem.batch_size
+    par1, par2 = prev1.llist[0], prev2.llist[0]
+    out_size = model[par1].size + model[par2].size
+
+    json_list = []
+    d_idx = len(json_list)
+    if source == 'direct':
+        json_list.append({"method": "get_abs_elem_sparse_d_key", "input": "json_list_-1", "key": key, "output": d_idx})
+    else:
+        pre_idx = len(json_list)
+        json_list.append({"method": "get_abs_elem_sparse_d_key", "input": "json_list_-1", "key": key, "output": pre_idx})
+        d_idx = len(json_list)
+        json_list.append({"method": "get_poly_exp_sparse_const", "input": f"json_list_{pre_idx}", "output": d_idx})
+
+    start_indices = []
+    blocks = []
+    list_idx = len(json_list)
+    json_list.append({"method": "initialise", "value": "[]", "output": list_idx})
+    new_start_index = 0
+    for par in (par1, par2):
+        start_index = torch.tensor([0, model[par].start])
+        end_index = torch.tensor([batch_size, model[par].end])
+        block_ids = src.get_block_id(start_index, end_index)[0]
+        assert len(block_ids) == 1, 'Concat: a parent range must match exactly one existing block'
+        block_id = block_ids[0]
+        block = src.blocks[block_id]
+        block_idx = len(json_list)
+        json_list.append({"method": "extract_block", "input": f"json_list_{d_idx}", "block_id": block_id, "output": block_idx})
+        list_idx_new = len(json_list)
+        json_list.append({"method": "append_list", "list": f"json_list_{list_idx}", "value": f"json_list_{block_idx}", "output": list_idx_new})
+        list_idx = list_idx_new
+
+        start_indices.append(torch.tensor([0, new_start_index]))
+        blocks.append(block)
+        new_start_index += model[par].size
+
+    total_size = torch.tensor([batch_size, out_size])
+    res = SparseTensor(start_indices, blocks, 2, total_size, og_json_list=json_list, blocks_index=list_idx)
+    if dummy_mode and layer_index is not None and counter is not None:
+        capture_path = f"jit_concat/concat_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+        save_capture(capture_path, json_list)
+    return res
+
+
+def concat_stitch_mat(abs_elem, key, prev1, prev2, layer_index=None, counter=None,
+                       inside_while=False, while_number=None, while_iteration=None):
+    """3-D case: a PolyExp's .mat. Unlike the 2-D case, a parent's neuron range
+    can span multiple existing blocks along the trailing (poly) dimension, so
+    each parent contributes get_block_id()'s whole match list, each placed at
+    the parent's shifted neuron offset with its own poly-dimension sub-range."""
+    src = abs_elem.d[key].mat
+    model = abs_elem.network
+    batch_size = abs_elem.batch_size
+    par1, par2 = prev1.llist[0], prev2.llist[0]
+    out_size = model[par1].size + model[par2].size
+    poly_size = src.total_size[-1]
+
+    json_list = []
+    pre_idx = len(json_list)
+    json_list.append({"method": "get_abs_elem_sparse_d_key", "input": "json_list_-1", "key": key, "output": pre_idx})
+    d_idx = len(json_list)
+    json_list.append({"method": "get_poly_exp_sparse_mat", "input": f"json_list_{pre_idx}", "output": d_idx})
+
+    start_indices = []
+    blocks = []
+    list_idx = len(json_list)
+    json_list.append({"method": "initialise", "value": "[]", "output": list_idx})
+    new_start_index = 0
+    for par in (par1, par2):
+        start_index = torch.tensor([0, model[par].start, 0])
+        end_index = torch.tensor([batch_size, model[par].end, poly_size])
+        block_ids, block_start_indices, block_end_indices = src.get_block_id(start_index, end_index)
+        for i in range(len(block_ids)):
+            block_id = block_ids[i]
+            block = src.blocks[block_id]
+            block_idx = len(json_list)
+            json_list.append({"method": "extract_block", "input": f"json_list_{d_idx}", "block_id": block_id, "output": block_idx})
+            list_idx_new = len(json_list)
+            json_list.append({"method": "append_list", "list": f"json_list_{list_idx}", "value": f"json_list_{block_idx}", "output": list_idx_new})
+            list_idx = list_idx_new
+
+            start_indices.append(torch.tensor([0, new_start_index, block_start_indices[i][2]]))
+            blocks.append(block)
+        new_start_index += model[par].size
+
+    total_size = torch.tensor([batch_size, out_size, poly_size])
+    res = SparseTensor(start_indices, blocks, 3, total_size, og_json_list=json_list, blocks_index=list_idx)
+    if dummy_mode and layer_index is not None and counter is not None:
+        capture_path = f"jit_concat/concat_mat_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
+        save_capture(capture_path, json_list)
     return res

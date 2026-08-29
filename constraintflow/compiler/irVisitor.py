@@ -89,7 +89,13 @@ class IRVisitor:
         
         elif isinstance(node, IR.IrConvertNeuronToPoly):
             return self.visitIrConvertNeuronToPoly(node)
-        
+
+        elif isinstance(node, IR.IrConcatStitch):
+            return self.visitIrConcatStitch(node)
+
+        elif isinstance(node, IR.IrConcatStitchMat):
+            return self.visitIrConcatStitchMat(node)
+
         elif isinstance(node, IR.IrConvertConstToPoly):
             return self.visitIrConvertConstToPoly(node)
         

@@ -583,11 +583,26 @@ class ConvertToIr(astVisitor.ASTVisitor):
         return lhsIr + rhsIr
     
     def visitTransRetBasic(self, ast_node):
-        retlist = []
+        exprIrs = []
         seqIr = []
         for i in range(len(self.shape.keys())):
             exprIr, exprSeqIr = self.visit(ast_node.exprlist.exprlist[i])
             seqIr += exprSeqIr
+            exprIrs.append(exprIr)
+        tail_seqIr, retlist = self.build_trans_ret(exprIrs)
+        seqIr += tail_seqIr
+        seqIr.append(IrTransRetBasic(retlist))
+        return seqIr
+
+    def build_trans_ret(self, exprIrs):
+        """Type-coerce/expand one already-built expression per shape key and bind
+        it to a `<key>_new` var. This is visitTransRetBasic's tail, split out so
+        synthesized ops (see compiler/builtin_ops.py) that build exprIrs without
+        an AST can reuse the same return-shaping logic instead of duplicating it."""
+        seqIr = []
+        retlist = []
+        for i in range(len(self.shape.keys())):
+            exprIr = exprIrs[i]
 
             if exprIr.irMetadata[-1].type != self.shape[list(self.shape.keys())[i]]:
                 if exprIr.irMetadata[-1].isConst:
@@ -596,13 +611,13 @@ class ConvertToIr(astVisitor.ASTVisitor):
                     exprIr = IrConvertConstToPoly(exprIr)
                 elif self.shape[list(self.shape.keys())[i]] == 'SymExp':
                     exprIr = IrConvertConstToSym(exprIr)
-                
+
             if is_expanded_metadata(exprIr.irMetadata):
                 varIr = IrVar(list(self.shape.keys())[i]+'_new', exprIr.irMetadata)
                 temp = IrAssignment(varIr, exprIr)
             else:
                 if exprIr.irMetadata[-1].type == 'PolyExp':
-                    coeffIr, constIr = IrExtractPolyCoeff(exprIr), IrExtractPolyConst(exprIr)               
+                    coeffIr, constIr = IrExtractPolyCoeff(exprIr), IrExtractPolyConst(exprIr)
                     new_coeffIr = IrRepeat(coeffIr, expand_irMetadata(coeffIr.irMetadata))
                     new_constIr = IrRepeat(constIr, expand_irMetadata(constIr.irMetadata))
                     repeatedIr = IrCombineToPoly(new_coeffIr, new_constIr)
@@ -614,8 +629,7 @@ class ConvertToIr(astVisitor.ASTVisitor):
 
             seqIr.append(temp)
             retlist.append(varIr)
-        seqIr.append(IrTransRetBasic(retlist))
-        return seqIr
+        return seqIr, retlist
 
     def merge_condition(self, ast_node):
         if isinstance(ast_node, AST.TransRetBasicNode):
