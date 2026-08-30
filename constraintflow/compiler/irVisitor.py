@@ -255,6 +255,12 @@ class IRVisitor:
         elif isinstance(node, IR.IrFUnfold):
             return self.visitIrFUnfold(node)
 
+        elif isinstance(node, IR.IrFFold):
+            return self.visitIrFFold(node)
+
+        elif isinstance(node, IR.IrTorchEinsum):
+            return self.visitIrTorchEinsum(node)
+
         elif isinstance(node, IR.IrAssignToView):
             return self.visitIrAssignToView(node)
 
