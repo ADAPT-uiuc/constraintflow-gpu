@@ -660,6 +660,21 @@ class IrFUnfold(IrExpression):
         self.stride = stride
         self.update_parent_child([inputIr])
 
+class IrFFold(IrExpression):
+    def __init__(self, inputIr, output_size, kernel_size, stride, padding=None):
+        super().__init__()
+        self.output_size = output_size
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = padding
+        self.update_parent_child([inputIr])
+
+class IrTorchEinsum(IrExpression):
+    def __init__(self, equation, operandIrs):
+        super().__init__()
+        self.equation = equation
+        self.update_parent_child(operandIrs)
+
 class IrAssignToView(IrStatement):
     def __init__(self, inputIr, index, valueIr):
         super().__init__()

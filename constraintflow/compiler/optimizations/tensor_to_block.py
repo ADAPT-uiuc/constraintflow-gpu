@@ -964,6 +964,36 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 raise Exception("NOT IMPLEMENTED")
             output = IrFUnfold(inputIr, json_obj["kernel_size"], json_obj["padding"], json_obj["stride"])
 
+        elif json_obj["method"] == "F.fold":
+            if "json_list_" in json_obj["input"]:
+                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            elif json_obj["input"] == "lhs":
+                inputIr = lhs
+            elif json_obj["input"] == "rhs":
+                inputIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrFFold(inputIr, json_obj["output_size"], json_obj["kernel_size"], json_obj["stride"], json_obj.get("padding"))
+
+        elif json_obj["method"] == "torch_einsum":
+            if "json_list_" in json_obj["lhs"]:
+                lhsIr = output_vars[int(json_obj["lhs"].split("_")[-1])]
+            elif json_obj["lhs"] == "lhs":
+                lhsIr = lhs
+            elif json_obj["lhs"] == "rhs":
+                lhsIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            if "json_list_" in json_obj["rhs"]:
+                rhsIr = output_vars[int(json_obj["rhs"].split("_")[-1])]
+            elif json_obj["rhs"] == "lhs":
+                rhsIr = lhs
+            elif json_obj["rhs"] == "rhs":
+                rhsIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrTorchEinsum(json_obj["equation"], [lhsIr, rhsIr])
+
         elif json_obj["method"] == "torch_diagonal":
             if "json_list_" in json_obj["input"]:
                 inputIr = output_vars[int(json_obj["input"].split("_")[-1])]

@@ -1,3 +1,4 @@
+import io
 import json
 import operator
 import os
@@ -83,6 +84,24 @@ class CodeGen(irVisitor.IRVisitor):
         # Populated by _const, flushed to jit_constants.py by finish().
         self.const_pool = {}
 
+        # Numbers the temporaries _hoist_if_complex introduces.
+        self._rebind_tmp_counter = 0
+
+        # Module-level @torch.compiler.disable helpers, one per in-place write
+        # into a torch.as_strided(...) view (PatchesBlock/KernelBlock's Conv2D
+        # densification). Correct in eager mode, but Inductor silently drops
+        # some of these writes when compiled inline, undercounting DeepZ's
+        # generator terms and producing unsound bounds. Must be module-level
+        # (not a nested closure) because Dynamo refuses to trace defining and
+        # decorating a function inline, so the view/value are passed in as
+        # plain arguments instead of closed over.
+        self.view_write_helpers = []
+        # Set while generating a method that used a view-write helper above.
+        # torch.compiler.disable forces a graph break, which fullgraph=True
+        # treats as a hard error, so that method must compile with
+        # fullgraph=False instead.
+        self._method_has_view_write = False
+
     def _const(self, text):
         """Intern a literal torch.tensor(...) expression into the shared constant
         pool (reuse mode only) and return the reference to use in its place.
@@ -109,6 +128,23 @@ class CodeGen(irVisitor.IRVisitor):
             f.write('import torch\n\n')
             for text, name in self.const_pool.items():
                 f.write(name + ' = ' + text + '\n')
+
+    def _hoist_if_complex(self, expr_text):
+        """visitIrExpandSymExp/visitIrSetBlockTotalShapeLastDim need to reference
+        their base object twice (once to mutate, once to read the mutated
+        total_size/total_shape back) and then a third time via their return
+        value. When symexpCount/subexp_inlining leaves that base inlined as a
+        full expression -- typically a SymExpSparse(...)/JitSparseTensor(...)
+        construction, not a bare name -- emitting it verbatim at each of those
+        sites reconstructs the whole object 2-3 times per rebind. Bind it to a
+        fresh local first so it is only built once; a bare name/attribute
+        chain (no call in it) is already cheap to repeat and is returned as-is."""
+        if '(' not in expr_text:
+            return expr_text
+        tmp = 'rebind_tmp_' + str(self._rebind_tmp_counter)
+        self._rebind_tmp_counter += 1
+        self.write(tmp + ' = ' + expr_text)
+        return tmp
 
 
     def _ttb_comment(self, node):
@@ -237,8 +273,12 @@ class CodeGen(irVisitor.IRVisitor):
                     self.write('')
 
                     for layer_index in opStmtIr.layerwise_cfgs.keys():
-                        if inductor_mode.get_flag():
-                            self.write('@torch.compile(fullgraph=True, backend="inductor")')
+                        # Buffer the body first so we know, after visiting it,
+                        # whether it used a view-write helper before deciding
+                        # fullgraph=True vs False for this method's decorator.
+                        self._method_has_view_write = False
+                        real_file = self.file
+                        self.file = io.StringIO()
                         self.write('def ' + opStmtIr.op + '_' + str(layer_index) + '(self, ' + param_list + ', layer_index = None):')
                         self.indent += 1
                         self.write('while_iteration = -1')
@@ -247,11 +287,20 @@ class CodeGen(irVisitor.IRVisitor):
                         self.visit(cfg.ir[cfg.entry_node])
                         self.indent -= 1
                         self.write('', True)
+                        body_text = self.file.getvalue()
+                        self.file = real_file
+                        if inductor_mode.get_flag():
+                            fullgraph = not self._method_has_view_write
+                            self.write('@torch.compile(fullgraph=' + str(fullgraph) + ', backend="inductor")')
+                        self.file.write(body_text)
             self.indent -=1
 
         if reuse_mode.get_flag():
             # Defined after use; names resolve when the methods are called.
             self.indent = 0
+            for helper_src in self.view_write_helpers:
+                self.write(helper_src, False)
+                self.write('')
             self.write('class JitSparseTensor:')
             self.indent += 1
             self.write('__slots__ = ("start_indices", "blocks", "dims", "total_size", "end_indices", "type", "dense_const", "delete_indices", "num_blocks")')
@@ -685,11 +734,36 @@ class CodeGen(irVisitor.IRVisitor):
             + ', stride=' + self.visit(node.stride) + ')'
         )
 
-    def visitIrAssignToView(self, node):
-        self.write(
-            self.visit(node.children[0]) + '[' + self.renderTraceIndex(node.index) + '] = '
-            + self.visit(node.children[1])
+    def visitIrFFold(self, node):
+        padding = ', padding=' + self.visit(node.padding) if node.padding is not None else ''
+        return (
+            'F.fold(' + self.visit(node.children[0]) + ', output_size='
+            + self.visit(node.output_size) + ', kernel_size=' + self.visit(node.kernel_size)
+            + ', stride=' + self.visit(node.stride) + padding + ')'
         )
+
+    def visitIrTorchEinsum(self, node):
+        operands = ', '.join(self.visit(c) for c in node.children)
+        return 'torch.einsum(' + repr(node.equation) + ', ' + operands + ')'
+
+    def visitIrAssignToView(self, node):
+        view_expr = self.visit(node.children[0])
+        index_expr = self.renderTraceIndex(node.index)
+        value_expr = self.visit(node.children[1])
+        if not inductor_mode.get_flag():
+            self.write(view_expr + '[' + index_expr + '] = ' + value_expr)
+            return
+        # index_expr only references torch/module-level globals, never a local
+        # of the calling method, so it's safe to inline in the module-level helper.
+        self._method_has_view_write = True
+        helper_name = '_view_write_' + str(len(self.view_write_helpers))
+        self.view_write_helpers.append(
+            '@torch.compiler.disable\n'
+            'def ' + helper_name + '(view, value):\n'
+            '\tview[' + index_expr + '] = value\n'
+            '\treturn view\n'
+        )
+        self.write(helper_name + '(' + view_expr + ', ' + value_expr + ')')
     
     def visitIrEmptyList(self, node):
         return '[]'
@@ -1044,9 +1118,11 @@ class CodeGen(irVisitor.IRVisitor):
         )
     
     def visitIrTensorOnes(self, node):
+        # Was defaulting to CPU unconditionally (no device field was ever
+        # recorded), silently mismatching every GPU tensor built elsewhere.
         if isinstance(node.total_size, str):
-            return 'torch.ones(*' + node.total_size + ')'
-        return 'torch.ones(*' + str(node.total_size.tolist()) + ')'
+            return 'torch.ones(*' + node.total_size + ', device=device_mode.get_device())'
+        return 'torch.ones(*' + str(node.total_size.tolist()) + ', device=device_mode.get_device())'
 
     def visitTensorRepeat(self, node):
         return 'torch.repeat(' + self.visit(node.children[0]) + ', *' + node.repeat_dims + ')'
@@ -1283,7 +1359,7 @@ class CodeGen(irVisitor.IRVisitor):
         [inputIr] = node.children
         if not reuse_mode.get_flag():
             return self.visit(inputIr) + '.expand_symexp_mat(SymExpSparse.count)'
-        var_name = self.visit(inputIr)
+        var_name = self._hoist_if_complex(self.visit(inputIr))
         # Rebind rather than mutate in place: total_size may alias a hoisted
         # constant shared by other blocks/tensors, so writing through it would
         # corrupt every other user of that constant.
@@ -1348,7 +1424,7 @@ class CodeGen(irVisitor.IRVisitor):
         )
 
     def visitIrSetBlockTotalShapeLastDim(self, node):
-        block_var = self.visit(node.children[0])
+        block_var = self._hoist_if_complex(self.visit(node.children[0]))
         value = self.visit(node.children[1])
         # Rebind rather than mutate in place -- see visitIrExpandSymExp.
         self.write(block_var + ".total_shape = torch.cat([" + block_var + ".total_shape[:-1], torch.tensor([" + value + "], dtype=torch.int64)])")
