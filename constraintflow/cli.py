@@ -47,6 +47,14 @@ def clear_jit_captures():
         shutil.rmtree(root)
 
 
+def _apply_bound_flags(bound_lower: bool, bound_upper: bool):
+    if not bound_lower and not bound_upper:
+        typer.echo("Error: at least one of --bound-lower/--bound-upper must be set.")
+        raise typer.Exit(code=1)
+    globals.bound_lower.set_flag() if bound_lower else globals.bound_lower.reset_flag()
+    globals.bound_upper.set_flag() if bound_upper else globals.bound_upper.reset_flag()
+
+
  
     
 
@@ -188,8 +196,13 @@ def compile_code(
 def compile(
     program_file: str = typer.Argument(..., help="ConstraintFlow program file"),
     output_path: str = typer.Option("output/", help="Output path for generated code"),
+    bound_lower: bool = typer.Option(True, help="Compute the lower bound. Disabling this (with --bound-upper on) skips the lower-side final traversal and, at any Affine layer that feeds only further Affine layers, both traversals entirely."),
+    bound_upper: bool = typer.Option(True, help="Compute the upper bound. See --bound-lower."),
+    fuse_affine_subst: bool = typer.Option(False, "--fuse-affine-subst", help="Assert every Affine op's L and U outputs are identical (true for all deeppoly*/crown specs here) and drop the redundant sign-split when a traverse() substitution step crosses an Affine layer. Only affects a jit reuse compile (no-op on plain compile, which never runs tensor_to_block); unsound if the assertion doesn't hold."),
 ):
     start_time = time.perf_counter()
+    _apply_bound_flags(bound_lower, bound_upper)
+    globals.fuse_affine_subst.set_flag() if fuse_affine_subst else globals.fuse_affine_subst.reset_flag()
     compile_code(program_file, output_path)
     total_time = time.perf_counter() - start_time
     typer.echo(f"Total time: {total_time:.6f} seconds")
@@ -217,18 +230,23 @@ def simulacrum_compile(
     in_memory: bool = typer.Option(False, "--in-memory", help="Keep jit captures in a process-local dict instead of writing/reading capture files on disk (jit only)."),
     no_barriers: bool = typer.Option(False, "--no-barriers", help="Inline every single-use temporary unconditionally (skip is_safe_to_inline's safety analysis)."),
     inductor: bool = typer.Option(False, help="Emit @torch.compile(backend='inductor') on the reuse build"),
+    bound_lower: bool = typer.Option(True, "--bound-lower", help="Compute the lower bound. Disabling this (with --bound-upper on) skips the lower-side final traversal and, at any Affine layer that feeds only further Affine layers, both traversals entirely. Applied identically to both the simulacrum and reuse compile passes below."),
+    bound_upper: bool = typer.Option(True, "--bound-upper", help="Compute the upper bound. See --bound-lower."),
+    fuse_affine_subst: bool = typer.Option(False, "--fuse-affine-subst", help="Assert every Affine op's L and U outputs are identical (true for all deeppoly*/crown specs here) and drop the redundant sign-split when a traverse() substitution step crosses an Affine layer. Takes effect on the reuse compile pass below; unsound if the assertion doesn't hold."),
 ):
     """
     Compile a ConstraintFlow program through the whole simulacrum+reuse pipeline
     in one shot.
     """
     start_time = time.perf_counter()
+    _apply_bound_flags(bound_lower, bound_upper)
+    globals.fuse_affine_subst.set_flag() if fuse_affine_subst else globals.fuse_affine_subst.reset_flag()
     try:
         os.makedirs(output_path, exist_ok=True)
     except OSError as e:
         typer.echo(f"Error creating folder '{output_path}': {e}")
         raise typer.Exit(code=1)
-    
+
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     from bench import configs as bench_configs
     onnx_path = network if os.path.isfile(network) else os.path.join(bench_configs.REPO_ROOT, network)
@@ -294,11 +312,13 @@ def simulacrum_compile(
     globals.reuse_mode.set_flag()
     if inductor:
         globals.inductor_mode.set_flag()
+    globals.set_network_path(network_file)
     try:
         compile_code(program_file, output_path)
     finally:
         globals.reuse_mode.reset_flag()
         globals.inductor_mode.reset_flag()
+        globals.set_network_path(None)
         if in_memory:
             globals.jit_store_clear()
 
