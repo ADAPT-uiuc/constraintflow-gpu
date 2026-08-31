@@ -3,9 +3,11 @@ import os
 import torch 
 
 from constraintflow.compiler.ir import *
-from constraintflow.compiler.optimizations import uses
+from constraintflow.compiler.optimizations import uses, fuse_affine_subst
 from constraintflow.gbcsr.sparse_tensor import get_operator_func
 from constraintflow.lib.globals import load_capture, capture_exists
+from constraintflow.lib.network import LayerType
+import constraintflow.lib.globals as globals
 
 
 counter = -1
@@ -1459,9 +1461,18 @@ def remove_while(layer_index, num_iterations, cfg, root_node, first_while_node, 
     tensor_to_block_block(exit_block, layer_index)
 
 
+    layer_types = layer_parents = None
+    if globals.fuse_affine_subst.get_flag() and globals.network_path is not None:
+        layer_types, layer_parents = fuse_affine_subst._load_topology(globals.network_path)
+    affine_types = (LayerType.Linear, LayerType.Conv2D)
+
     ir_list = root_block.children
     for i in range(num_iterations):
         combined_list = copy.deepcopy(first_while_block.children + second_while_block.children)
+        if layer_parents is not None:
+            crossed = fuse_affine_subst.crossed_layer_at(layer_index, i, layer_parents)
+            is_affine = crossed is not None and layer_types.get(crossed) in affine_types
+            fuse_affine_subst.fuse_iteration(combined_list, is_affine)
         tensor_to_block_block(None, layer_index=layer_index, ir_list=combined_list, while_iteration=i)
         ir_list += combined_list
 

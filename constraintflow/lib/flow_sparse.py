@@ -102,6 +102,8 @@ class Flow:
         size = self.model.input_size
 
         json_obj = {op.lower(): [] for op in JIT_OPS}
+        json_obj.setdefault('affine_last', [])
+        json_obj.setdefault('affine_skip', [])
 
         for tmp, layer in enumerate(self.model):
             t_time = time.time()
@@ -117,15 +119,20 @@ class Flow:
                 prev = Llist(self.model, [1], None, None, layer.parents)
                 curr = Llist(self.model, [1], None, None, [tmp])
                 abs_shape = self.transformer.Sigmoid(self.abs_elem, prev, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size, layer_index = tmp)
-            elif layer.type == LayerType.Linear:
+            elif layer.type == LayerType.Linear or layer.type == LayerType.Conv2D:
                 prev = Llist(self.model, [1, 1], None, None, layer.parents)
                 curr = Llist(self.model, [1], None, None, [tmp])
-                abs_shape = self.transformer.Affine(self.abs_elem, prev, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size, layer_index = tmp)
-
-            elif layer.type == LayerType.Conv2D:
-                prev = Llist(self.model, [1, 1], None, None, layer.parents)
-                curr = Llist(self.model, [1], None, None, [tmp])
-                abs_shape = self.transformer.Affine(self.abs_elem, prev, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size, layer_index = tmp)
+                # Affine_last/Affine_skip only exist on a transformer compiled with
+                # --bound-lower/--bound-upper engaged (single_bound.py); bound_lower/
+                # bound_upper themselves are compile-time-only flags that don't
+                # survive into a separate `run` process, so dispatch is driven by
+                # what the compiled artifact actually has, not by those globals.
+                affine_op = 'Affine'
+                if layer.last_layer and hasattr(self.transformer, 'Affine_last'):
+                    affine_op = 'Affine_last'
+                elif (not layer.feeds_nonlin) and hasattr(self.transformer, 'Affine_skip'):
+                    affine_op = 'Affine_skip'
+                abs_shape = getattr(self.transformer, affine_op)(self.abs_elem, prev, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size, layer_index = tmp)
 
             elif layer.type == LayerType.Input:
                 continue
@@ -143,7 +150,8 @@ class Flow:
                 abs_shape = self.transformer.Concat(self.abs_elem, prev1, prev2, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size, layer_index = tmp)
             else:
                 raise NotImplementedError(f'Flow.flow(): unsupported layer type {layer.type}')
-            json_obj[JIT_OP_FOR_LAYER[layer.type].lower()].append(tmp)
+            op_key = affine_op.lower() if layer.type in (LayerType.Linear, LayerType.Conv2D) else JIT_OP_FOR_LAYER[layer.type].lower()
+            json_obj[op_key].append(tmp)
             size += curr_size
             prev_size = self.model[tmp].size
             self.abs_elem.update(curr, abs_shape)

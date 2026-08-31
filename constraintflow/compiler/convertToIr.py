@@ -668,7 +668,7 @@ class ConvertToIr(astVisitor.ASTVisitor):
         if ast_node.op.op_name == 'Relu' or ast_node.op.op_name == 'Abs' or ast_node.op.op_name == 'HardSigmoid' or ast_node.op.op_name == 'HardTanh' or ast_node.op.op_name == 'Sigmoid':
             self.store['curr'] = IrVar('curr', [IrMetadataElement([1, IrAst.curr_size], 'Neuron', [IrAst.batch_size, 1], False)])
             self.store['prev'] = IrVar('prev', [IrMetadataElement([1, IrAst.curr_size], 'Neuron', [IrAst.batch_size, 1], False)])
-        elif ast_node.op.op_name == 'Affine':
+        elif ast_node.op.op_name in ('Affine', 'Affine_last', 'Affine_skip'):
             self.store['curr'] = IrVar('curr', [IrMetadataElement([1, IrAst.curr_size], 'Neuron', [IrAst.batch_size, 1], False)])
             self.store['prev'] = IrVar('prev', [IrMetadataElement([1, 1, IrAst.prev_size], 'Neuron', [IrAst.batch_size, IrAst.curr_size, 1], False)])
         else:
