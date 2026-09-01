@@ -102,7 +102,6 @@ class Flow:
         size = self.model.input_size
 
         json_obj = {op.lower(): [] for op in JIT_OPS}
-        json_obj.setdefault('affine_last', [])
         json_obj.setdefault('affine_skip', [])
 
         for tmp, layer in enumerate(self.model):
@@ -122,15 +121,12 @@ class Flow:
             elif layer.type == LayerType.Linear or layer.type == LayerType.Conv2D:
                 prev = Llist(self.model, [1, 1], None, None, layer.parents)
                 curr = Llist(self.model, [1], None, None, [tmp])
-                # Affine_last/Affine_skip only exist on a transformer compiled with
-                # --bound-lower/--bound-upper engaged (single_bound.py); bound_lower/
-                # bound_upper themselves are compile-time-only flags that don't
-                # survive into a separate `run` process, so dispatch is driven by
-                # what the compiled artifact actually has, not by those globals.
+                # Affine_skip is unconditionally injected by single_bound.py's
+                # inject_affine_skip, so every compiled transformer has it; the
+                # hasattr guard just protects against a stale output/ directory
+                # compiled before this optimization existed.
                 affine_op = 'Affine'
-                if layer.last_layer and hasattr(self.transformer, 'Affine_last'):
-                    affine_op = 'Affine_last'
-                elif (not layer.feeds_nonlin) and hasattr(self.transformer, 'Affine_skip'):
+                if (not layer.feeds_nonlin) and hasattr(self.transformer, 'Affine_skip'):
                     affine_op = 'Affine_skip'
                 abs_shape = getattr(self.transformer, affine_op)(self.abs_elem, prev, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size, layer_index = tmp)
 

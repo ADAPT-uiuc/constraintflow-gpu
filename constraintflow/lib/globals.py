@@ -102,23 +102,19 @@ no_barriers = Flag()
 # _jit_store dict instead of written to / read from disk. See save_capture.
 in_memory_captures = Flag()
 
-# --bound-lower/--bound-upper (compile, jit): which sides of the final bound the
-# caller actually wants. Both default True (no injection, byte-identical output).
-# Exactly one True triggers single_bound.py's rewrite: the Affine op that feeds
-# the synthesized spec/output layer computes only the requested side, and an
-# Affine feeding only further Affine layers skips both concretizing traversals
-# (auto_LiRPA's requires_input_bounds=[] case). Both False is a CLI error.
-bound_lower = Flag(initial=True)
-bound_upper = Flag(initial=True)
-
-# --fuse-affine-subst (compile, jit): the user asserts every Affine op's L and U
-# outputs are identical (true for all deeppoly*/crown specs in this repo). Under
-# that assertion, a traverse() substitution step through an Affine layer needs
-# no clamp-based sign split -- clamp+(c).L + clamp-(c).U collapses to c.L exactly.
-# Only takes effect during a jit reuse compile (tensor_to_block.py); a no-op on
-# plain `compile` since that path never runs tensor_to_block. Unsound if the
-# assertion is violated -- the flag exists precisely to shift that burden to the
-# caller, so default off.
+# --fuse-affine-subst (compile, jit): gates two optimizations.
+# (1) single_bound.py's inject_affine_skip: skip both concretizing traversals at
+# any Affine layer that feeds only further Affine layers (see network.py's
+# feeds_nonlin). Always sound -- with stop_traverse=false, such a layer's
+# concrete l/u have zero consumers -- but there's no dedicated flag for it, so
+# it rides on this one instead of always running unconditionally.
+# (2) the user asserts every Affine op's L and U outputs are identical (true for
+# all deeppoly*/crown specs in this repo). Under that assertion, a traverse()
+# substitution step through an Affine layer needs no clamp-based sign split --
+# clamp+(c).L + clamp-(c).U collapses to c.L exactly. Only takes effect during a
+# jit reuse compile (tensor_to_block.py); a no-op on plain `compile` since that
+# path never runs tensor_to_block. Unsound if the assertion is violated -- the
+# flag exists precisely to shift that burden to the caller, so default off.
 fuse_affine_subst = Flag()
 
 

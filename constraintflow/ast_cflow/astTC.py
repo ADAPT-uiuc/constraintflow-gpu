@@ -671,7 +671,7 @@ class ASTTC(astVisitor.ASTVisitor):
 
 	def visitOpStmt(self, node: AST.OpStmtNode):
 		self.Gamma['curr'] = 'Neuron'
-		if node.op.op_name in ('Affine', 'Affine_last', 'Affine_skip'):
+		if node.op.op_name in ('Affine', 'Affine_skip'):
 			self.Gamma['prev'] = ArrayType('Neuron')
 		elif node.op.op_name == 'Relu':
 			self.Gamma['prev'] = 'Neuron'

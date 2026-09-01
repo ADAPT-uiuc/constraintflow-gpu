@@ -52,16 +52,22 @@ def _new_run_id() -> str:
 RUN_ID = _new_run_id()
 
 
-def _run_id_path(path: str) -> str:
-    """Insert RUN_ID before the extension, so the CSV pairs by name with the log folder."""
-    stem, ext = os.path.splitext(path)
-    return f"{stem}_{RUN_ID}{ext}"
-
-
-def _init_logging(label: str, csv_path: str = "") -> None:
+def _init_logging(label: str, csv_path: str = "", *, append_run_id: bool = True) -> None:
     """Open a fresh log folder for this invocation and record how it was launched."""
     global CURRENT_LOG_DIR
-    CURRENT_LOG_DIR = os.path.join(LOG_ROOT, f"{label}_{RUN_ID}")
+    folder = f"{label}_{RUN_ID}" if append_run_id else label
+    CURRENT_LOG_DIR = os.path.join(LOG_ROOT, folder)
+    if not append_run_id:
+        problems = []
+        if os.path.exists(CURRENT_LOG_DIR):
+            problems.append(f"log dir already exists: {CURRENT_LOG_DIR}")
+        if csv_path and os.path.exists(csv_path):
+            problems.append(f"CSV already exists: {csv_path}")
+        if problems:
+            raise SystemExit(
+                "Refusing to overwrite output from a previous run with the same name:\n  "
+                + "\n  ".join(problems) +
+                "\nPick a different --csv-path, or move/delete the existing file(s)/folder.")
     os.makedirs(CURRENT_LOG_DIR, exist_ok=True)
     with open(os.path.join(CURRENT_LOG_DIR, "invocation.txt"), "w") as f:
         f.write(f"# run id: {RUN_ID}\n"
@@ -611,7 +617,7 @@ def sweep(
     repeat: int = typer.Option(1, help="Run each configuration this many times and average the time and memory."),
     in_memory: bool = typer.Option(False, "--in-memory", help="Run the jit compile with --in-memory (keep captures in a process-local dict instead of on disk)."),
     use_cache: bool = typer.Option(False, "--use-cache", help="Run kernels prebuilt by bench/build_kernels.py instead of compiling. The Compile rows are then blank."),
-    csv_path: str = typer.Option("simulacrum_sweep_results.csv", help="Path to append the CSV results to. This run's id is inserted before the extension so the CSV pairs with its log folder."),
+    csv_path: str = typer.Option("simulacrum_sweep_results.csv", help="Path to write the CSV results to. Its basename also names the paired log folder; re-running with a path that already has output errors out rather than overwriting it."),
 ):
     """
     Profile Normal vs JIT compile & run (time and peak memory) across the full model
@@ -619,8 +625,8 @@ def sweep(
     experiment drivers via bench/configs.py). Results are appended to a CSV instead of
     being printed.
     """
-    csv_path = _run_id_path(csv_path)
-    _init_logging(f"sweep_{dataset}_{device}", csv_path)
+    label = f"sweep_{dataset}_{device}_{os.path.splitext(os.path.basename(csv_path))[0]}"
+    _init_logging(label, csv_path, append_run_id=False)
     only = [c.strip() for c in config_ids.split(",")] if config_ids else None
     total_rows = 0
     for program_file in program_files.split(","):
