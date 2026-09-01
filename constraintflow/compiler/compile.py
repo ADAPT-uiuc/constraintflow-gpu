@@ -66,7 +66,8 @@ def compile(inputfile, output_path):
     tree = parser.prog()
     
     ast = astBuilder.ASTBuilder().visit(tree)
-    single_bound.inject_single_bound(ast)
+    if fuse_affine_subst.get_flag():
+        single_bound.inject_affine_skip(ast)
     astTC.ASTTC().visit(ast)
     
     converter = c2r.ConvertToIr()
