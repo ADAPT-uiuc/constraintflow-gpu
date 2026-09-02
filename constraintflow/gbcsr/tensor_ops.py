@@ -571,6 +571,10 @@ def get_max_priority(sp_tensor, active_vertices: SparseTensor, layer_index=None,
             # continue
     res = SparseTensor(res_start_indices, res_blocks, sp_tensor.dims, sp_tensor.total_size, end_indices=res_end_indices, type=bool, dense_const=False, og_json_list=json_list, blocks_index=current_list_index)
     if dummy_mode:
+        from constraintflow.lib import jit_semantics
+        jit_semantics.record_traversal(
+            res_start_indices, res_end_indices, layer_index, counter,
+            inside_while, while_number, while_iteration)
         capture_path = f"jit_priority/priority_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
         save_capture(capture_path, json_list)
     return res

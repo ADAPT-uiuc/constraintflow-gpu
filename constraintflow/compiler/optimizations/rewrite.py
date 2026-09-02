@@ -173,6 +173,84 @@ def rewrite_expr_ternary_to_clamp(expr):
     return expr, new_assignments
 
 
+def _deref(expr):
+    if isinstance(expr, IrVar) and expr.defs is not None:
+        return expr.defs.children[1]
+    return expr
+
+
+def _unwrap_clamp(expr):
+    expr = _deref(expr)
+    if isinstance(expr, IrClamp):
+        return expr
+    if isinstance(expr, (IrRemoveDimension, IrAddDimension, IrRepeat)):
+        inner = _deref(expr.children[0])
+        if isinstance(inner, IrClamp):
+            return inner
+    return None
+
+
+def _split_term(expr):
+    node = _deref(expr)
+    if not isinstance(node, (IrInnerProduct, IrMult)):
+        return None
+    for child in node.children:
+        clamp = _unwrap_clamp(child)
+        if clamp is not None:
+            return clamp
+    return None
+
+
+def _primary_field(expr, seen=None):
+    if seen is None:
+        seen = set()
+    expr = _deref(expr)
+    if isinstance(expr, int) or id(expr) in seen:
+        return None
+    seen.add(id(expr))
+    if isinstance(expr, IrAccess) and not expr.isMetadata:
+        return expr.elem
+    for child in expr.children:
+        field = _primary_field(child, seen)
+        if field is not None:
+            return field
+    return None
+
+
+def mark_sign_splits(expr):
+    if isinstance(expr, int):
+        return expr, []
+    children = []
+    assignments = []
+    for child in expr.children:
+        child, added = mark_sign_splits(child)
+        children.append(child)
+        assignments += added
+    expr.update_parent_child(children)
+    if type(expr) is not IrBinaryOp or expr.op != '+':
+        return expr, assignments
+    lhs_clamp = _split_term(expr.children[0])
+    rhs_clamp = _split_term(expr.children[1])
+    if lhs_clamp is None or rhs_clamp is None:
+        return expr, assignments
+    if lhs_clamp.min_true == rhs_clamp.min_true:
+        return expr, assignments
+    if _deref(lhs_clamp.children[0]) != _deref(rhs_clamp.children[0]):
+        return expr, assignments
+    lhs_field = _primary_field(expr.children[0])
+    rhs_field = _primary_field(expr.children[1])
+    if lhs_field is None or rhs_field is None:
+        return expr, assignments
+    split = IrSignSplit(
+        expr.children[0], expr.children[1], lhs_clamp.children[0],
+        (lhs_field, rhs_field))
+    split.ttb_counter = expr.ttb_counter
+    split.inside_while = expr.inside_while
+    split.while_number = expr.while_number
+    split.while_iteration = expr.while_iteration
+    return split, assignments
+
+
 # e1 * c + e2 * c = (e1 + e2) * c
 def rewrite_expr_2(expr):
     if isinstance(expr, int):
@@ -849,6 +927,10 @@ def rewrite_cfg(cfg):
     for node in cfg.nodes:
         block = cfg.ir[node]
         rewrite_block(block, rewrite_expr_2)
+
+    for node in cfg.nodes:
+        block = cfg.ir[node]
+        rewrite_block(block, mark_sign_splits)
 
     uses.populate_uses_defs_cfg(cfg)
     for node in cfg.nodes:

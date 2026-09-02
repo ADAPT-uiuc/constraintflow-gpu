@@ -200,6 +200,11 @@ class CodeGen(irVisitor.IRVisitor):
 
 
         self.write("network, l, u, L, U, Z, llist = get_network_and_input_spec(network_file, batch_size, dataset_X, dataset_y, dataset, eps=eps, train=train, no_sparsity=no_sparsity)")
+        if reuse_mode.get_flag():
+            manifest = load_capture("jit_semantics/manifest.json")
+            if not manifest.get("print_intermediate", False):
+                self.write("if print_intermediate_results:")
+                self.write("    raise RuntimeError('intermediate results unavailable; rebuild JIT with --print-intermediate-results')")
         self.write("abs_elem = Abs_elem_sparse(" + temp_dict + ", " + str(temp_shape) + ", network, batch_size=batch_size, no_sparsity=no_sparsity)")
         
 
@@ -473,6 +478,9 @@ class CodeGen(irVisitor.IRVisitor):
         self.write(var + ' = ' + expr )
         # node.counter = self.counter
         # self.counter += 1
+
+    def visitIrDeadValue(self, node):
+        return 'None'
 
     # For the del statements
     # Currently not used. 
@@ -1394,9 +1402,15 @@ class CodeGen(irVisitor.IRVisitor):
 
     def visitIrMapNeuron(self, node):
         if node.dims:
-            return 'Llist(abs_elem.network, [1]*(' + self.visit(node.children[0]) + '), None, None,' + "abs_elem.live_layers)"
+            result = 'Llist(abs_elem.network, [1]*(' + self.visit(node.children[0]) + '), None, None,' + "abs_elem.live_layers"
+            if not reuse_mode.get_flag():
+                result += ', semantic_layers=' + self.visit(node.children[1]) + '.get_dense_layers()'
+            return result + ')'
         else:
-            return 'Llist(abs_elem.network, [1]*(' + self.visit(node.children[0]) + '.mat.dims-1), None, None,' + "abs_elem.live_layers)"
+            result = 'Llist(abs_elem.network, [1]*(' + self.visit(node.children[0]) + '.mat.dims-1), None, None,' + "abs_elem.live_layers"
+            if not reuse_mode.get_flag():
+                result += ', semantic_layers=' + self.visit(node.children[0]) + '.get_dense_layers()'
+            return result + ')'
 
     def visitIrSymbolic(self, node):
         return node.name

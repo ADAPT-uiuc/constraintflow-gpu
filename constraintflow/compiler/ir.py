@@ -1,4 +1,5 @@
 import copy
+from collections import OrderedDict
 from z3 import *
 from constraintflow.compiler.globals import *
 
@@ -396,6 +397,13 @@ class IrConst(IrExpression):
         self.hash_str = str(type(self))
         self.hash_str += str(self.const) 
         return self.hash_str
+
+
+class IrDeadValue(IrExpression):
+    def __init__(self, field, irMetadata):
+        super().__init__()
+        self.field = field
+        self.irMetadata = copy_metadata(irMetadata)
 
 class IrVar(IrExpression):
     
@@ -1523,6 +1531,16 @@ class IrClamp(IrExpression):
         return 0 
 
 
+class IrSignSplit(IrBinaryOp):
+    def __init__(self, lhs, rhs, coefficient, fields):
+        IrExpression.__init__(self)
+        self.op = '+'
+        self.coefficient = coefficient
+        self.fields = tuple(fields)
+        self.irMetadata = copy_metadata(lhs.irMetadata)
+        self.update_parent_child([lhs, rhs])
+
+
 class IrTranspose(IrExpression):
     def __init__(self, inputIr):
         super().__init__()
@@ -1798,7 +1816,7 @@ class IrMapNeuron(IrExpression):
             self.irMetadata[-1].type = 'Neuron'
         # self.irMetadata.append(irMetadataElement)
         if self.dims:
-            self.update_parent_child([dims_val])
+            self.update_parent_child([dims_val, inputIr])
         else:
             self.update_parent_child([inputIr])
 
@@ -1832,8 +1850,18 @@ class IrAssignment(IrStatement):
 class IrTransRetBasic(IrStatement):
     def __init__(self, exprIrs):
         super().__init__()
-        self.exprIrs = exprIrs
-        self.update_parent_child(exprIrs)
+        if isinstance(exprIrs, dict):
+            self.output_names = list(exprIrs.keys())
+            values = list(exprIrs.values())
+        else:
+            self.output_names = [str(i) for i in range(len(exprIrs))]
+            values = list(exprIrs)
+        self.update_parent_child(values)
+
+    def update_parent_child(self, children):
+        super().update_parent_child(children)
+        self.exprIrs = self.children
+        self.outputs = OrderedDict(zip(self.output_names, self.children))
 
 class IrTransRetIf(IrStatement):
     def __init__(self, condIr, lhsIr, rhsIr):
@@ -1934,4 +1962,3 @@ class IrProgram(IrAst):
         self.fstore = fstore
         self.irNodes = irNodes
         
-

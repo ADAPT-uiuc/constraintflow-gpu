@@ -11,6 +11,9 @@ class IRVisitor:
         
         elif isinstance(node, IR.IrVar):
             return self.visitIrVar(node)
+
+        elif isinstance(node, IR.IrDeadValue):
+            return self.visitIrDeadValue(node)
         
         elif isinstance(node, IR.IrEpsilon):
             return self.visitIrEpsilon(node)
@@ -51,6 +54,9 @@ class IRVisitor:
         elif isinstance(node, IR.IrAddDimensionConst):
             return self.visitIrAddDimensionConst(node)
         
+        elif isinstance(node, IR.IrSignSplit):
+            return self.visitIrBinaryOp(node)
+
         elif isinstance(node, IR.IrBinaryOp):
             return self.visitIrBinaryOp(node)
         

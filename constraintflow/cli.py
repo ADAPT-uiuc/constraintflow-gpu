@@ -47,6 +47,80 @@ def clear_jit_captures():
         shutil.rmtree(root)
 
 
+# Fusion passes to try; the lower/upper traversal pair lowers to linear/elementwise ops.
+BATCH_FUSION_PRE = ("batch_linear", "batch_clamp")
+BATCH_FUSION_POST = ("batch_linear_post_grad", "batch_aten_mul",
+                     "batch_aten_add", "batch_aten_sub", "batch_aten_div")
+
+
+def _enable_batch_fusion():
+    """Turn on inductor's group/batch fx fusions, tuned for a 2-member group."""
+    import torch._inductor.config as inductor_config
+
+    # Stock defaults reject our case: min_fuse_set_size is 5 and neither the
+    # same-parent nor the same-users search is on, but the lower/upper pair is a
+    # group of 2 that shares both its source polyexp and its consumer.
+    search_opts = {
+        "min_fuse_set_size": 2,
+        "fuse_nodes_with_same_parent": True,
+        "fuse_nodes_with_same_users": True,
+    }
+    inductor_config.pre_grad_fusion_options = {
+        name: dict(search_opts) for name in BATCH_FUSION_PRE}
+    inductor_config.post_grad_fusion_options = {
+        name: dict(search_opts) for name in BATCH_FUSION_POST}
+    # A cached graph predates this config, so a hit would time the unfused build.
+    inductor_config.force_disable_caches = True
+    typer.echo(f"Batch fusion on: pre={list(BATCH_FUSION_PRE)} post={list(BATCH_FUSION_POST)}")
+
+
+def _enable_combo_kernels():
+    """Let the scheduler merge data-independent kernels, which the default heuristics skip."""
+    import torch._inductor.config as inductor_config
+
+    inductor_config.combo_kernels = True
+    # Keep only combos that actually benchmark faster.
+    inductor_config.benchmark_combo_kernel = True
+    # 2 = also combine kernels of differing sizes.
+    inductor_config.combo_kernel_allow_mixed_sizes = 2
+    # The lower/upper chains share no reads with each other, which normally blocks fusion.
+    inductor_config.aggressive_fusion = True
+    inductor_config.force_disable_caches = True
+    typer.echo("Combo kernels on: combo_kernels, benchmark_combo_kernel, aggressive_fusion")
+
+
+def _enable_max_autotune():
+    """Autotune GEMM/pointwise kernel choices; large compile-time cost."""
+    import torch._inductor.config as inductor_config
+
+    inductor_config.max_autotune = True
+    inductor_config.max_autotune_gemm = True
+    inductor_config.max_autotune_pointwise = True
+    inductor_config.coordinate_descent_tuning = True
+    inductor_config.force_disable_caches = True
+    typer.echo("Max autotune on: max_autotune, max_autotune_gemm/pointwise, coordinate_descent_tuning")
+
+
+def _enable_debug_fusion():
+    """Annotate each generated kernel with the nodes that fused into it."""
+    import torch._inductor.config as inductor_config
+
+    inductor_config.debug_fusion = True
+    inductor_config.benchmark_fusion = True
+    inductor_config.force_disable_caches = True
+    typer.echo("Debug fusion on: generated kernels are annotated with their fused nodes")
+
+
+def _report_fusion():
+    """Report what fired, so a silent no-op is visible; fewer kernels means more fusion."""
+    from torch._dynamo.utils import counters
+    from torch._inductor import metrics
+
+    fired = {name: count for name, count in counters["inductor"].items() if count}
+    typer.echo(f"Inductor fx fusion counters: {fired or 'none'}")
+    typer.echo(f"Inductor kernels generated: {metrics.generated_kernel_count}")
+
+
 # --------------------------
 # Utility Functions
 # --------------------------
@@ -185,10 +259,8 @@ def compile_code(
 def compile(
     program_file: str = typer.Argument(..., help="ConstraintFlow program file"),
     output_path: str = typer.Option("output/", help="Output path for generated code"),
-    fuse_affine_subst: bool = typer.Option(False, "--fuse-affine-subst", help="Two optimizations gated by one flag: (1) skip both concretizing traversals at any Affine layer that feeds only further Affine layers (always sound; single_bound.py). (2) Assert every Affine op's L and U outputs are identical (true for all deeppoly*/crown specs here) and drop the redundant sign-split when a traverse() substitution step crosses an Affine layer -- only affects a jit reuse compile (no-op on plain compile, which never runs tensor_to_block); unsound if the assertion doesn't hold."),
 ):
     start_time = time.perf_counter()
-    globals.fuse_affine_subst.set_flag() if fuse_affine_subst else globals.fuse_affine_subst.reset_flag()
     compile_code(program_file, output_path)
     total_time = time.perf_counter() - start_time
     typer.echo(f"Total time: {total_time:.6f} seconds")
@@ -216,14 +288,16 @@ def simulacrum_compile(
     in_memory: bool = typer.Option(False, "--in-memory", help="Keep jit captures in a process-local dict instead of writing/reading capture files on disk (jit only)."),
     no_barriers: bool = typer.Option(False, "--no-barriers", help="Inline every single-use temporary unconditionally (skip is_safe_to_inline's safety analysis)."),
     inductor: bool = typer.Option(False, help="Emit @torch.compile(backend='inductor') on the reuse build"),
-    fuse_affine_subst: bool = typer.Option(True, "--fuse-affine-subst", help="Two optimizations gated by one flag: (1) skip both concretizing traversals at any Affine layer that feeds only further Affine layers (always sound; single_bound.py). (2) Assert every Affine op's L and U outputs are identical (true for all deeppoly*/crown specs here) and drop the redundant sign-split when a traverse() substitution step crosses an Affine layer -- unsound if the assertion doesn't hold. Both take effect on the simulacrum and reuse compile passes below."),
+    no_jit_semantic_opts: bool = typer.Option(False, "--no-jit-semantic-opts", help="Disable JIT semantic optimizations."),
+    explain_jit_opts: bool = typer.Option(True, "--explain-jit-opts", help="Report JIT semantic optimization decisions."),
 ):
     """
     Compile a ConstraintFlow program through the whole simulacrum+reuse pipeline
     in one shot.
     """
     start_time = time.perf_counter()
-    globals.fuse_affine_subst.set_flag() if fuse_affine_subst else globals.fuse_affine_subst.reset_flag()
+    globals.jit_semantic_opts.reset_flag() if no_jit_semantic_opts else globals.jit_semantic_opts.set_flag()
+    globals.explain_jit_opts.set_flag() if explain_jit_opts else globals.explain_jit_opts.reset_flag()
     try:
         os.makedirs(output_path, exist_ok=True)
     except OSError as e:
@@ -295,13 +369,11 @@ def simulacrum_compile(
     globals.reuse_mode.set_flag()
     if inductor:
         globals.inductor_mode.set_flag()
-    globals.set_network_path(network_file)
     try:
         compile_code(program_file, output_path)
     finally:
         globals.reuse_mode.reset_flag()
         globals.inductor_mode.reset_flag()
-        globals.set_network_path(None)
         if in_memory:
             globals.jit_store_clear()
 
@@ -336,6 +408,10 @@ def run(
     reuse: bool = typer.Option(False, help="Reuse the stored indices that were stored by running dummy blocks"),
     dense: bool = typer.Option(False, help="Use dense blocks by default"),
     inductor: bool = typer.Option(False, help="Use PyTorch Inductor for JIT compilation"),
+    batch_fusion: bool = typer.Option(False, help="Turn on inductor's group/batch fx fusion passes, tuned to find 2-member groups (the lower/upper traversal pair). Requires --inductor. Disables inductor's caches so a cache hit cannot serve the unfused build."),
+    combo_kernels: bool = typer.Option(False, "--combo-kernels", help="Let inductor's scheduler merge data-independent kernels into one (combo kernels + aggressive_fusion). Requires --inductor."),
+    max_autotune: bool = typer.Option(False, "--max-autotune", help="Autotune GEMM and pointwise kernel choices, and coordinate-descent tune configs. Requires --inductor. Substantially slower to compile."),
+    debug_fusion: bool = typer.Option(False, "--debug-fusion", help="Annotate each generated kernel with the nodes that fused into it, and benchmark fusion choices. Requires --inductor. Diagnostic only."),
     jit_dir: str = typer.Option("jit_captures", help="Common parent folder for all jit_* capture files"),
     no_barriers: bool = typer.Option(False, "--no-barriers", help="Inline every single-use temporary unconditionally (skip is_safe_to_inline's safety analysis). Lower peak memory, not guaranteed value-preserving."),
     warmup: int = typer.Option(0, help="Number of warmup runs on different data before the timed run"),
@@ -411,6 +487,23 @@ def run(
         raise typer.Exit(code=1)
     if aot_save:
         torch._dynamo.config.enable_aot_compile = True
+    tuning_flags = {"--batch-fusion": batch_fusion, "--combo-kernels": combo_kernels,
+                    "--max-autotune": max_autotune, "--debug-fusion": debug_fusion}
+    requested = [name for name, on in tuning_flags.items() if on]
+    if requested and not inductor:
+        typer.echo(f"Error: {', '.join(requested)} configure inductor; pass --inductor too.")
+        raise typer.Exit(code=1)
+    if requested and (aot_save or aot or use_cache):
+        typer.echo(f"Error: {', '.join(requested)} change the emitted kernels; --aot-save/--aot/--use-cache would serve ones built without them.")
+        raise typer.Exit(code=1)
+    if batch_fusion:
+        _enable_batch_fusion()
+    if combo_kernels:
+        _enable_combo_kernels()
+    if max_autotune:
+        _enable_max_autotune()
+    if debug_fusion:
+        _enable_debug_fusion()
 
     sys.path.insert(0, os.path.abspath(output_path))
     from main import run  # compiled code provides this
@@ -628,6 +721,8 @@ def run(
     total_time = sum(repeat_times)
     peak_bytes = max(repeat_peaks)
 
+    if inductor:
+        _report_fusion()
     typer.echo(f"Lower bounds: {lb}")
     typer.echo(f"Upper bounds: {ub}")
     typer.echo(f"Total time: {total_time:.6f} seconds")

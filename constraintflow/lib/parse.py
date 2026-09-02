@@ -297,17 +297,6 @@ def post_process(layers):
         layer.parents = layer.new_parents
         layer.children = layer.new_children
 
-    # feeds_nonlin: False iff every immediate consumer is itself Affine
-    # (Linear/Conv2D), i.e. this layer's l/u are never read by a relaxation.
-    # A layer with no children (only the synthesized spec layer) is conservatively
-    # left at the True default set in Layer.__init__.
-    for layer in new_layers:
-        if layer.children:
-            layer.feeds_nonlin = not all(
-                new_layers[child].type in (LayerType.Linear, LayerType.Conv2D)
-                for child in layer.children
-            )
-
     return new_layers
 
 

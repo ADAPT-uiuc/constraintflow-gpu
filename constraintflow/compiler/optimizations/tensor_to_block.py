@@ -3,11 +3,14 @@ import os
 import torch 
 
 from constraintflow.compiler.ir import *
-from constraintflow.compiler.optimizations import uses, fuse_affine_subst
+from constraintflow.compiler.optimizations import uses
+from constraintflow.compiler.optimizations import dead_outputs
+from constraintflow.compiler.optimizations import semantic_common
+from constraintflow.compiler.optimizations import sign_split
 from constraintflow.gbcsr.sparse_tensor import get_operator_func
 from constraintflow.lib.globals import load_capture, capture_exists
-from constraintflow.lib.network import LayerType
 import constraintflow.lib.globals as globals
+from constraintflow.lib import jit_semantics
 
 
 counter = -1
@@ -133,7 +136,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
     binary_instance = expr.ttb_counter
 
     if while_iteration is None and getattr(expr, "inside_while", False):
-        while_iteration = -1
+        while_iteration = getattr(expr, "while_iteration", -1)
     
     
     
@@ -1457,23 +1460,11 @@ def remove_while(layer_index, num_iterations, cfg, root_node, first_while_node, 
     second_while_block = cfg.ir[second_while_node]
     exit_block = cfg.ir[exit_node]
 
-    tensor_to_block_block(root_block, layer_index)
-    tensor_to_block_block(exit_block, layer_index)
-
-
-    layer_types = layer_parents = None
-    if globals.fuse_affine_subst.get_flag() and globals.network_path is not None:
-        layer_types, layer_parents = fuse_affine_subst._load_topology(globals.network_path)
-    affine_types = (LayerType.Linear, LayerType.Conv2D)
-
     ir_list = root_block.children
     for i in range(num_iterations):
         combined_list = copy.deepcopy(first_while_block.children + second_while_block.children)
-        if layer_parents is not None:
-            crossed = fuse_affine_subst.crossed_layer_at(layer_index, i, layer_parents)
-            is_affine = crossed is not None and layer_types.get(crossed) in affine_types
-            fuse_affine_subst.fuse_iteration(combined_list, is_affine)
-        tensor_to_block_block(None, layer_index=layer_index, ir_list=combined_list, while_iteration=i)
+        for statement in combined_list:
+            _set_while_iteration(statement, i)
         ir_list += combined_list
 
     ir_list += exit_block.children
@@ -1510,6 +1501,19 @@ def remove_while(layer_index, num_iterations, cfg, root_node, first_while_node, 
     cfg.nodes.remove(break_node)
     cfg.nodes.remove(exit_node)
 
+
+def _set_while_iteration(expr, iteration, seen=None):
+    if seen is None:
+        seen = set()
+    if isinstance(expr, int) or id(expr) in seen:
+        return
+    seen.add(id(expr))
+    if isinstance(expr, IrAst) and expr.inside_while:
+        expr.while_iteration = iteration
+    if hasattr(expr, 'children'):
+        for child in expr.children:
+            _set_while_iteration(child, iteration, seen)
+
 def unroll_while(cfg, layer_index):
     i = 0
     while True:
@@ -1522,13 +1526,10 @@ def unroll_while(cfg, layer_index):
         
         block = cfg.ir[node]
         if block.inner_jump is None:
-            tensor_to_block_block(block, layer_index)
             i+=1
         elif len(block.inner_jump) == 3:
-            tensor_to_block_block(block, layer_index)
             i+=1
         elif not isinstance(block.inner_jump[1], IrWhileBlock):
-            tensor_to_block_block(block, layer_index)
             i+=1
         else:
             root_node = node
@@ -1615,6 +1616,8 @@ def tensor_to_block(ir):
     # uses.populate_uses_defs(ir)
     filename = "jit_layers/layers.json"
     json_obj = load_capture(filename)
+    manifest = jit_semantics.load_manifest()
+    layer_cfgs = {}
     for transformer in ir.tstore.keys():
         for i in range(len(ir.tstore[transformer])):
             transformerIr = ir.tstore[transformer][i]
@@ -1632,5 +1635,30 @@ def tensor_to_block(ir):
                 unroll_while(cfg, layer_index)
                 collapse_cfg_to_single_block(cfg, layer_index)
                 new_cfgs[layer_index] = cfg
+                if layer_index in layer_cfgs:
+                    raise RuntimeError(
+                        f"reuse: duplicate transformer for layer {layer_index}")
+                layer_cfgs[layer_index] = cfg
 
             transformerIr.layerwise_cfgs = new_cfgs
+
+    split_stats = {"candidates": 0, "fused": 0}
+    dead_stats = {"disabled": True, "dead": 0, "assignments": 0}
+    if globals.jit_semantic_opts.get_flag():
+        # facts = semantic_common.equality_facts(layer_cfgs)
+        facts = {}
+        split_stats = sign_split.fuse_sign_splits(
+            layer_cfgs, facts, manifest)
+        dead_stats = dead_outputs.eliminate_dead_outputs(
+            layer_cfgs, manifest)
+
+    for layer_index, cfg in layer_cfgs.items():
+        tensor_to_block_cfg(cfg, layer_index)
+
+    if globals.explain_jit_opts.get_flag():
+        dead_state = "disabled" if dead_stats["disabled"] else str(dead_stats["dead"])
+        print(
+            "JIT semantic opts: "
+            f"sign-splits {split_stats['fused']}/{split_stats['candidates']}, "
+            f"dead outputs {dead_state}, "
+            f"removed assignments {dead_stats['assignments']}")
