@@ -4,6 +4,7 @@ from constraintflow.compiler.ir import (
 )
 
 _topology_cache = {}
+_fusion_total = 0  # DEBUG: running count of fusions across the whole compile
 
 
 def _load_topology(network_path):
@@ -104,6 +105,9 @@ def fuse_iteration(statements, is_affine):
     if not is_affine:
         return
 
+    global _fusion_total
+    fused_here = 0  # DEBUG
+
     for stmt in statements:
         if not isinstance(stmt, IrAssignment):
             continue
@@ -137,3 +141,8 @@ def fuse_iteration(statements, is_affine):
             a_node.update_parent_child([a_node.children[0], unclamped])
 
         stmt.update_parent_child([stmt.children[0], a_operand])
+        fused_here += 1  # DEBUG
+
+    if fused_here:  # DEBUG
+        _fusion_total += fused_here
+        print(f"[fuse_affine_subst] fused {fused_here} pair(s) this call (total so far: {_fusion_total})")
