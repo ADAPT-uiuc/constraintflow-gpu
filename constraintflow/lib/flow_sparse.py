@@ -9,6 +9,8 @@ import torch
 import torch.nn.functional as F
 import time
 
+_affine_skip_total = 0  # DEBUG: running count of Affine_skip dispatches across the whole run
+
 
 def get_dense_inlined(t):
     # Inlined get_dense; the simulacrum needs the real meta-tensor path.
@@ -104,6 +106,9 @@ class Flow:
         json_obj = {op.lower(): [] for op in JIT_OPS}
         json_obj.setdefault('affine_skip', [])
 
+        affine_total = 0  # DEBUG
+        affine_skip_count = 0  # DEBUG
+
         for tmp, layer in enumerate(self.model):
             t_time = time.time()
             poly_size = self.model[self.abs_elem.live_layers[-1]].end
@@ -128,6 +133,9 @@ class Flow:
                 affine_op = 'Affine'
                 if (not layer.feeds_nonlin) and hasattr(self.transformer, 'Affine_skip'):
                     affine_op = 'Affine_skip'
+                affine_total += 1  # DEBUG
+                if affine_op == 'Affine_skip':
+                    affine_skip_count += 1  # DEBUG
                 abs_shape = getattr(self.transformer, affine_op)(self.abs_elem, prev, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size, layer_index = tmp)
 
             elif layer.type == LayerType.Input:
@@ -189,6 +197,12 @@ class Flow:
                 #     print(f'Z: {abs_shape[2].mat}')
         lb = get_dense_inlined(abs_shape[0])
         ub = get_dense_inlined(abs_shape[1])
+
+        if affine_skip_count:  # DEBUG
+            global _affine_skip_total
+            _affine_skip_total += affine_skip_count
+            print(f"[single_bound] skipped {affine_skip_count}/{affine_total} affine layers this flow() call "
+                  f"(total so far: {_affine_skip_total})")
 
         if dummy_mode:
             save_capture("jit_layers/layers.json", json_obj)
