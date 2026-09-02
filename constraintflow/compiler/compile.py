@@ -18,7 +18,6 @@ from constraintflow.compiler.optimizations import cse
 from constraintflow.compiler.optimizations import rewrite
 from constraintflow.compiler.optimizations import subexp_inlining
 from constraintflow.compiler.optimizations import constant_folding
-from constraintflow.compiler import single_bound
 from constraintflow.lib.globals import *
 
 
@@ -66,8 +65,6 @@ def compile(inputfile, output_path):
     tree = parser.prog()
     
     ast = astBuilder.ASTBuilder().visit(tree)
-    if fuse_affine_subst.get_flag():
-        single_bound.inject_affine_skip(ast)
     astTC.ASTTC().visit(ast)
     
     converter = c2r.ConvertToIr()

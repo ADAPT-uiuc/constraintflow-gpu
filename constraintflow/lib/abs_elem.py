@@ -7,6 +7,7 @@ from constraintflow.lib.polyexp import *
 from constraintflow.lib.symexp import *
 from constraintflow.lib.llist import Llist
 from constraintflow.lib.globals import dummy_mode
+from constraintflow.lib import jit_semantics
 class Abs_elem_sparse:
     def __init__(self, d, types, network, batch_size=1, no_sparsity=False):
         if d.keys() != types.keys():
@@ -35,13 +36,17 @@ class Abs_elem_sparse:
         # res = copy.deepcopy(llist)
         if llist.llist_flag:
             res_llist = list(set(llist.llist).intersection(set(live_layers)))
-            res = Llist(llist.network, llist.initial_shape, llist=res_llist)
+            res = Llist(
+                llist.network, llist.initial_shape, llist=res_llist,
+                semantic_layers=llist.semantic_layers)
         else:
             res_llist = []
             for i in range(llist.start, llist.end):
                 if i in live_layers:
                     res_llist.append(i)
-            res = Llist(llist.network, llist.initial_shape, llist=res_llist)
+            res = Llist(
+                llist.network, llist.initial_shape, llist=res_llist,
+                semantic_layers=llist.semantic_layers)
             # res.llist = res_llist
             # res.llist_flag = True
             res.coalesce()
@@ -63,6 +68,10 @@ class Abs_elem_sparse:
             first-class objects in the JIT json.
         """
         start_time = time.time()
+        if dummy_mode:
+            jit_semantics.record_read(
+                key, llist.semantic_layers, layer_index, counter,
+                inside_while, while_number, while_iteration)
         llist = self.filter_non_live(llist)
         llist_compressed = self.live_layers
         owns_capture = json_list is None and dummy_mode
@@ -752,6 +761,9 @@ class Abs_elem_sparse:
             keys = list(self.d.keys())
             for i in range(len(abs_shape)):
                 key = keys[i+1]
+                if abs_shape[i] is None:
+                    self._overwrite_zero(key, llist.llist[0])
+                    continue
                 if self.types[key] in ['Float', 'Int', 'Bool']:
                     start_index = torch.tensor([0, self.network[min(llist.llist)].start])
                     end_index = torch.tensor([self.batch_size, self.network[max(llist.llist)].end])
@@ -825,6 +837,36 @@ class Abs_elem_sparse:
             self.live_layers = torch.nonzero(self.d['llist']).flatten().tolist()
         else:
             raise Exception('NOT NEEDED')
+
+    def _zero_tensor(self, total_size, tensor_type):
+        dims = len(total_size)
+        total_size = torch.tensor(total_size)
+        block = ConstBlock(0, total_size)
+        return SparseTensor(
+            [torch.zeros(dims, dtype=torch.int64)], [block], dims,
+            total_size, [total_size], tensor_type, 0)
+
+    def _overwrite_zero(self, key, layer_index):
+        layer = self.network[layer_index]
+        if self.types[key] in ['Float', 'Int', 'Bool']:
+            start = torch.tensor([0, layer.start])
+            local = [self.batch_size, layer.size]
+            value = self._zero_tensor(local, self.d[key].type)
+            self.d[key] = self.d[key].overwrite_from_index(value, start)
+            return
+        if self.types[key] in ['PolyExp', 'SymExp']:
+            start = torch.tensor([0, layer.start])
+            local = [self.batch_size, layer.size]
+            const = self._zero_tensor(local, self.d[key].const.type)
+            self.d[key].const = self.d[key].const.overwrite_from_index(const, start)
+            mat_start = torch.tensor([0, layer.start, 0])
+            mat_local = [
+                self.batch_size, layer.size,
+                int(self.d[key].mat.total_size[-1])]
+            mat = self._zero_tensor(mat_local, self.d[key].mat.type)
+            self.d[key].mat = self.d[key].mat.overwrite_from_index(mat, mat_start)
+            return
+        raise RuntimeError(f"zero output: unsupported field {key!r}")
     
     def update_dummy(self, llist: Llist, abs_shape):
         llist.decoalesce()

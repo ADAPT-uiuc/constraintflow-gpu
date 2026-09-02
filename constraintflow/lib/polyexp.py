@@ -196,20 +196,18 @@ class PolyExpSparse:
         return self.const
     
     def get_dense_layers(self):
-        layer = 0
+        if isinstance(self.mat, (float, int)):
+            return list(range(len(self.network))) if self.mat != 0 else []
         dense_layers = set()
-        for j, i in enumerate(self.mat.start_indices):
-            while(True):
-                if self.network[layer].start<=i[-1]:
-                    break
-                layer+=1
-            
-            while(True):
-                dense_layers.add(layer)
-                if self.network[layer].start<=self.mat.end_indices[j][-1]:
-                    break
-                layer+=1
-        return list(dense_layers)
+        if self.mat.dense_const != 0:
+            dense_layers.update(range(len(self.network)))
+        for start, end in zip(self.mat.start_indices, self.mat.end_indices):
+            lo = int(start[-1])
+            hi = int(end[-1])
+            for layer_index, layer in enumerate(self.network):
+                if lo < layer.end and hi > layer.start:
+                    dense_layers.add(layer_index)
+        return sorted(dense_layers)
     
     def create_similar(self, network=None, mat=None, const=None):
         if network == None:

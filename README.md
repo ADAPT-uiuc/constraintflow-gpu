@@ -140,6 +140,11 @@ constraintflow compile example.cf --reuse --compile [OPTIONS]
 | `--print-intermediate-results` | Print intermediate results during execution | False             |
 | `--no-sparsity`                | Disable sparsity optimizations              | False             |
 | `--output-path`                | Path where compiled program is stored       | `output/`         |
+| `--no-jit-semantic-opts`       | Disable JIT semantic optimizations          | False             |
+| `--explain-jit-opts`           | Report semantic optimization decisions      | False             |
+
+See [the semantic optimization design](docs/semantic-optimizations.md) for the
+matching rules and trace contract.
 
 ## 📄 Citations
 

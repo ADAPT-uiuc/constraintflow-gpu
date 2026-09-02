@@ -11,7 +11,8 @@ from constraintflow.lib.globals import dummy_mode, save_capture
 
 class Llist:
     """List of layers."""
-    def __init__(self, network, initial_shape, start=None, end=None, llist=None):
+    def __init__(self, network, initial_shape, start=None, end=None, llist=None,
+                 semantic_layers=None):
         # network type: lib.network.Network
         self.network = network
         # Is this understanding correct:
@@ -24,6 +25,10 @@ class Llist:
         # list of layers by their layer No. (index in `Network`, which is a
         # list of `Layer`s)
         self.llist = llist
+        self.semantic_layers = list(
+            llist if semantic_layers is None and llist is not None
+            else semantic_layers or []
+        )
         self.llist_flag = True
         if llist==None:
             self.llist_flag = False

@@ -11,17 +11,6 @@ def set_jit_root(path):
     global jit_root
     jit_root = path
 
-# Resolved --network path for the *reuse* compile pass of `jit`, set right before
-# that pass runs. Only fuse_affine_subst.py reads this (to re-derive layer
-# types/topology, which the reuse compile otherwise never needs -- it works
-# purely from jit_captures). None outside a jit reuse compile with
-# --fuse-affine-subst engaged.
-network_path = None
-
-def set_network_path(path):
-    global network_path
-    network_path = path
-
 def jit_path(*parts):
     """Resolve a jit capture path under jit_root.
 
@@ -102,20 +91,8 @@ no_barriers = Flag()
 # _jit_store dict instead of written to / read from disk. See save_capture.
 in_memory_captures = Flag()
 
-# --fuse-affine-subst (compile, jit): gates two optimizations.
-# (1) single_bound.py's inject_affine_skip: skip both concretizing traversals at
-# any Affine layer that feeds only further Affine layers (see network.py's
-# feeds_nonlin). Always sound -- with stop_traverse=false, such a layer's
-# concrete l/u have zero consumers -- but there's no dedicated flag for it, so
-# it rides on this one instead of always running unconditionally.
-# (2) the user asserts every Affine op's L and U outputs are identical (true for
-# all deeppoly*/crown specs in this repo). Under that assertion, a traverse()
-# substitution step through an Affine layer needs no clamp-based sign split --
-# clamp+(c).L + clamp-(c).U collapses to c.L exactly. Only takes effect during a
-# jit reuse compile (tensor_to_block.py); a no-op on plain `compile` since that
-# path never runs tensor_to_block. Unsound if the assertion is violated -- the
-# flag exists precisely to shift that burden to the caller, so default off.
-fuse_affine_subst = Flag()
+jit_semantic_opts = Flag(initial=True)
+explain_jit_opts = Flag()
 
 
 class DeviceMode:

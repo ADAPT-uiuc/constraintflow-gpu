@@ -600,7 +600,7 @@ class ConvertToIr(astVisitor.ASTVisitor):
         synthesized ops (see compiler/builtin_ops.py) that build exprIrs without
         an AST can reuse the same return-shaping logic instead of duplicating it."""
         seqIr = []
-        retlist = []
+        retlist = {}
         for i in range(len(self.shape.keys())):
             exprIr = exprIrs[i]
 
@@ -628,7 +628,7 @@ class ConvertToIr(astVisitor.ASTVisitor):
                     temp = IrAssignment(varIr, IrRepeat(exprIr, expand_irMetadata(exprIr.irMetadata)))
 
             seqIr.append(temp)
-            retlist.append(varIr)
+            retlist[list(self.shape.keys())[i]] = varIr
         return seqIr, retlist
 
     def merge_condition(self, ast_node):
@@ -668,7 +668,7 @@ class ConvertToIr(astVisitor.ASTVisitor):
         if ast_node.op.op_name == 'Relu' or ast_node.op.op_name == 'Abs' or ast_node.op.op_name == 'HardSigmoid' or ast_node.op.op_name == 'HardTanh' or ast_node.op.op_name == 'Sigmoid':
             self.store['curr'] = IrVar('curr', [IrMetadataElement([1, IrAst.curr_size], 'Neuron', [IrAst.batch_size, 1], False)])
             self.store['prev'] = IrVar('prev', [IrMetadataElement([1, IrAst.curr_size], 'Neuron', [IrAst.batch_size, 1], False)])
-        elif ast_node.op.op_name in ('Affine', 'Affine_skip'):
+        elif ast_node.op.op_name == 'Affine':
             self.store['curr'] = IrVar('curr', [IrMetadataElement([1, IrAst.curr_size], 'Neuron', [IrAst.batch_size, 1], False)])
             self.store['prev'] = IrVar('prev', [IrMetadataElement([1, 1, IrAst.prev_size], 'Neuron', [IrAst.batch_size, IrAst.curr_size, 1], False)])
         else:

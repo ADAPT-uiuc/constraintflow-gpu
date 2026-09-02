@@ -4,6 +4,7 @@ from constraintflow.lib.symexp import *
 from constraintflow.lib.llist import *
 from constraintflow.lib.network import Network, LayerType, JIT_OP_FOR_LAYER, JIT_OPS
 from constraintflow.lib.globals import *
+from constraintflow.lib import jit_semantics
 
 import torch
 import torch.nn.functional as F
@@ -104,7 +105,8 @@ class Flow:
         size = self.model.input_size
 
         json_obj = {op.lower(): [] for op in JIT_OPS}
-        json_obj.setdefault('affine_skip', [])
+        if dummy_mode:
+            jit_semantics.begin_trace(self.model)
 
         affine_total = 0  # DEBUG
         affine_skip_count = 0  # DEBUG
@@ -126,6 +128,7 @@ class Flow:
             elif layer.type == LayerType.Linear or layer.type == LayerType.Conv2D:
                 prev = Llist(self.model, [1, 1], None, None, layer.parents)
                 curr = Llist(self.model, [1], None, None, [tmp])
+<<<<<<< Updated upstream
                 # Affine_skip is unconditionally injected by single_bound.py's
                 # inject_affine_skip, so every compiled transformer has it; the
                 # hasattr guard just protects against a stale output/ directory
@@ -137,6 +140,9 @@ class Flow:
                 if affine_op == 'Affine_skip':
                     affine_skip_count += 1  # DEBUG
                 abs_shape = getattr(self.transformer, affine_op)(self.abs_elem, prev, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size, layer_index = tmp)
+=======
+                abs_shape = self.transformer.Affine(self.abs_elem, prev, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size, layer_index = tmp)
+>>>>>>> Stashed changes
 
             elif layer.type == LayerType.Input:
                 continue
@@ -154,7 +160,7 @@ class Flow:
                 abs_shape = self.transformer.Concat(self.abs_elem, prev1, prev2, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size, layer_index = tmp)
             else:
                 raise NotImplementedError(f'Flow.flow(): unsupported layer type {layer.type}')
-            op_key = affine_op.lower() if layer.type in (LayerType.Linear, LayerType.Conv2D) else JIT_OP_FOR_LAYER[layer.type].lower()
+            op_key = JIT_OP_FOR_LAYER[layer.type].lower()
             json_obj[op_key].append(tmp)
             size += curr_size
             prev_size = self.model[tmp].size
@@ -206,6 +212,10 @@ class Flow:
 
         if dummy_mode:
             save_capture("jit_layers/layers.json", json_obj)
+            jit_semantics.finish_trace(
+                [key for key in self.abs_elem.types if key != 'llist'], tmp,
+                self.print_intermediate_results,
+                not (self.no_sparsity or dense_default_mode.get_flag()))
 
 
         return lb, ub

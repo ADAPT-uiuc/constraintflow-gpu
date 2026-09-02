@@ -71,10 +71,6 @@ class Layer:
         self.parents = parents
         self.children = list()
         self.last_layer = False
-        # True unless every immediate consumer is Linear/Conv2D (set precisely in
-        # parse.py's post_process, once children are final). Conservative default
-        # so a layer nothing recomputes this for is treated as needing traversal.
-        self.feeds_nonlin = True
 
 class LayerType(Enum):
     Conv2D = 1
