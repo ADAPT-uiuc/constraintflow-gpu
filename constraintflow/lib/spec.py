@@ -14,21 +14,37 @@ class ImageDataset:
     cifar10_std = torch.tensor([0.2023, 0.1994, 0.2010]).reshape(1, -1, 1, 1)
     imagenet_mean = torch.tensor([0.485, 0.456, 0.406]).reshape(1, -1, 1, 1)
     imagenet_std = torch.tensor([0.229, 0.224, 0.225]).reshape(1, -1, 1, 1)
+    _normalization_cache = {}
     
     def __init__(self):
         pass
 
+    @staticmethod
+    def _normalization(image, dataset):
+        if dataset == 'mnist':
+            canonical_dataset = 'mnist'
+            mean, std = ImageDataset.mnist_mean, ImageDataset.mnist_std
+        elif dataset in ['cifar10', 'cifar']:
+            canonical_dataset = 'cifar10'
+            mean, std = ImageDataset.cifar10_mean, ImageDataset.cifar10_std
+        elif dataset in ['tinyimagenet', 'imagenet']:
+            canonical_dataset = 'imagenet'
+            mean, std = ImageDataset.imagenet_mean, ImageDataset.imagenet_std
+        else:
+            return None, None
+
+        key = (canonical_dataset, str(image.device), image.dtype)
+        if key not in ImageDataset._normalization_cache:
+            ImageDataset._normalization_cache[key] = (
+                mean.to(device=image.device, dtype=image.dtype),
+                std.to(device=image.device, dtype=image.dtype),
+            )
+        return ImageDataset._normalization_cache[key]
+
     def create_l(image, network_size, batch_size, eps = 0.01, dataset = 'mnist', no_sparsity=False):
         l = torch.clip(image - eps, min=0., max=1.)
-        if dataset == 'mnist':
-            l = (l - ImageDataset.mnist_mean) / ImageDataset.mnist_std
-        elif dataset in ['cifar10', 'cifar']:
-            mean = ImageDataset.cifar10_mean.expand(l.shape)
-            std = ImageDataset.cifar10_std.expand(l.shape)
-            l = (l - mean) / std
-        elif dataset in ['tinyimagenet', 'imagenet']:
-            mean = ImageDataset.imagenet_mean.expand(l.shape)
-            std = ImageDataset.imagenet_std.expand(l.shape)
+        mean, std = ImageDataset._normalization(l, dataset)
+        if mean is not None:
             l = (l - mean) / std
         l = l.reshape(batch_size,-1)
         l = create_sparse_init(l, float('-inf'), batch_size, network_size, no_sparsity)
@@ -36,12 +52,9 @@ class ImageDataset:
 
     def create_u(image, network_size, batch_size, eps = 0.01, dataset = 'mnist', no_sparsity=False):
         u = torch.clip(image + eps, min=0., max=1.)
-        if dataset == 'mnist':
-            u = (u - ImageDataset.mnist_mean) / ImageDataset.mnist_std
-        elif dataset in ['cifar10', 'cifar']:
-            u = (u - ImageDataset.cifar10_mean) / ImageDataset.cifar10_std
-        elif dataset in ['tinyimagenet', 'imagenet']:
-            u = (u - ImageDataset.imagenet_mean) / ImageDataset.imagenet_std
+        mean, std = ImageDataset._normalization(u, dataset)
+        if mean is not None:
+            u = (u - mean) / std
         u = u.reshape(batch_size, -1)
         u = create_sparse_init(u, float('inf'), batch_size, network_size, no_sparsity)
         return u
@@ -63,12 +76,14 @@ class ImageDataset:
             num_classes = 10
         elif dataset in ['tinyimagenet', 'imagenet']:
             num_classes = 200
-        weight = (torch.eye(num_classes).type_as(X)[y].unsqueeze(1)
-            - torch.eye(num_classes).type_as(X).unsqueeze(0))
-        I = (~(y.unsqueeze(1) == torch.arange(num_classes).type_as(y).unsqueeze(0)))
+        y = y.to(device=X.device)
+        eye = torch.eye(num_classes, device=X.device, dtype=X.dtype)
+        weight = eye[y].unsqueeze(1) - eye.unsqueeze(0)
+        class_indices = torch.arange(num_classes, device=X.device, dtype=y.dtype)
+        I = (~(y.unsqueeze(1) == class_indices.unsqueeze(0)))
         weight = (weight[I].view(X.size(0), num_classes - 1, num_classes))
 
-        bias = torch.zeros(num_classes - 1, dtype=torch.float32)
+        bias = torch.zeros(num_classes - 1, device=X.device, dtype=X.dtype)
         return weight, bias
     
 

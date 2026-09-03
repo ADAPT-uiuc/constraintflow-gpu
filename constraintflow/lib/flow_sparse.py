@@ -4,6 +4,8 @@ from constraintflow.lib.symexp import *
 from constraintflow.lib.llist import *
 from constraintflow.lib.network import Network, LayerType, JIT_OP_FOR_LAYER, JIT_OPS
 from constraintflow.lib.globals import *
+from constraintflow.lib import entry_capture
+from constraintflow.gbcsr.sparse_tensor import _tdtype
 
 import torch
 import torch.nn.functional as F
@@ -16,7 +18,7 @@ def get_dense_inlined(t):
     # Inlined get_dense; the simulacrum needs the real meta-tensor path.
     if dummy_mode:
         return t.get_dense()
-    res = torch.ones(list(t.total_size), dtype=t.type) * t.dense_const
+    res = torch.ones(list(t.total_size), dtype=_tdtype(t.type)) * t.dense_const
     for i in range(t.num_blocks):
         s = [slice(int(t.start_indices[i][j]), int(t.end_indices[i][j])) for j in range(t.start_indices[i].shape[0])]
         b = t.blocks[i]
@@ -100,11 +102,15 @@ class Flow:
 
     def flow(self):
         begin_time = time.time()
+        if dummy_mode:
+            entry_capture.save_entry_capture(self.abs_elem)
         prev_size = self.model.input_size
         size = self.model.input_size
 
         json_obj = {op.lower(): [] for op in JIT_OPS}
         json_obj.setdefault('affine_skip', [])
+        # Per-layer scalars the generated flow() bakes in as literals (--fused-flow).
+        flow_obj = []
 
         affine_total = 0  # DEBUG
         affine_skip_count = 0  # DEBUG
@@ -156,9 +162,12 @@ class Flow:
                 raise NotImplementedError(f'Flow.flow(): unsupported layer type {layer.type}')
             op_key = affine_op.lower() if layer.type in (LayerType.Linear, LayerType.Conv2D) else JIT_OP_FOR_LAYER[layer.type].lower()
             json_obj[op_key].append(tmp)
+            flow_obj.append({'layer': tmp, 'op_key': op_key, 'poly_size': int(poly_size),
+                             'curr_size': int(curr_size), 'prev_size': int(prev_size),
+                             'input_size': int(self.input_size)})
             size += curr_size
             prev_size = self.model[tmp].size
-            self.abs_elem.update(curr, abs_shape)
+            self.abs_elem.update(curr, abs_shape, layer_index=tmp)
             # print(f"abs_elem: {tmp}")
             # print(f"LList")
             # print(self.abs_elem.d['llist'])
@@ -206,6 +215,8 @@ class Flow:
 
         if dummy_mode:
             save_capture("jit_layers/layers.json", json_obj)
+            if fused_flow:
+                save_capture("jit_flow/flow.json", flow_obj)
 
 
         return lb, ub

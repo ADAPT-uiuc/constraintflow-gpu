@@ -2,20 +2,13 @@ import os
 import json
 
 # Common parent folder under which every jit_* capture directory is created
-# during simulacrum (write) and read back from during reuse. Both phases share
-# this root so the captures stay consistent. Relative to CWD by default; the CLI
-# overrides it via set_jit_root() from the --jit-dir option.
 jit_root = "jit_captures"
 
 def set_jit_root(path):
     global jit_root
     jit_root = path
 
-# Resolved --network path for the *reuse* compile pass of `jit`, set right before
-# that pass runs. Only fuse_affine_subst.py reads this (to re-derive layer
-# types/topology, which the reuse compile otherwise never needs -- it works
-# purely from jit_captures). None outside a jit reuse compile with
-# --fuse-affine-subst engaged.
+# For fuse-affine.
 network_path = None
 
 def set_network_path(path):
@@ -32,12 +25,7 @@ def jit_path(*parts):
     return os.path.join(jit_root, *parts)
 
 
-# When in_memory_captures is set (via `jit --in-memory`), jit captures live in
-# this process-local dict instead of on disk: the key is the capture's relative
-# path (the same string that would be the on-disk filename, e.g.
-# "jit_binary/binary_0_1_False_None_None.json") and the value is the JSON-encoded
-# capture, so it is byte-for-byte equivalent to the file it replaces. This only
-# works within the single `jit` process.
+# jit-memory
 _jit_store = {}
 
 def jit_store_clear():
@@ -116,6 +104,18 @@ in_memory_captures = Flag()
 # path never runs tensor_to_block. Unsound if the assertion is violated -- the
 # flag exists precisely to shift that burden to the caller, so default off.
 fuse_affine_subst = Flag()
+
+# --paired-unroll (jit): interleave the paired lower/upper traverse() loops
+# instead of unrolling them back to back. Reuse compile only.
+paired_unroll = Flag()
+
+# --fused-flow (jit): emit a layer-unrolled flow() into transformers.py, with
+# abs_elem.update replayed from its capture, and compile it as one graph.
+fused_flow = Flag()
+
+# --sroa (jit): splice every layer into one flow() and scalar-replace the
+# Jit* aggregates. Requires reuse_mode + fused_flow.
+sroa = Flag(True)
 
 
 class DeviceMode:

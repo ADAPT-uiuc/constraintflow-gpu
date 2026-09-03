@@ -7,7 +7,17 @@ import re
 from . import irVisitor
 import copy
 from .ir import *
-from constraintflow.lib.globals import dummy_mode, reuse_mode, load_capture, capture_exists, inductor_mode
+from constraintflow.lib.globals import dummy_mode, reuse_mode, load_capture, capture_exists, inductor_mode, fused_flow, sroa
+
+def fused_build():
+    """True only on the reuse pass of a --fused-flow build, where flow() is emitted."""
+    return reuse_mode.get_flag() and fused_flow.get_flag()
+
+
+def sroa_build():
+    """True only on the reuse pass of an --sroa build."""
+    return fused_build() and sroa.get_flag()
+
 
 # Matches a torch.tensor(...) call whose contents are a pure numeric literal
 # (no identifiers), e.g. torch.tensor([1, 6272], dtype=torch.int64) or
@@ -61,7 +71,8 @@ class CodeGen(irVisitor.IRVisitor):
         self.write("import sys")
         self.write("import os")
         self.write("from constraintflow.lib.spec import *")
-        self.write("from constraintflow.lib.flow_sparse import Flow")
+        self.write("from constraintflow.lib.flow_sparse import Flow" +
+                   (", get_dense_inlined" if fused_flow.get_flag() else ""))
         self.write("from constraintflow.lib.abs_elem import Abs_elem_sparse")
         self.write("from constraintflow.lib.symexp import *")
         self.write("from constraintflow.lib.globals import save_capture, inductor_mode")
@@ -101,6 +112,83 @@ class CodeGen(irVisitor.IRVisitor):
         # treats as a hard error, so that method must compile with
         # fullgraph=False instead.
         self._method_has_view_write = False
+        # Sticky across all methods: decides flow()'s fullgraph in a --fused-flow build.
+        self._any_view_write = False
+        # (op, layer_index) in emission order, for the generated flow().
+        self.layer_calls = []
+
+    # Llist params the fused flow passes as None; a body that reads one would be miscompiled.
+    _LLIST_PARAMS = ('prev', 'curr', 'prev1', 'prev2')
+
+    def _check_no_llist_params(self, opStmtIr, layer_index, body_text):
+        """Reject a specialized body that still reads a Llist parameter."""
+        body = body_text.split('\n', 1)[1] if '\n' in body_text else ''
+        for name in self._LLIST_PARAMS:
+            if name in opStmtIr.params and re.search(r'\b' + name + r'\b', body):
+                raise RuntimeError(
+                    f"fused flow: {opStmtIr.op}_{layer_index} still reads the Llist parameter "
+                    f"{name!r}, which flow() does not reconstruct")
+
+    def emit_flow(self, node):
+        """Emit the layer-unrolled flow() that replaces the interpretive Flow.flow."""
+        certifier = next(n.transformer for n in node.irNodes if isinstance(n, IrFlow))
+        layers = {row['layer']: row for row in load_capture('jit_flow/flow.json')}
+        calls = sorted(self.layer_calls, key=lambda c: c[0])
+        if sorted(layers) != [c[0] for c in calls]:
+            raise RuntimeError(
+                f"fused flow: flow.json covers layers {sorted(layers)} but the specialized "
+                f"methods cover {[c[0] for c in calls]}")
+        fields = list(self.shape.keys())
+        state = ', '.join('d_' + key for key in fields)
+        # Each method returns its abstract shape followed by the new threaded state.
+        shape_out = ', '.join('s_' + key for key in fields)
+
+        self.indent = 0
+        self.write('')
+        self.write('_T = ' + certifier + '()')
+        if inductor_mode.get_flag():
+            self.write('@torch.compile(fullgraph=' + str(not self._any_view_write) + ', backend="inductor")')
+        self.write('def flow(abs_elem, batch_size):')
+        self.indent += 1
+        self.write(state + ' = ' + ', '.join("abs_elem.d['" + key + "']" for key in fields))
+        for layer_index, op, params in calls:
+            row = layers[layer_index]
+            args = []
+            for name in params:
+                if name in self._LLIST_PARAMS:
+                    args.append('None')
+                elif name in ('poly_size', 'curr_size', 'prev_size', 'input_size'):
+                    args.append(str(row[name]))
+                else:
+                    args.append(name)
+            self.write(shape_out + ', ' + state + ' = _T.' + op + '_' + str(layer_index)
+                       + '(' + ', '.join(args) + ', layer_index = ' + str(layer_index) + ')')
+        self.write('return ' + shape_out)
+        self.indent -= 1
+        self.write('')
+
+    def emit_sroa_flow(self, node):
+        """Emit explode_inputs() and the scalarized flow()."""
+        real_file = self.file
+        self.file = io.StringIO()
+        self.indent = 1
+        self.visit(node.flow_block)
+        body_text = self.file.getvalue()
+        self.file = real_file
+        self.indent = 0
+        self.write('')
+        # No leading underscore: `from transformers import *` drops those.
+        self.write('def explode_inputs(abs_elem, batch_size):')
+        self.indent += 1
+        self.write('return (' + ', '.join(path for _, path in node.flow_params) + ',)')
+        self.indent -= 1
+        self.write('')
+        if inductor_mode.get_flag():
+            self.write('@torch.compile(fullgraph=' + str(not self._method_has_view_write)
+                       + ', backend="inductor")')
+        self.write('def flow(' + ', '.join(name for name, _ in node.flow_params) + '):')
+        self.file.write(body_text)
+        self.write('')
 
     def _const(self, text):
         """Intern a literal torch.tensor(...) expression into the shared constant
@@ -235,6 +323,8 @@ class CodeGen(irVisitor.IRVisitor):
         if not reuse_mode.get_flag():
             self.write('from constraintflow.gbcsr.tensor_ops import *')
         for i, transformer_name in enumerate(node.tstore.keys()):
+            if sroa_build():
+                break
             self.write('class ' + transformer_name + ':')
             self.indent += 1
 
@@ -242,6 +332,8 @@ class CodeGen(irVisitor.IRVisitor):
 
             for j, opStmtIr in enumerate(transformerIr):
                 param_list = ', '.join(opStmtIr.params)
+                # Under --fused-flow the specialized methods take the threaded state too.
+                layerwise_list = ', '.join(opStmtIr.layerwise_params or opStmtIr.params)
                 if opStmtIr.layerwise_cfgs is None:
                     self.write('def ' + opStmtIr.op + '(self, ' + param_list + ', layer_index = None):')
                     self.indent += 1
@@ -263,23 +355,28 @@ class CodeGen(irVisitor.IRVisitor):
                     # self.write('max_entries=1000000')
                     # self.indent -= 1
                     # self.write(')')
-                    for layer_index in opStmtIr.layerwise_cfgs.keys():
-                        self.write('if layer_index == ' + str(layer_index) + ':')
-                        self.indent += 1
-                        self.write('return self.' + opStmtIr.op + '_' + str(layer_index) + '(' + param_list + ', layer_index = layer_index)')
-                        self.indent -= 1
-                    self.write("raise RuntimeError(f'no specialized kernel for " + opStmtIr.op + " at layer {layer_index}')")
+                    if opStmtIr.layerwise_params is None:
+                        for layer_index in opStmtIr.layerwise_cfgs.keys():
+                            self.write('if layer_index == ' + str(layer_index) + ':')
+                            self.indent += 1
+                            self.write('return self.' + opStmtIr.op + '_' + str(layer_index) + '(' + param_list + ', layer_index = layer_index)')
+                            self.indent -= 1
+                        self.write("raise RuntimeError(f'no specialized kernel for " + opStmtIr.op + " at layer {layer_index}')")
+                    else:
+                        # Fused builds drive the specialized methods from flow(), not from here.
+                        self.write("raise RuntimeError('" + opStmtIr.op + ": this is a --fused-flow build; call flow() instead')")
                     self.indent -= 1
                     self.write('')
 
                     for layer_index in opStmtIr.layerwise_cfgs.keys():
+                        self.layer_calls.append((layer_index, opStmtIr.op, opStmtIr.layerwise_params))
                         # Buffer the body first so we know, after visiting it,
                         # whether it used a view-write helper before deciding
                         # fullgraph=True vs False for this method's decorator.
                         self._method_has_view_write = False
                         real_file = self.file
                         self.file = io.StringIO()
-                        self.write('def ' + opStmtIr.op + '_' + str(layer_index) + '(self, ' + param_list + ', layer_index = None):')
+                        self.write('def ' + opStmtIr.op + '_' + str(layer_index) + '(self, ' + layerwise_list + ', layer_index = None):')
                         self.indent += 1
                         self.write('while_iteration = -1')
                         cfg = opStmtIr.layerwise_cfgs[layer_index]
@@ -289,13 +386,22 @@ class CodeGen(irVisitor.IRVisitor):
                         self.write('', True)
                         body_text = self.file.getvalue()
                         self.file = real_file
-                        if inductor_mode.get_flag():
+                        self._any_view_write |= self._method_has_view_write
+                        # Fused builds carry one decorator on flow() instead of one per method.
+                        if inductor_mode.get_flag() and not fused_build():
                             fullgraph = not self._method_has_view_write
                             self.write('@torch.compile(fullgraph=' + str(fullgraph) + ', backend="inductor")')
+                        if fused_build():
+                            self._check_no_llist_params(opStmtIr, layer_index, body_text)
                         self.file.write(body_text)
             self.indent -=1
 
-        if reuse_mode.get_flag():
+        if sroa_build():
+            self.emit_sroa_flow(node)
+        elif fused_build():
+            self.emit_flow(node)
+
+        if reuse_mode.get_flag() and not (sroa_build() and not self.used_block_classes):
             # Defined after use; names resolve when the methods are called.
             self.indent = 0
             for helper_src in self.view_write_helpers:
@@ -1403,6 +1509,22 @@ class CodeGen(irVisitor.IRVisitor):
     
     def visitIrFlow(self, node):
         self.indent += 1
+        if sroa_build():
+            self.write('res = flow(*explode_inputs(abs_elem, batch_size))')
+            self.write('if not inductor_mode.get_flag():')
+            self.write('    print("Peak memory usage:", torch.cuda.max_memory_allocated() / 1024**2, "MB")')
+            self.write('return res')
+            self.indent -= 1
+            return
+        if fused_build():
+            # The unrolled flow() returns the final abstract shape; densify it here.
+            self.write('abs_shape = flow(abs_elem, batch_size)')
+            self.write('res = get_dense_inlined(abs_shape[0]), get_dense_inlined(abs_shape[1])')
+            self.write('if not inductor_mode.get_flag():')
+            self.write('    print("Peak memory usage:", torch.cuda.max_memory_allocated() / 1024**2, "MB")')
+            self.write('return res')
+            self.indent -= 1
+            return
         self.write('flow = Flow(abs_elem, ' + str(node.transformer) + '(), network, print_intermediate_results, no_sparsity)')
         self.write('res = flow.flow()')
         self.write('if not inductor_mode.get_flag():')

@@ -10,6 +10,7 @@ globals.reuse_mode.set_flag() if "--reuse" in argv else globals.reuse_mode.reset
 globals.dense_default_mode.set_flag() if "--dense" in argv else globals.dense_default_mode.reset_flag()
 globals.no_barriers.set_flag() if "--no-barriers" in argv else globals.no_barriers.reset_flag()
 globals.inductor_mode.set_flag() if "--inductor" in argv else globals.inductor_mode.reset_flag()
+globals.sroa.reset_flag() if "--no-sroa" in argv else globals.sroa.set_flag()
 
 print(f'dummy_mode in cli: {globals.dummy_mode}')
 print(f'reuse_mode in cli: {globals.reuse_mode}')
@@ -81,7 +82,27 @@ def _stem(path: str) -> str:
     return os.path.splitext(os.path.basename(path))[0]
 
 
-def get_dataset(batch_size: int, dataset: str, train: bool = False):
+def _configure_cuda_cpu_threads() -> None:
+    """Cap eager ATen CPU parallelism before the first compiled CUDA run."""
+    raw_limit = os.environ.get("CF_CPU_THREADS", "8")
+    try:
+        limit = int(raw_limit)
+    except ValueError:
+        typer.echo(f"Error: CF_CPU_THREADS must be a positive integer, got {raw_limit!r}.")
+        raise typer.Exit(code=1)
+    if limit < 1:
+        typer.echo(f"Error: CF_CPU_THREADS must be a positive integer, got {raw_limit!r}.")
+        raise typer.Exit(code=1)
+
+    torch.set_num_threads(min(torch.get_num_threads(), limit))
+
+
+def get_dataset(
+    batch_size: int,
+    dataset: str,
+    train: bool = False,
+    device: str | torch.device | None = None,
+):
     if dataset == "mnist":
         transform = transforms.ToTensor()  # keep 28x28
         data = datasets.MNIST(root=".", train=train, download=True, transform=transform)
@@ -124,13 +145,23 @@ def get_dataset(batch_size: int, dataset: str, train: bool = False):
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
 
-    dataloader = DataLoader(data, batch_size=batch_size, shuffle=False)
+    target_device = torch.device(device) if device is not None else None
+    pin_memory = target_device is not None and target_device.type == "cuda"
+    dataloader = DataLoader(
+        data,
+        batch_size=batch_size,
+        shuffle=False,
+        pin_memory=pin_memory,
+    )
     image, label = next(iter(dataloader))
     if dataset == 'tinyimagenet':
         image = image[:, :, :56, :56]  # ensure 3 channels
     # ensure labels are a tensor
     if not isinstance(label, torch.Tensor):
         label = torch.tensor(label)
+    if target_device is not None:
+        image = image.to(target_device, non_blocking=pin_memory)
+        label = label.to(target_device, non_blocking=pin_memory)
     return image, label
 
 
@@ -216,7 +247,10 @@ def simulacrum_compile(
     in_memory: bool = typer.Option(False, "--in-memory", help="Keep jit captures in a process-local dict instead of writing/reading capture files on disk (jit only)."),
     no_barriers: bool = typer.Option(False, "--no-barriers", help="Inline every single-use temporary unconditionally (skip is_safe_to_inline's safety analysis)."),
     inductor: bool = typer.Option(False, help="Emit @torch.compile(backend='inductor') on the reuse build"),
-    fuse_affine_subst: bool = typer.Option(True, "--fuse-affine-subst", help="Two optimizations gated by one flag: (1) skip both concretizing traversals at any Affine layer that feeds only further Affine layers (always sound; single_bound.py). (2) Assert every Affine op's L and U outputs are identical (true for all deeppoly*/crown specs here) and drop the redundant sign-split when a traverse() substitution step crosses an Affine layer -- unsound if the assertion doesn't hold. Both take effect on the simulacrum and reuse compile passes below."),
+    paired_unroll: bool = typer.Option(False, "--paired-unroll", help="Interleave the paired lower/upper traverse() loops when unrolling them, instead of emitting one traversal after the other. Reuse compile only; falls back to sequential unrolling whenever the two traversals are not provably independent."),
+    fused_flow: bool = typer.Option(True, "--fused-flow/--no-fused-flow", help="Emit a layer-unrolled flow() into transformers.py instead of using the interpretive Flow.flow, replaying abs_elem.update from its simulacrum capture, and (under --inductor) compile the whole flow as one graph instead of one per op. Reuse compile only."),
+    fuse_affine_subst: bool = typer.Option(True, "--fuse-affine-subst/--no-fuse-affine-subst", help="Two optimizations gated by one flag: (1) skip both concretizing traversals at any Affine layer that feeds only further Affine layers (always sound; single_bound.py). (2) Assert every Affine op's L and U outputs are identical (true for all deeppoly*/crown specs here) and drop the redundant sign-split when a traverse() substitution step crosses an Affine layer -- unsound if the assertion doesn't hold. Both take effect on the simulacrum and reuse compile passes below."),
+    sroa: bool = typer.Option(True, "--sroa/--no-sroa", help="Splice every layer into one flow() and scalar-replace the Jit* aggregates, so the compiled region is pure tensor code. Requires --fused-flow. Reuse compile only."),
 ):
     """
     Compile a ConstraintFlow program through the whole simulacrum+reuse pipeline
@@ -224,6 +258,16 @@ def simulacrum_compile(
     """
     start_time = time.perf_counter()
     globals.fuse_affine_subst.set_flag() if fuse_affine_subst else globals.fuse_affine_subst.reset_flag()
+    globals.paired_unroll.set_flag() if paired_unroll else globals.paired_unroll.reset_flag()
+    # Set for both passes: the simulacrum writes the update capture the reuse pass replays.
+    globals.fused_flow.set_flag() if fused_flow else globals.fused_flow.reset_flag()
+    globals.sroa.set_flag() if sroa else globals.sroa.reset_flag()
+    if sroa and not fused_flow:
+        typer.echo("Error: --sroa requires --fused-flow.")
+        raise typer.Exit(code=1)
+    if fused_flow and print_intermediate_results:
+        typer.echo("Error: --fused-flow drops the per-layer densification, so --print-intermediate-results does not apply.")
+        raise typer.Exit(code=1)
     try:
         os.makedirs(output_path, exist_ok=True)
     except OSError as e:
@@ -269,7 +313,8 @@ def simulacrum_compile(
     from main import run as _probe_run  # probe build provides this
 
     network_file = get_network(network, network_format, dataset)
-    X, y = get_dataset(batch_size, dataset, train=train)
+    dataset_device = device_mode.get_device() if is_cuda else None
+    X, y = get_dataset(batch_size, dataset, train=train, device=dataset_device)
     _probe_run(
         network_file,
         batch_size,
@@ -301,6 +346,7 @@ def simulacrum_compile(
     finally:
         globals.reuse_mode.reset_flag()
         globals.inductor_mode.reset_flag()
+        globals.fused_flow.reset_flag()
         globals.set_network_path(None)
         if in_memory:
             globals.jit_store_clear()
@@ -393,6 +439,8 @@ def run(
         typer.echo("Error: device='gpumac' requested but MPS is not available.")
         raise typer.Exit(code=1)
     device_mode.set_mode(device)
+    if device == "gpu":
+        _configure_cuda_cpu_threads()
 
     if aot_save and aot:
         typer.echo("Error: --aot-save builds the kernels and --aot loads them; pass one or the other.")
@@ -523,7 +571,13 @@ def run(
     #     typer.echo(f"Loaded {len(manifest['methods'])} AOT kernels from {aot_dir}")
 
     network_file = get_network(network, network_format, dataset)
-    X, y = get_dataset(batch_size * (warmup + 1), dataset, train=train)
+    dataset_device = device_mode.get_device() if device == "gpu" else None
+    X, y = get_dataset(
+        batch_size * (warmup + 1),
+        dataset,
+        train=train,
+        device=dataset_device,
+    )
 
     perturb_rng = None
     perturb_dir = None
@@ -567,6 +621,7 @@ def run(
 
     is_cuda = device_mode.get_device() == "cuda"
     print(f"WARMMMMMM")
+    torch._dynamo.reset()
 
     for i in range(warmup):
         warmup_network = _network_for(f"warmup{i}")
