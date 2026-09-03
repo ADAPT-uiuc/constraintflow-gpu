@@ -7,6 +7,123 @@ from constraintflow.lib.polyexp import *
 from constraintflow.lib.symexp import *
 from constraintflow.lib.llist import Llist
 from constraintflow.lib.globals import dummy_mode
+
+
+UPDATE_CAPTURE = "jit_update/update_{}.json"
+
+
+def _shape_parts(types, key, value):
+    """(name, SparseTensor) pairs of one shape field: ('',) for Float, const/mat otherwise."""
+    if types[key] in ('PolyExp', 'SymExp'):
+        return (('const', value.const), ('mat', value.mat))
+    return (('', value),)
+
+
+def _update_snapshot(abs_elem, abs_shape):
+    """Pre-update state each shape field's new value is appended onto."""
+    snap = {}
+    for i, key in enumerate(list(abs_elem.d.keys())[1:]):
+        value = abs_shape[i]
+        if isinstance(value, (float, int, bool)):
+            raise NotImplementedError(
+                f"fused flow: update of {key!r} from a scalar abstract shape is not traced")
+        new_parts = dict(_shape_parts(abs_elem.types, key, value))
+        snap[key] = {
+            part: (list(cur.blocks),
+                   new_parts[part].dense_const != cur.dense_const and not new_parts[part].check_dense(),
+                   new_parts[part].num_blocks)
+            for part, cur in _shape_parts(abs_elem.types, key, abs_elem.d[key])
+        }
+    return snap
+
+
+def _fresh_block_record(block, json_list, layer_index, key):
+    """Record for a block update built itself (the dense_const-mismatch ConstBlock)."""
+    if block.block_type != 'C':
+        raise NotImplementedError(
+            f"fused flow: update at layer {layer_index} put a {type(block).__name__} into "
+            f"{key!r} that came from neither the previous state nor the op's output")
+    json_list.append({
+        'method': 'ConstBlockConstructor',
+        'block': block.block.tolist() if isinstance(block.block, torch.Tensor) else block.block,
+        'total_shape': block.total_shape.tolist() if isinstance(block.total_shape, torch.Tensor)
+                       else list(block.total_shape),
+        'SparseBlockType': identifySparseBlockType(block.block),
+        'output': len(json_list),
+    })
+    return len(json_list) - 1
+
+
+def _write_update_capture(abs_elem, abs_shape, layer_index, snap):
+    """Record how each shape field's post-update value is built from d[key] and abs_shape."""
+    capture = {}
+    for i, key in enumerate(list(abs_elem.d.keys())[1:]):
+        # One record list per field: each replays under that field's own irMetadata.
+        json_list = [{'method': 'noop', 'input': 'abs_shape_' + str(i), 'output': 0}]
+        kind = abs_elem.types[key]
+        part_index = {}
+        for part, cur in _shape_parts(abs_elem.types, key, abs_elem.d[key]):
+            prev_blocks, mismatch, new_count = snap[key][part]
+            kept, tail = cur.blocks[:len(prev_blocks)], cur.blocks[len(prev_blocks):]
+            if any(a is not b for a, b in zip(kept, prev_blocks)) or len(kept) != len(prev_blocks):
+                raise NotImplementedError(
+                    f"fused flow: update at layer {layer_index} rewrote existing blocks of {key!r}")
+            if len(tail) != (1 if mismatch else 0) + new_count:
+                raise NotImplementedError(
+                    f"fused flow: update at layer {layer_index} appended {len(tail)} blocks to "
+                    f"{key!r}, expected {(1 if mismatch else 0) + new_count}")
+
+            source = 0
+            if part:
+                json_list.append({
+                    'method': 'get_' + ('poly' if kind == 'PolyExp' else 'sym') + '_exp_sparse_' + part,
+                    'input': 'json_list_0', 'output': len(json_list)})
+                source = len(json_list) - 1
+            json_list.append({'method': 'get_abs_elem_sparse_d_key', 'input': 'json_list_-1',
+                              'key': key, 'output': len(json_list)})
+            prev = len(json_list) - 1
+            if part:
+                json_list.append({
+                    'method': 'get_' + ('poly' if kind == 'PolyExp' else 'sym') + '_exp_sparse_' + part,
+                    'input': 'json_list_' + str(prev), 'output': len(json_list)})
+                prev = len(json_list) - 1
+            json_list.append({'method': 'get_sparse_tensor_blocks',
+                              'input': 'json_list_' + str(prev), 'output': len(json_list)})
+            blocks = len(json_list) - 1
+
+            for offset, block in enumerate(tail):
+                if mismatch and offset == 0:
+                    value = _fresh_block_record(block, json_list, layer_index, key)
+                else:
+                    json_list.append({'method': 'extract_block', 'input': 'json_list_' + str(source),
+                                      'index': offset - (1 if mismatch else 0), 'output': len(json_list)})
+                    json_list.append({'method': 'block_copy', 'input': 'json_list_' + str(len(json_list) - 1),
+                                      'output': len(json_list)})
+                    value = len(json_list) - 1
+                json_list.append({'method': 'append_list', 'list': 'json_list_' + str(blocks),
+                                  'value': 'json_list_' + str(value), 'output': len(json_list)})
+                blocks = len(json_list) - 1
+
+            # Constructed only so its __init__ writes the SparseTensorConstructor record.
+            part_index[part] = SparseTensor(
+                cur.start_indices, cur.blocks, cur.dims, cur.total_size, cur.end_indices,
+                cur.type, cur.dense_const, og_json_list=json_list, blocks_index=blocks).json_index
+
+        if '' in part_index:
+            output = part_index['']
+        elif kind == 'PolyExp':
+            output = PolyExpSparse(
+                abs_elem.network, abs_elem.d[key].mat, abs_elem.d[key].const, og_json_list=json_list,
+                mat_index=part_index['mat'], const_index=part_index['const']).json_index
+        else:
+            json_list.append({'method': 'SymExpSparse', 'mat': 'json_list_' + str(part_index['mat']),
+                              'const': 'json_list_' + str(part_index['const']), 'output': len(json_list)})
+            output = len(json_list) - 1
+        capture[key] = {'operand': i, 'records': json_list, 'output': output}
+
+    save_capture(UPDATE_CAPTURE.format(layer_index), capture)
+
+
 class Abs_elem_sparse:
     def __init__(self, d, types, network, batch_size=1, no_sparsity=False):
         if d.keys() != types.keys():
@@ -743,9 +860,11 @@ class Abs_elem_sparse:
             elif self.types[key] == 'SymExp':
                 raise Exception('NOT IMPLEMENTED')
             
-    def update(self, llist, abs_shape):
+    def update(self, llist, abs_shape, layer_index=None):
         # if dummy_mode:
         #     return self.update_dummy(llist, abs_shape)
+        trace = bool(dummy_mode) and bool(fused_flow) and layer_index is not None
+        snap = _update_snapshot(self, abs_shape) if trace else None
         llist.decoalesce()
         assert(len(llist.llist) == 1)
         if llist.llist_flag:
@@ -823,9 +942,11 @@ class Abs_elem_sparse:
                     raise Exception(f'Unrecognized type {self.types[key]}')
             self.d['llist'][llist.llist] = True
             self.live_layers = torch.nonzero(self.d['llist']).flatten().tolist()
+            if trace:
+                _write_update_capture(self, abs_shape, layer_index, snap)
         else:
             raise Exception('NOT NEEDED')
-    
+
     def update_dummy(self, llist: Llist, abs_shape):
         llist.decoalesce()
         assert(len(llist.llist) == 1)

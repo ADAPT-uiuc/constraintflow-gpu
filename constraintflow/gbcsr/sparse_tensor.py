@@ -25,6 +25,12 @@ import operator
 
 import operator
 
+# Map Python built-in types to torch dtypes; avoids float -> float64 (Python
+# float is 64-bit, but we want 32-bit throughout for performance parity).
+_TORCH_DTYPE = {float: torch.float32, bool: torch.bool, int: torch.int32}
+def _tdtype(t):
+    return _TORCH_DTYPE.get(t, t)
+
 OP_MAP = {
     "add": operator.add,
     "sub": operator.sub,
@@ -611,7 +617,7 @@ Blocks Types: "
         if dummy_mode or dummy:
             res = torch.empty(tuple(self.total_size.tolist()), device="meta")
         else:
-            res = torch.ones(list(self.total_size), dtype=self.type)*self.dense_const
+            res = torch.ones(list(self.total_size), dtype=_tdtype(self.type))*self.dense_const
 
         for i in range(self.num_blocks):
             if trace:
@@ -657,10 +663,10 @@ Blocks Types: "
         return res
     
     def get_dense_custom_range(self, start_index, end_index):
-        if self.dense_const == 0.0 or self.dense_const == False:    
-            res = torch.zeros((end_index - start_index).to(int).tolist(), dtype=self.type)
+        if self.dense_const == 0.0 or self.dense_const == False:
+            res = torch.zeros((end_index - start_index).to(int).tolist(), dtype=_tdtype(self.type))
         else:
-            res = self.dense_const * torch.ones((end_index - start_index).to(int).tolist(), dtype=self.type)
+            res = self.dense_const * torch.ones((end_index - start_index).to(int).tolist(), dtype=_tdtype(self.type))
 
         res_block = [start_index, end_index]
         for i in range(self.num_blocks):

@@ -4,12 +4,58 @@ import onnx
 import numpy as np
 import torch.nn as nn
 import copy
+import os
 
 from onnx import numpy_helper
+from constraintflow.lib.globals import device_mode
 from constraintflow.lib.network import Layer, LayerType, Network
 
 from collections import deque
 
+# This would be cheating hence I have removed this. 
+# _cuda_initializer_cache_key = None
+# _cuda_initializer_cache = None
+# def _initializer_tensors(net, net_name=None):
+#     """Materialize ONNX initializers, caching one network on the active CUDA device."""
+#     global _cuda_initializer_cache_key, _cuda_initializer_cache
+
+#     if device_mode.get_device() != 'cuda' or net_name is None:
+#         return {
+#             init_vals.name: torch.tensor(numpy_helper.to_array(init_vals))
+#             for init_vals in net.graph.initializer
+#         }
+
+#     stat = os.stat(net_name)
+#     cache_key = (
+#         os.path.realpath(net_name),
+#         stat.st_mtime_ns,
+#         stat.st_size,
+#         torch.cuda.current_device(),
+#     )
+#     if cache_key != _cuda_initializer_cache_key:
+#         _cuda_initializer_cache = {
+#             init_vals.name: torch.tensor(
+#                 numpy_helper.to_array(init_vals),
+#                 device=device_mode.get_device(),
+#             )
+#             for init_vals in net.graph.initializer
+#         }
+#         _cuda_initializer_cache_key = cache_key
+#     return _cuda_initializer_cache
+
+def _initializer_tensors(net, net_name=None):
+    target_device = (
+        device_mode.get_device()
+        if device_mode.get_device() == "cuda" and net_name is not None
+        else "cpu"
+    )
+    return {
+        init_vals.name: torch.tensor(
+            numpy_helper.to_array(init_vals),
+            device=target_device,
+        )
+        for init_vals in net.graph.initializer
+    }
 def compute_size(shape):
     s = 1
     while len(shape)>0:
@@ -32,7 +78,14 @@ def get_net(net_name, spec_weight, spec_bias, no_sparsity):
         net_onnx = onnx.load(net_name)
         # net type: constraintflow.lib.network.Network (inherits list)
         # net element type: constraintflow.lib.network.Layer
-        net = parse_onnx_layers(net_onnx, spec_weight, spec_bias, no_sparsity)
+        model_name_to_val_dict = _initializer_tensors(net_onnx, net_name)
+        net = parse_onnx_layers(
+            net_onnx,
+            spec_weight,
+            spec_bias,
+            no_sparsity,
+            model_name_to_val_dict=model_name_to_val_dict,
+        )
     else:
         raise ValueError("Unsupported net format!")
 
@@ -57,7 +110,13 @@ def forward_layers(net, relu_mask, transformers):
     return transformers
 
 
-def parse_onnx_layers(net, spec_weight, spec_bias, no_sparsity):
+def parse_onnx_layers(
+    net,
+    spec_weight,
+    spec_bias,
+    no_sparsity,
+    model_name_to_val_dict=None,
+):
     input_shape = [dim.dim_value for dim in net.graph.input[0].type.tensor_type.shape.dim]
     input_shape = [1 if i == 0 else i for i in input_shape]
     if len(input_shape)==3:
@@ -67,7 +126,8 @@ def parse_onnx_layers(net, spec_weight, spec_bias, no_sparsity):
     layers = Network(input_name=net.graph.input[0].name, input_shape=input_shape, input_size=input_size, input_start=0, input_end=input_size, net_format='onnx', no_sparsity=no_sparsity)
     num_layers = len(net.graph.node)
     layers.num_layers = num_layers
-    model_name_to_val_dict = {init_vals.name: torch.tensor(numpy_helper.to_array(init_vals)) for init_vals in net.graph.initializer}
+    if model_name_to_val_dict is None:
+        model_name_to_val_dict = _initializer_tensors(net)
 
     layers.size = input_size
     shape = input_shape
@@ -99,7 +159,13 @@ def parse_onnx_layers(net, spec_weight, spec_bias, no_sparsity):
                     if 'bias' in nd_inps[i]:
                         b_key = nd_inps[i]
                 if b_key == None:
-                    layer = Layer(weight=model_name_to_val_dict[w_key], bias=torch.zeros(model_name_to_val_dict[w_key].shape[0]), type=LayerType.Conv2D, identifier=index, parents=parents[index])
+                    weight = model_name_to_val_dict[w_key]
+                    bias = torch.zeros(
+                        weight.shape[0],
+                        device=weight.device,
+                        dtype=weight.dtype,
+                    )
+                    layer = Layer(weight=weight, bias=bias, type=LayerType.Conv2D, identifier=index, parents=parents[index])
                 else:
                     layer = Layer(weight=model_name_to_val_dict[w_key], bias=model_name_to_val_dict[b_key], type=LayerType.Conv2D, identifier=index, parents=parents[index])
 

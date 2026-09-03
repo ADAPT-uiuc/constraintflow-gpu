@@ -18,6 +18,7 @@ from constraintflow.compiler.optimizations import cse
 from constraintflow.compiler.optimizations import rewrite
 from constraintflow.compiler.optimizations import subexp_inlining
 from constraintflow.compiler.optimizations import constant_folding
+from constraintflow.compiler.optimizations import sroa as sroa_pass
 from constraintflow.compiler import single_bound
 from constraintflow.lib.globals import *
 
@@ -47,6 +48,11 @@ optimizations_rewrite = [
     symexpCount.correct_symexp_size,
     copyPropagation.copy_proagate,
     ]
+
+
+def sroa_build():
+    """True only on the reuse pass of an --sroa build."""
+    return reuse_mode.get_flag() and fused_flow.get_flag() and sroa.get_flag()
 
 
 def _reset_compiler_state():
@@ -86,8 +92,21 @@ def compile(inputfile, output_path):
     if reuse_mode.get_flag():
         tensor_to_block.tensor_to_block(ir)
         # copyPropagation.copy_proagate(ir)
-        subexp_inlining.inline_subexp(ir)
-        subexp_inlining.recycle_temp_names(ir)
+        if sroa_build():
+            tensor_to_block.splice_flow(ir, list(ir.shape.keys()))
+            stats = sroa_pass.sroa(ir)
+            print('[sroa] {aggregates} aggregates removed, {clones_dropped} clones and '
+                  '{lambdas_dropped} identity lambdas and {casts_dropped} casts dropped, {dead_dropped} dead stores removed, {statements} tensor '
+                  'statements, {params} flow params (functional={functional})'.format(**stats))
+            if stats['survivors']:
+                print('[sroa] {} values not scalarized:'.format(len(stats['survivors'])))
+                for reason in sorted(set(stats['survivors']))[:10]:
+                    print('[sroa]   ' + reason)
+            subexp_inlining.inline_subexp_block(ir.flow_block)
+            subexp_inlining.recycle_temp_names_block(ir.flow_block.children)
+        else:
+            subexp_inlining.inline_subexp(ir)
+            subexp_inlining.recycle_temp_names(ir)
         # constant_folding.constant_fold(ir)
         # copyPropagation.copy_proagate(ir)
 

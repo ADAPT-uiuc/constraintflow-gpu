@@ -1019,6 +1019,27 @@ class IrConcatStitch(IrExpression):
         return 0
 
 
+class IrUpdateReplay(IrExpression):
+    """Opaque, traced Abs_elem_sparse.update for one shape field (jit_update capture).
+
+    `operandIr` is the op's abstract-shape output for this field; the tape refers to
+    it as `abs_shape_<n>` and to the pre-update state via IrGetAbsElemSparseDKey.
+    __eq__ is always False for the same reason as IrConcatStitch: the base __eq__ sees
+    neither `key` nor `records`, so CSE would merge two same-typed fields into one."""
+    def __init__(self, operandIr, key, records, irMetadata):
+        super().__init__()
+        self.key = key
+        self.records = records
+        self.irMetadata = irMetadata
+        self.update_parent_child([operandIr])
+
+    def __eq__(self, obj):
+        return False
+
+    def __hash__(self):
+        return 0
+
+
 class IrConcatStitchMat(IrExpression):
     """Opaque, traced 3-D Concat block re-stitch for a PolyExp's .mat (see
     constraintflow/gbcsr/tensor_ops.py:concat_stitch_mat). See IrConcatStitch
@@ -1913,6 +1934,8 @@ class IrOpStmt(IrAst):
         self.cfg = cfg
         self.layerwise_cfgs = layerwise_cfgs
         self.params = params if params is not None else DEFAULT_OP_PARAMS
+        # Under --fused-flow the specialized methods also thread the d_<key> state.
+        self.layerwise_params = None
 
         # self.update_parent_child(inputIrs)
 
