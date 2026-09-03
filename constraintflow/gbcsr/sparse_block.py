@@ -2158,6 +2158,15 @@ class KernelBlock(SparseBlock):
                 res_index = res.json_index
             else:
                 raise NotImplementedError
+        elif isinstance(sp_block, RepeatBlock):
+            # Densify and retry, as matmul_equal_dims' general case does; .expand() is a
+            # view, so this costs no more than an equivalent DenseBlock rhs already would.
+            dense_block, dense_index = sp_block.get_dense(json_list=json_list, template_index=rhs_index, simulacrum=True)
+            dense_sp_block = DenseBlock(dense_block, json_list, dense_index)
+            res, res_index = self.matmul_unequal_dims(dense_sp_block, json_list=json_list,
+                                                       lhs_index=lhs_index, rhs_index=dense_sp_block.json_index)
+            unequal_matmul_profilier.update_total_time(time.perf_counter() - start_time_total)
+            return res, res_index
         else:
             raise Exception(f'Unrecognized sparse block type: {type(sp_block)}')
         unequal_matmul_profilier.update_total_time(time.perf_counter() - start_time_total)
