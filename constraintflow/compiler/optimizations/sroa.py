@@ -29,8 +29,7 @@ _BLOCK_NODES = {
 }
 
 # in-place writes; their absence licenses dropping copies
-_MUTATION = ('IrAssignToBlock', 'IrSetBlockTotalShapeLastDim',
-             'IrAssignToView', 'IrExpandSymExp')
+_MUTATION = ('IrAssignToBlock', 'IrSetBlockTotalShapeLastDim', 'IrAssignToView')
 
 _BOOL_OPS = {'gt', 'lt', 'ge', 'le', 'eq', 'ne', 'and_', 'or_'}
 
@@ -213,6 +212,7 @@ class _Scalarizer:
         self.lambdas_dropped = 0
         self.casts_dropped = 0
         self.dead_dropped = 0
+        self.sym_count = 0
         self.aggregates = 0
         self.survivors = []
 
@@ -229,8 +229,11 @@ class _Scalarizer:
     def seed_entry(self):
         capture = load_capture(entry_capture.CAPTURE_PATH)
         for key, var_name in self.ir.flow_entry.items():
-            self.env[var_name] = self._from_capture(
+            desc = self._from_capture(
                 capture[key], "abs_elem.d['" + key + "']", 'in_' + key)
+            if self.ir.shape.get(key) == 'SymExp':
+                self._note_eps(getattr(desc, 'mat', None))
+            self.env[var_name] = desc
 
     def _from_capture(self, node, path, name):
         kind = node['node']
@@ -253,6 +256,30 @@ class _Scalarizer:
         return SparseDesc(node['dims'], tuple(node['total_size']),
                           tuple(tuple(s) for s in node['start_indices']),
                           tuple(blocks), node['dense_const'], node['type'])
+
+    # -- symbolic epsilons -----------------------------------------------
+    def _note_eps(self, mat):
+        """SymExpSparse.count, read back off the mat that last grew it."""
+        size = getattr(mat, 'total_size', None)
+        if size:
+            self.sym_count = max(self.sym_count, size[-1])
+
+    def _new_eps(self, mat, const):
+        self._note_eps(mat)
+        return PolyDesc(mat, const)
+
+    def _expand_sym(self, desc):
+        """expand_symexp_mat: widen the epsilon axis, leaving the blocks alone."""
+        if isinstance(desc, PolyDesc):
+            return PolyDesc(self._expand_sym(desc.mat), desc.const)
+        if isinstance(desc, OpaqueDesc):
+            raise SroaUnsupported(desc.reason)
+        if not isinstance(desc, SparseDesc):
+            raise SroaUnsupported('expand_symexp_mat on ' + type(desc).__name__)
+        if not desc.total_size or desc.total_size[-1] >= self.sym_count:
+            return desc
+        return SparseDesc(desc.dims, desc.total_size[:-1] + (self.sym_count,),
+                          desc.start_indices, desc.blocks, desc.dense_const, desc.type)
 
     # -- evaluation ------------------------------------------------------
     def eval(self, expr):
@@ -352,13 +379,21 @@ class _Scalarizer:
                              _ints(expr.total_shape), fields)
 
         # polyexps
-        if isinstance(expr, (IrGetPolyExpSparseMat, IrPolyExpMat)):
+        if isinstance(expr, (IrGetPolyExpSparseMat, IrPolyExpMat,
+                             IrGetSymExpSparseMat)):
             return self._need(self.eval(expr.children[0]), 'mat', '.mat')
-        if isinstance(expr, (IrGetPolyExpSparseConst, IrExtractPolyConst)):
+        if isinstance(expr, (IrGetPolyExpSparseConst, IrExtractPolyConst,
+                             IrGetSymExpSparseConst, IrExtractSymConst)):
             return self._need(self.eval(expr.children[0]), 'const', '.const')
-        if isinstance(expr, IrCombineToPoly):
+        if isinstance(expr, (IrCombineToPoly, IrCombineToSym)):
             self.aggregates += 1
             return PolyDesc(self.eval(expr.children[0]), self.eval(expr.children[1]))
+        if isinstance(expr, IrNewEps):
+            self.aggregates += 1
+            return self._new_eps(self.eval(expr.children[0]),
+                                 self.eval(expr.children[1]))
+        if isinstance(expr, IrExpandSymExp):
+            return self._expand_sym(self.eval(expr.children[0]))
         if isinstance(expr, IrBlockPolyexpStop):
             self.aggregates += 1
             return PolyDesc(self.eval(expr.children[1]),
@@ -377,6 +412,9 @@ class _Scalarizer:
         if isinstance(expr, IrConvertConstToPoly):
             self.aggregates += 1
             return PolyDesc(ScalarDesc(0.0), self.eval(expr.children[0]))
+        if isinstance(expr, IrConvertConstToSym):
+            self.aggregates += 1
+            return PolyDesc(None, self.eval(expr.children[0]))
         if isinstance(expr, IrSimpleUnary):
             return self._simple_unary(expr)
 
