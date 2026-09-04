@@ -97,7 +97,8 @@ def compile(inputfile, output_path):
             stats = sroa_pass.sroa(ir)
             print('[sroa] {aggregates} aggregates removed, {clones_dropped} clones and '
                   '{lambdas_dropped} identity lambdas and {casts_dropped} casts dropped, {dead_dropped} dead stores removed, {statements} tensor '
-                  'statements, {params} flow params (functional={functional})'.format(**stats))
+                  'statements, {params} flow params '
+                  '(functional={functional}, {view_writes} view writes, {block_writes} block writes)'.format(**stats))
             if stats['survivors']:
                 print('[sroa] {} values not scalarized:'.format(len(stats['survivors'])))
                 for reason in sorted(set(stats['survivors']))[:10]:

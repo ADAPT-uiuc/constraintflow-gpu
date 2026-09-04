@@ -1639,11 +1639,15 @@ Blocks Types: "
         
 
 
-        if sp_tensor.dims <= 2:
+        # Mirror the dispatch below: a lower-rank rhs is a vector contracted along its last dim.
+        if sp_tensor.dims <= 2 or self.dims > sp_tensor.dims:
             assert(sp_tensor.total_size[-1].item() == self.total_size[-1].item())
         else:
             assert(sp_tensor.total_size[-2].item() == self.total_size[-1].item())
-            assert((sp_tensor.total_size[:-2] == self.total_size[-sp_tensor.dims:-2]).all())
+            rhs_batch = sp_tensor.total_size[:-2]
+            lhs_batch = self.total_size[-sp_tensor.dims:-2]
+            # Leading dims broadcast; the block extents below are unioned with min/max.
+            assert(((rhs_batch == lhs_batch) | (rhs_batch == 1) | (lhs_batch == 1)).all())
         
         start_indices = []
         end_indices = []

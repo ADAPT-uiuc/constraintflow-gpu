@@ -50,6 +50,7 @@ class ConvertToIr(astVisitor.ASTVisitor):
         
 
     def visitBinOp(self, ast_node: AST.BinOpNode, lhsIr=None, rhsIr=None, ast_node_type=None, op=None):
+        print(op, '#################')
         seqIr = []
         if lhsIr==None:
             lhsIr, lhsSeqIr = self.visit(ast_node.left)

@@ -669,6 +669,19 @@ class SparseBlock:
 
 
 
+def col2im_columns(out_x, out_y, ker_x, ker_y, padded_rows, padded_cols, stride,
+                   device=None):
+    """Destination column of each (output position, kernel tap) in the flattened
+    padded input -- pure geometry, so the compiled graph folds it to a constant."""
+    flat = torch.arange(out_x * out_y, device=device)
+    row = torch.div(flat, out_y, rounding_mode="trunc") * padded_rows * stride
+    col = torch.fmod(flat, out_y) * stride
+    return ((row + col).view(-1, 1, 1)
+            + (torch.arange(ker_x, device=device) * padded_cols).view(1, -1, 1)
+            + torch.arange(ker_y, device=device).view(1, 1, -1)
+            ).reshape(out_x * out_y, ker_x * ker_y)
+
+
 def identifySparseBlockType(block):
     if isinstance(block, torch.Tensor) and block.dtype == torch.bool:
         return "BoolTensorSparse"
@@ -3572,63 +3585,57 @@ class PatchesBlock(SparseBlock):
             # If the batch size of pieces is not equal to the batch size of the total shape, we need to expand it.
             pieces = pieces.expand(batch_size, *pieces.shape[1:])
         pieces_current_index = len(json_list) - 1
+        # col2im as one out-of-place scatter along the flattened spatial axis:
+        # row p of the matrix holds its patch at padded position
+        # (p//oy*stride + kxi, p%oy*stride + kyi). The destination columns are
+        # pure geometry, so the index is a constant the compiled graph can fold.
+        padded_cols = input_y + padding[0] + padding[1]
+        flat_spatial = (input_x + padding[2] + padding[3]) * padded_cols
+        rows = output_x * output_y
+        scatter_shape = (int(batch_size), output_channel, rows, input_channel, flat_spatial)
         json_obj = {
             "method": "torch_zeros",
-            "size": (int(batch_size), output_channel, output_x, output_y, input_channel, (input_x + padding[2] + padding[3]) * (input_y + padding[0] + padding[1])),
+            "size": scatter_shape,
             "device": "device_mode.get_device()",
             "dtype": str(pieces.dtype),
             "output": len(json_list),
         }
         json_list.append(json_obj)
         A_matrix_index = len(json_list) - 1
-        A_matrix = torch.zeros(batch_size, output_channel, output_x, output_y, input_channel, (input_x + padding[2] + padding[3]) * (input_y + padding[0] + padding[1]), device=pieces.device, dtype=pieces.dtype)
-        # Save its orignal stride.
+        A_matrix = torch.zeros(*scatter_shape, device=pieces.device, dtype=pieces.dtype)
 
-        json_obj = {
-            "method": "torch_stride",
-            "input": "json_list_" + str(A_matrix_index),
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        orig_stride = A_matrix.stride()
-        # This is the main trick - we create a *view* of the original matrix, and it contains all sliding windows for the convolution.
-        # Since we only created a view (in fact, only metadata of the matrix changed), it should be very efficient.
-        json_obj = {
-            "method": "torch_as_strided",
-            "input": "json_list_" + str(A_matrix_index),
-            "size": [int(batch_size), output_channel, output_x, output_y, output_x, output_y, input_channel, kernel_x, kernel_y],
-            "stride": [orig_stride[0], orig_stride[1], orig_stride[2], orig_stride[3], (input_x + padding[2] + padding[3]) * stride, stride, orig_stride[4], input_y + padding[0] + padding[1], 1],
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        matrix_strided_index = len(json_list) - 1
-        matrix_strided = torch.as_strided(A_matrix, [batch_size, output_channel, output_x, output_y, output_x, output_y, input_channel, kernel_x, kernel_y], [orig_stride[0], orig_stride[1], orig_stride[2], orig_stride[3], (input_x + padding[2] + padding[3]) * stride, stride, orig_stride[4], input_y + padding[0] + padding[1], 1])
-        # Now we need to fill the conv kernel parameters into the last three dimensions of matrix_strided.
-        first_indices = torch.arange(output_x * output_y, device=pieces.device)
-        second_indices = torch.div(first_indices, output_y, rounding_mode="trunc")
-        third_indices = torch.fmod(first_indices, output_y)
-        # pieces have shape (out_c, batch, out_h, out_w, c, h, w).
-        # pieces = pieces.transpose(0, 1)   # pieces has the out_c dimension at the front, need to move it to the second.
-        # DUSH: On block
+        # pieces have shape (batch, out_c, out_h, out_w, c, h, w).
         json_obj = {
             "method": "torch_reshape",
             "input": "json_list_" + str(pieces_index),
-            "shape": [int(d) for d in pieces.shape[:2]] + [-1] + [int(d) for d in pieces.shape[4:]],
+            "shape": [int(batch_size), output_channel, rows, input_channel, kernel_x * kernel_y],
             "output": len(json_list),
         }
         json_list.append(json_obj)
-        matrix_strided[:,:,second_indices,third_indices,second_indices,third_indices,:,:,:] = pieces.reshape(*pieces.shape[:2], -1, *pieces.shape[4:])
-        second_indices_expr = "torch.div(torch.arange(" + str(output_x * output_y) + ", device=device_mode.get_device()), " + str(output_y) + ', rounding_mode="trunc")'
-        third_indices_expr = "torch.fmod(torch.arange(" + str(output_x * output_y) + ", device=device_mode.get_device()), " + str(output_y) + ")"
+        pieces_flat_index = len(json_list) - 1
+        pieces_flat = pieces.reshape(batch_size, output_channel, rows, input_channel,
+                                     kernel_x * kernel_y)
+
+        cols = col2im_columns(output_x, output_y, kernel_x, kernel_y,
+                               input_x + padding[2] + padding[3], padded_cols, stride,
+                               device=pieces.device)
+        cols_expr = ('col2im_columns(' + ', '.join(str(v) for v in (
+            output_x, output_y, kernel_x, kernel_y,
+            input_x + padding[2] + padding[3], padded_cols, stride))
+            + ', device=device_mode.get_device()).view(1, 1, ' + str(rows) + ', 1, '
+            + str(kernel_x * kernel_y) + ').expand' + str(scatter_shape[:4] + (kernel_x * kernel_y,)))
         json_obj = {
-            "method": "assign_to_view",
-            "input": "json_list_" + str(matrix_strided_index),
-            "base": "json_list_" + str(A_matrix_index),
-            "index": [0, 0, second_indices_expr, third_indices_expr, second_indices_expr, third_indices_expr, 0, 0, 0],
-            "value": "json_list_" + str(len(json_list) - 1),
+            "method": "tensor_scatter",
+            "input": "json_list_" + str(A_matrix_index),
+            "value": "json_list_" + str(pieces_flat_index),
+            "dim": -1,
+            "index": cols_expr,
             "output": len(json_list),
         }
         json_list.append(json_obj)
+        A_matrix = A_matrix.scatter(
+            -1, cols.view(1, 1, rows, 1, kernel_x * kernel_y).expand(
+                *scatter_shape[:4], kernel_x * kernel_y), pieces_flat)
 
         json_obj = {
             "method": "torch_view",
