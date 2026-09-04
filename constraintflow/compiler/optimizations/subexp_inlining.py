@@ -111,7 +111,7 @@ _FRESH_NODE_TYPES = (
     IrTorchMatmul, IrBlockInnerProduct,
     IrSimpleBinary, IrBlockBinaryOp,
     IrTorchSum, IrTorchRepeat, IrTensorRepeat,
-    IrTorchDiagEmbed, IrTorchWhere, IrBlockWhereBlock,
+    IrTorchDiagEmbed, IrTorchWhere, IrBlockWhereBlock, IrTensorScatter,
     IrTensorClamp, IrBlockClamp, IrConvertBoolToFloat,
     IrFConv2d, IrFConvTranspose2d, IrFUnfold,
     IrTorchStride, IrBlockGetDims,

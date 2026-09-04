@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import os
 import re
+import sys
+import time
 
 from constraintflow.compiler.ir import *
+from constraintflow.compiler.optimizations import subexp_inlining
 from constraintflow.compiler.optimizations import tensor_to_block
 from constraintflow.lib import entry_capture
 from constraintflow.lib.globals import load_capture
@@ -105,6 +108,8 @@ class OpaqueDesc:
 _LITERAL_TENSOR = re.compile(r'^torch\.tensor\(\[([0-9,\s\.\-]*)\]'
                              r'(?:,\s*dtype=torch\.\w+)?\)$')
 
+_IDENT = re.compile(r'[A-Za-z_][A-Za-z_0-9]*')
+
 
 def _ints(value):
     """Static int tuple, or None when the value is not statically known."""
@@ -194,6 +199,58 @@ def dead_store_elim(stmts):
     return keep
 
 
+def _clone_desc(desc):
+    """Structural copy: a fresh spine so field writes don't leak, shared payloads."""
+    if isinstance(desc, BlockDesc):
+        return BlockDesc(desc.kind, _clone_desc(desc.payload), desc.total_shape,
+                         dict(desc.fields))
+    if isinstance(desc, SparseDesc):
+        return SparseDesc(desc.dims, desc.total_size, desc.start_indices,
+                          tuple(_clone_desc(b) for b in desc.blocks),
+                          desc.dense_const, desc.type)
+    if isinstance(desc, PolyDesc):
+        return PolyDesc(_clone_desc(desc.mat), _clone_desc(desc.const))
+    if isinstance(desc, ListDesc):
+        return ListDesc(tuple(_clone_desc(item) for item in desc.items))
+    return desc
+
+
+def _payload_names(desc, out=None):
+    """Names of the tensors a descriptor's payloads live in."""
+    out = [] if out is None else out
+    if isinstance(desc, TensorDesc) and isinstance(desc.ir, IrVar):
+        out.append(desc.ir.name)
+    elif isinstance(desc, BlockDesc):
+        _payload_names(desc.payload, out)
+    elif isinstance(desc, SparseDesc):
+        for block in desc.blocks:
+            _payload_names(block, out)
+    elif isinstance(desc, PolyDesc):
+        _payload_names(desc.mat, out)
+        _payload_names(desc.const, out)
+    elif isinstance(desc, ListDesc):
+        for item in desc.items:
+            _payload_names(item, out)
+    return out
+
+
+class _Progress:
+    """CF_SROA_PROGRESS=<n>: phase timings and a heartbeat every n statements."""
+
+    def __init__(self):
+        self.every = int(os.environ.get('CF_SROA_PROGRESS') or 0)
+        self.start = time.perf_counter()
+
+    def mark(self, label):
+        if self.every:
+            print('[sroa] {:8.1f}s {}'.format(time.perf_counter() - self.start, label),
+                  file=sys.stderr, flush=True)
+
+    def tick(self, done, total, emitted):
+        if self.every and done and done % self.every == 0:
+            self.mark('{}/{} statements, {} emitted'.format(done, total, emitted))
+
+
 def _meta(expr):
     """Most IrTorch* nodes carry none; temps still need a usable element."""
     return expr.irMetadata or [IrMetadataElement([1], 'Float', [1], False)]
@@ -204,6 +261,7 @@ class _Scalarizer:
         self.ir = ir
         self.env = {}
         self.cache = {}
+        self.cache_log = []
         self.out = []
         self.params = []
         self._by_path = {}
@@ -213,6 +271,9 @@ class _Scalarizer:
         self.casts_dropped = 0
         self.dead_dropped = 0
         self.sym_count = 0
+        self.view_writes = 0
+        self.block_writes = 0
+        self.copies = []
         self.aggregates = 0
         self.survivors = []
 
@@ -292,6 +353,8 @@ class _Scalarizer:
             return self.cache[key]
         desc = self._eval(expr)
         self.cache[key] = desc
+        # the node too: a freed node's id could be recycled into a stale hit
+        self.cache_log.append((key, expr))
         return desc
 
     def _need(self, desc, attr, what):
@@ -306,6 +369,21 @@ class _Scalarizer:
             raise SroaUnsupported(
                 what + '[' + str(index) + '] out of range, len=' + str(len(seq)))
         return seq[index]
+
+    def check_index(self, expr):
+        """A trace index is rendered verbatim, so a flow-local name in one would
+        dangle once SROA renames it. Rare -- both emitters index by literals."""
+        index = getattr(expr, 'index', None)
+        if isinstance(index, str):
+            index = [index]
+        for item in index if isinstance(index, (list, tuple)) else ():
+            for part in (item if isinstance(item, list) else [item]):
+                if not isinstance(part, str):
+                    continue
+                for name in _IDENT.findall(part):
+                    if name in self.env:
+                        raise SroaUnsupported(type(expr).__name__
+                                              + ' index references ' + name)
 
     def _index(self, child):
         if isinstance(child, int):
@@ -350,10 +428,11 @@ class _Scalarizer:
             return self._at(blocks, self._index(expr.children[1]), 'blocks')
         if isinstance(expr, IrBlockCopy):
             block = self.eval(expr.children[0])
-            if self.functional:
-                self.clones_dropped += 1
-                return block
-            raise SroaUnsupported('copy in a non-functional flow')
+            self.clones_dropped += 1
+            if not self.functional:
+                for name in _payload_names(block):
+                    self.copies.append((len(self.out), name))
+            return _clone_desc(block)
         if isinstance(expr, IrObjectLookup):
             if expr.object_name != 'block':
                 raise SroaUnsupported('object lookup ' + str(expr.object_name))
@@ -465,6 +544,7 @@ class _Scalarizer:
         op = getattr(expr, 'op', None)
         if isinstance(op, IrVar) and op.name in self.env:
             raise SroaUnsupported('computed operator ' + op.name)
+        self.check_index(expr)
         descs = [self.eval(child) for child in expr.children]
         try:
             expr.update_parent_child([self.to_ir(d) for d in descs])
@@ -520,38 +600,105 @@ class _Scalarizer:
             + ' total_size=' + str(desc.total_size)
             + ' start=' + str(desc.start_indices) + ' dims=' + str(desc.dims))
 
+    def _write_target(self, stmt, what):
+        target = self.eval(stmt.children[0])
+        if isinstance(target, OpaqueDesc):
+            raise SroaUnsupported(target.reason)
+        if not isinstance(target, BlockDesc):
+            raise SroaUnsupported(what + ' into ' + type(target).__name__)
+        return target
+
+    def block_write(self, stmt):
+        """`block.block = value`: a payload rebind, so mutate in place and every
+        alias of the block observes it. Emits nothing -- blocks are compiler-side."""
+        target = self._write_target(stmt, 'block write')
+        value = self.eval(stmt.children[1])
+        if not isinstance(value, (TensorDesc, ScalarDesc)):
+            raise SroaUnsupported('block write of ' + type(value).__name__)
+        target.payload = value
+        self.block_writes += 1
+
+    def block_shape_write(self, stmt):
+        """`block.total_shape[-1] = value`: the same in-place rebind, on geometry."""
+        target = self._write_target(stmt, 'shape write')
+        if not target.total_shape:
+            raise SroaUnsupported('shape write on a block with no static shape')
+        target.total_shape = (target.total_shape[:-1]
+                              + (self._index(stmt.children[1]),))
+        self.block_writes += 1
+
+    def view_write(self, stmt):
+        """`view[index] = value`, kept as a statement: every name sharing the
+        buffer is bound to the same IrVar and expects to observe the write."""
+        self.check_index(stmt)
+        target = self.eval(stmt.children[0])
+        if isinstance(target, OpaqueDesc):
+            raise SroaUnsupported(target.reason)
+        if not isinstance(target, TensorDesc):
+            raise SroaUnsupported('view write into ' + type(target).__name__)
+        value = self.to_ir(self.eval(stmt.children[1]))
+        self.out.append(IrAssignToView(target.ir, stmt.index, value))
+        self.view_writes += 1
+
+    def check_copies(self):
+        """Dropping a .copy() is only sound while nothing writes the buffer it
+        shared; with in-place writes about, prove that per copy."""
+        if not self.copies:
+            return
+        reads_of, defs, keys = subexp_inlining.compute_storage_reads_and_defs(self.out)
+        end = len(self.out)
+        for at, name in self.copies:
+            roots = reads_of.get(name, frozenset((name,)))
+            if subexp_inlining.storage_redefd_between(defs, keys, roots, at - 1, end):
+                raise SroaUnsupported('dropped copy of ' + name
+                                      + ' is written in place later')
+
     def run(self):
+        clock = _Progress()
         block = self.ir.flow_block
         nodes = []
         _walk(block.children, set(), nodes)
+        clock.mark('walk ' + str(len(nodes)) + ' nodes')
         self.functional = not any(type(n).__name__ in _MUTATION for n in nodes)
 
         self.seed_entry()
         live_stmts = dead_store_elim(block.children)
         self.dead_dropped = len(block.children) - len(live_stmts)
+        clock.mark('dse ' + str(len(live_stmts)) + '/' + str(len(block.children)))
         ret = None
-        for stmt in live_stmts:
+        for done, stmt in enumerate(live_stmts):
+            clock.tick(done, len(live_stmts), len(self.out))
             if isinstance(stmt, IrAssignment):
-                mark_out, mark_cache = len(self.out), set(self.cache)
+                mark_out, mark_cache = len(self.out), len(self.cache_log)
                 try:
                     desc = self.eval(stmt.children[1])
                 except (SroaUnsupported, AttributeError, IndexError, KeyError) as exc:
                     if os.environ.get('CF_SROA_STRICT'):
                         raise
                     del self.out[mark_out:]
-                    for key in set(self.cache) - mark_cache:
+                    for key, _node in self.cache_log[mark_cache:]:
                         del self.cache[key]
+                    del self.cache_log[mark_cache:]
                     desc = OpaqueDesc(str(exc))
                     self.survivors.append(str(exc))
                 self.env[stmt.children[0].name] = desc
             elif isinstance(stmt, IrTransRetBasic):
                 ret = stmt
+            elif isinstance(stmt, IrAssignToView):
+                self.view_write(stmt)
+            elif isinstance(stmt, IrAssignToBlock):
+                self.block_write(stmt)
+            elif isinstance(stmt, IrSetBlockTotalShapeLastDim):
+                self.block_shape_write(stmt)
             elif isinstance(stmt, IrDel):
                 continue
             else:
                 raise SroaUnsupported('statement ' + type(stmt).__name__)
         if ret is None:
             raise SroaUnsupported('flow has no return')
+        clock.mark('scalarized ' + str(len(self.out)) + ' statements')
+        self.check_copies()
+        clock.mark('checked ' + str(len(self.copies)) + ' copies')
 
         results = [self.densify(self.eval(child)) for child in ret.children[:2]]
         self.out.append(IrTransRetBasic([self.to_ir(d) for d in results]))
@@ -576,5 +723,7 @@ def sroa(ir):
         'functional': run.functional,
         'params': len(run.params),
         'statements': len(run.out),
+        'view_writes': run.view_writes,
+        'block_writes': run.block_writes,
         'survivors': run.survivors,
     }

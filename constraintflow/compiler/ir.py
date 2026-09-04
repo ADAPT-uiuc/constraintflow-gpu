@@ -637,6 +637,13 @@ class IrTorchSlice(IrExpression):
         self.index = index
         self.update_parent_child([inputIr])
 
+class IrTensorScatter(IrExpression):
+    def __init__(self, inputIr, valueIr, dim, index):
+        super().__init__()
+        self.dim = dim
+        self.index = index
+        self.update_parent_child([inputIr, valueIr])
+
 class IrFConv2d(IrExpression):
     def __init__(self, inputIr, weightIr, stride, padding):
         super().__init__()
@@ -1691,6 +1698,7 @@ class IrCombineToPoly(IrExpression):
             print(constIr.irMetadata[-1].shape[-1])
             print('done\n')
             print(coeffIr.irMetadata[-1].shape[:-1], constIr.irMetadata[-1].shape)
+        print(check_eq(coeffIr.irMetadata[-1].shape[:-1], constIr.irMetadata[-1].shape))
         assert(check_eq(coeffIr.irMetadata[-1].shape[:-1], constIr.irMetadata[-1].shape))
         assert(check_eq(coeffIr.irMetadata[-1].broadcast[:-1], constIr.irMetadata[-1].broadcast))
         assert(coeffIr.irMetadata[-1].isConst == constIr.irMetadata[-1].isConst)

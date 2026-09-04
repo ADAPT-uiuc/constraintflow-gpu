@@ -1,3 +1,4 @@
+import builtins
 import io
 import json
 import operator
@@ -51,6 +52,9 @@ BLOCK_FIELDS = {
     'PatchesBlock': ('P', ('ix', 'iy', 'ox', 'oy', 'sx', 'sy', 'px', 'py',
                            'kx', 'ky', 'num_channels', 'num_kernels')),
 }
+
+_BATCH_SIZE_RE = re.compile(r'\bbatch_size\b')
+
 
 class CodeGen(irVisitor.IRVisitor):
     def __init__(self,folder):
@@ -172,21 +176,27 @@ class CodeGen(irVisitor.IRVisitor):
         real_file = self.file
         self.file = io.StringIO()
         self.indent = 1
+        self._method_has_view_write = False
         self.visit(node.flow_block)
         body_text = self.file.getvalue()
         self.file = real_file
+        params = list(node.flow_params)
+        if _BATCH_SIZE_RE.search(body_text):
+            # shapes that stayed symbolic render it as raw text in a traced
+            # total_size, so the body is the only place it can be spotted
+            params.append(('batch_size', 'batch_size'))
         self.indent = 0
         self.write('')
         # No leading underscore: `from transformers import *` drops those.
         self.write('def explode_inputs(abs_elem, batch_size):')
         self.indent += 1
-        self.write('return (' + ', '.join(path for _, path in node.flow_params) + ',)')
+        self.write('return (' + ', '.join(path for _, path in params) + ',)')
         self.indent -= 1
         self.write('')
         if inductor_mode.get_flag():
             self.write('@torch.compile(fullgraph=' + str(not self._method_has_view_write)
                        + ', backend="inductor")')
-        self.write('def flow(' + ', '.join(name for name, _ in node.flow_params) + '):')
+        self.write('def flow(' + ', '.join(name for name, _ in params) + '):')
         self.file.write(body_text)
         self.write('')
 
@@ -216,6 +226,37 @@ class CodeGen(irVisitor.IRVisitor):
             f.write('import torch\n\n')
             for text, name in self.const_pool.items():
                 f.write(name + ' = ' + text + '\n')
+        if sroa_build():
+            self._check_flow_is_closed()
+
+    def _check_flow_is_closed(self):
+        """Every name flow() reads must be a parameter, a local, or a module global.
+        A leftover ambient name compiles fine and only fails inside dynamo."""
+        import ast
+        source = open(self.transformers_file).read()
+        tree = ast.parse(source)
+        globals_, flow = set(dir(builtins)), None
+        for node in tree.body:
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                globals_.update((a.asname or a.name).split('.')[0] for a in node.names)
+            elif isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                globals_.add(node.name)
+                if node.name == 'flow':
+                    flow = node
+            elif isinstance(node, ast.Assign):
+                globals_.update(t.id for t in ast.walk(node)
+                                if isinstance(t, ast.Name) and isinstance(t.ctx, ast.Store))
+        if flow is None:
+            return
+        bound = {a.arg for a in flow.args.args}
+        loads = set()
+        for node in ast.walk(flow):
+            if isinstance(node, ast.Name):
+                (bound if isinstance(node.ctx, ast.Store) else loads).add(node.id)
+        free = sorted(loads - bound - globals_)
+        if free:
+            raise RuntimeError('sroa: flow() reads unbound ' + ', '.join(free)
+                               + '; it must be a flow parameter')
 
     def _hoist_if_complex(self, expr_text):
         """visitIrExpandSymExp/visitIrSetBlockTotalShapeLastDim need to reference
@@ -307,6 +348,7 @@ class CodeGen(irVisitor.IRVisitor):
             self.write('from constraintflow.lib.polyexp import PolyExpSparse')
         if reuse_mode.get_flag():
             self.write('from constraintflow.lib.symexp import SymExpSparse')
+            self.write('from constraintflow.gbcsr.sparse_block import col2im_columns')
             # self.write('from constraintflow.lib.symexp import get_new_eps')
             # self.write('from constraintflow.gbcsr.op_helper import binary_to_identity_unary')
 
@@ -401,12 +443,14 @@ class CodeGen(irVisitor.IRVisitor):
         elif fused_build():
             self.emit_flow(node)
 
-        if reuse_mode.get_flag() and not (sroa_build() and not self.used_block_classes):
+        if reuse_mode.get_flag():
             # Defined after use; names resolve when the methods are called.
             self.indent = 0
             for helper_src in self.view_write_helpers:
                 self.write(helper_src, False)
                 self.write('')
+        if reuse_mode.get_flag() and not (sroa_build() and not self.used_block_classes):
+            self.indent = 0
             self.write('class JitSparseTensor:')
             self.indent += 1
             self.write('__slots__ = ("start_indices", "blocks", "dims", "total_size", "end_indices", "type", "dense_const", "delete_indices", "num_blocks")')
@@ -808,6 +852,11 @@ class CodeGen(irVisitor.IRVisitor):
             'torch.as_strided(' + self.visit(node.children[0]) + ', '
             + self.visit(node.size) + ', ' + self.visit(node.stride) + ')'
         )
+
+    def visitIrTensorScatter(self, node):
+        # out-of-place: no aliasing for dynamo to reason about, so no graph break
+        return (self.visit(node.children[0]) + '.scatter(' + str(node.dim) + ', '
+                + node.index + ', ' + self.visit(node.children[1]) + ')')
 
     def visitIrTorchSlice(self, node):
         return self.visit(node.children[0]) + '[' + self.renderTraceIndex(node.index) + ']'

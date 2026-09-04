@@ -242,6 +242,8 @@ class IRVisitor:
 
         elif isinstance(node, IR.IrTorchAsStrided):
             return self.visitIrTorchAsStrided(node)
+        elif isinstance(node, IR.IrTensorScatter):
+            return self.visitIrTensorScatter(node)
 
         elif isinstance(node, IR.IrTorchSlice):
             return self.visitIrTorchSlice(node)

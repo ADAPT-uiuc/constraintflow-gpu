@@ -902,6 +902,11 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             stride = json_obj["stride"]
             output = IrTorchAsStrided(inputIr, size, stride)
 
+        elif json_obj["method"] == "tensor_scatter":
+            inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            valueIr = output_vars[int(json_obj["value"].split("_")[-1])]
+            output = IrTensorScatter(inputIr, valueIr, json_obj["dim"], json_obj["index"])
+
         elif json_obj["method"] == "torch_slice":
             if "json_list_" in json_obj["input"]:
                 inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
