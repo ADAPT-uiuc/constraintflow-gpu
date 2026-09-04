@@ -54,6 +54,15 @@ def _fresh_block_record(block, json_list, layer_index, key):
     return len(json_list) - 1
 
 
+def _tail_source_index(shape, shift, start_index):
+    """Which shape block a state block came from: overwrite inserts blocks sorted by start index."""
+    target = [int(x) for x in start_index]
+    for j, s in enumerate(shape.start_indices):
+        if [int(a) + int(b) for a, b in zip(s, shift)] == target:
+            return j
+    return None
+
+
 def _write_update_capture(abs_elem, abs_shape, layer_index, snap):
     """Record how each shape field's post-update value is built from d[key] and abs_shape."""
     capture = {}
@@ -62,6 +71,7 @@ def _write_update_capture(abs_elem, abs_shape, layer_index, snap):
         json_list = [{'method': 'noop', 'input': 'abs_shape_' + str(i), 'output': 0}]
         kind = abs_elem.types[key]
         part_index = {}
+        new_parts = dict(_shape_parts(abs_elem.types, key, abs_shape[i]))
         for part, cur in _shape_parts(abs_elem.types, key, abs_elem.d[key]):
             prev_blocks, mismatch, new_count = snap[key][part]
             kept, tail = cur.blocks[:len(prev_blocks)], cur.blocks[len(prev_blocks):]
@@ -91,12 +101,20 @@ def _write_update_capture(abs_elem, abs_shape, layer_index, snap):
                               'input': 'json_list_' + str(prev), 'output': len(json_list)})
             blocks = len(json_list) - 1
 
+            # Row offset update() adds to the shape's start indices before overwriting.
+            shift = [0, abs_elem.network[layer_index].start] + [0] * (cur.dims - 2)
             for offset, block in enumerate(tail):
                 if mismatch and offset == 0:
                     value = _fresh_block_record(block, json_list, layer_index, key)
                 else:
+                    src = _tail_source_index(new_parts[part], shift,
+                                             cur.start_indices[len(prev_blocks) + offset])
+                    if src is None:
+                        raise NotImplementedError(
+                            f"fused flow: update at layer {layer_index} appended a block to {key!r} "
+                            f"that matches no block of the abstract shape")
                     json_list.append({'method': 'extract_block', 'input': 'json_list_' + str(source),
-                                      'index': offset - (1 if mismatch else 0), 'output': len(json_list)})
+                                      'index': src, 'output': len(json_list)})
                     json_list.append({'method': 'block_copy', 'input': 'json_list_' + str(len(json_list) - 1),
                                       'output': len(json_list)})
                     value = len(json_list) - 1
