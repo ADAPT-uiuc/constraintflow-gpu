@@ -147,7 +147,7 @@ constraintflow compile example.cf --reuse --compile [OPTIONS]
 | `--output-path`                | Path where compiled program is stored       | `output/`         |
 
 
-##### `Both Passes in One Go`
+##### `Both Passes in One Go (JIT)`
 Both passes can be run in one go using the jit command (in-memory keeps the simulacrum metadata in the memory instead of saving it in json files):
 ```bash
 constraintflow jit example.cf --in-memory [OPTIONS]
