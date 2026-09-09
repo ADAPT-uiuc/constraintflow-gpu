@@ -106,6 +106,10 @@ constraintflow run example.cf [OPTIONS]
 | `--no-sparsity`                | Disable sparsity optimizations              | False             |
 | `--output-path`                | Path where compiled program is stored       | `output/`         |
 | `--compile`                    | Compile the program before running          | False             |
+| `--warmup`                      | Number of warmup runs on different data before the timed run               | 0                 |
+| `--repeat`                      | Number of timed runs, each reported separately                             | 1                 |
+| `--simulacrum`                  | Run Simulacrum (dummy blocks)                                               | False             |
+| `--reuse`                       | Reuse stored indices from a prior dummy-blocks run                         | False             |
 
 #### `JIT Optimization`
 
@@ -127,6 +131,7 @@ Using the profiled information, run the second pass to generate optimized code:
 constraintflow compile example.cf --reuse --compile [OPTIONS]
 ```
 
+
 **Options:**
 
 | Flag                           | Description                                 | Default           |
@@ -140,6 +145,39 @@ constraintflow compile example.cf --reuse --compile [OPTIONS]
 | `--print-intermediate-results` | Print intermediate results during execution | False             |
 | `--no-sparsity`                | Disable sparsity optimizations              | False             |
 | `--output-path`                | Path where compiled program is stored       | `output/`         |
+
+
+##### `Both Passes in One Go`
+Both passes can be run in one go using the jit command (in-memory keeps the simulacrum metadata in the memory instead of saving it in json files):
+```bash
+constraintflow jit example.cf --in-memory [OPTIONS]
+```
+
+**Options:**
+
+| Flag                            | Description                                                                         | Default           |
+| -------------------------------- | -------------------------------------------------------------------------------------- | ----------------- |
+| `--network`                     | Network name                                                                        | `mnist_relu_3_50` |
+| `--network-format`              | Format of the network file                                                          | `onnx`            |
+| `--dataset`                     | Dataset to use (`mnist` or `cifar`)                                                 | `mnist`           |
+| `--batch-size`                  | Batch size                                                                          | 1                 |
+| `--eps`                         | Epsilon                                                                             | 0                 |
+| `--train`                       | Trace on training dataset                                                          | False             |
+| `--no-sparsity`                 | Disable sparsity optimizations                                                      | False             |
+| `--device`                      | Device mode: `cpu`, `gpu` (CUDA), or `gpumac` (Apple MPS)                           | `cpu`             |
+| `--output-path`                 | Output path for generated code                                                     | `output/`         |
+| `--print-intermediate-results`  | Print intermediate results during the simulacrum trace pass                        | False             |
+| `--dense`                       | Use dense blocks by default                                                        | False             |
+| `--jit-dir`                     | Common parent folder for all `jit_*` capture files                                 | `jit_captures`    |
+| `--in-memory`                   | Keep jit captures in a process-local dict instead of on disk                        | False             |
+| `--no-barriers`                 | Inline every single-use temporary unconditionally, skipping the safety analysis     | False             |
+| `--inductor`                    | Emit `@torch.compile(backend='inductor')` on the reuse build                        | False             |
+| `--paired-unroll`               | Interleave the paired lower/upper `traverse()` loops when unrolling                 | False             |
+| `--fused-flow` / `--no-fused-flow` | Emit a single `flow()` instead of a layered flow           | True              |
+| `--fuse-affine-subst` / `--no-fuse-affine-subst` | Pass to optimize redundant Affine calculations (only sound for deeppoly/crown)  | False       |
+| `--sroa` / `--no-sroa`          | Scalar-replace the Jit* aggregates into pure tensor code (requires `--fused-flow`)  | True              |
+
+
 
 ## 📄 Citations
 
