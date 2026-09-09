@@ -167,12 +167,9 @@ constraintflow jit example.cf --in-memory [OPTIONS]
 | `--device`                      | Device mode: `cpu`, `gpu` (CUDA), or `gpumac` (Apple MPS)                           | `cpu`             |
 | `--output-path`                 | Output path for generated code                                                     | `output/`         |
 | `--print-intermediate-results`  | Print intermediate results during the simulacrum trace pass                        | False             |
-| `--dense`                       | Use dense blocks by default                                                        | False             |
 | `--jit-dir`                     | Common parent folder for all `jit_*` capture files                                 | `jit_captures`    |
 | `--in-memory`                   | Keep jit captures in a process-local dict instead of on disk                        | False             |
-| `--no-barriers`                 | Inline every single-use temporary unconditionally, skipping the safety analysis     | False             |
 | `--inductor`                    | Emit `@torch.compile(backend='inductor')` on the reuse build                        | False             |
-| `--paired-unroll`               | Interleave the paired lower/upper `traverse()` loops when unrolling                 | False             |
 | `--fused-flow` / `--no-fused-flow` | Emit a single `flow()` instead of a layered flow           | True              |
 | `--fuse-affine-subst` / `--no-fuse-affine-subst` | Pass to optimize redundant Affine calculations (only sound for deeppoly/crown)  | False       |
 | `--sroa` / `--no-sroa`          | Scalar-replace the Jit* aggregates into pure tensor code (requires `--fused-flow`)  | True              |
