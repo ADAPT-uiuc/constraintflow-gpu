@@ -26,3 +26,12 @@ cifar-10-batches-py
 **/*.csv
 **/*.pickle
 cifar_relu_9_200.onnx_cifar_cpu.csv
+scripts/*
+scripts
+tests/*
+resnet*/*
+output/*
+output*/
+docs*/*
+experiments/*
+cfg/*
