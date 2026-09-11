@@ -111,10 +111,10 @@ _FRESH_NODE_TYPES = (
     IrTorchMatmul, IrBlockInnerProduct,
     IrSimpleBinary, IrBlockBinaryOp,
     IrTorchSum, IrTorchRepeat, IrTensorRepeat,
-    IrTorchDiagEmbed, IrTorchWhere, IrBlockWhereBlock, IrTensorScatter,
+    IrTorchDiagEmbed, IrTorchWhere, IrBlockWhereBlock, IrTensorScatter, IrPatchesToDense,
     IrTensorClamp, IrBlockClamp, IrConvertBoolToFloat,
     IrFConv2d, IrFConvTranspose2d, IrFUnfold,
-    IrTorchStride, IrBlockGetDims,
+    IrTorchStride, IrBlockGetDims, IrTorchPad,
     IrBlockAll, IrBlockAny, IrBlockCopy,
     IrEmptyList,
 )
@@ -333,7 +333,7 @@ def try_inline_definition(
         instructions: list[IrStatement], def_indices: dict[str, list[int]],
         reads_of: dict[str, frozenset], storage_defs: list,
         storage_def_keys: list, var: IrVar, def_stmt_index: int,
-        use_indices: list[int]) -> bool:
+        use_indices: list[int], remat: frozenset = frozenset()) -> bool:
     """
     Fold `var`'s definition (at `def_stmt_index`, used at `use_indices`) into its
     use sites, reporting whether anything was rewritten:
@@ -350,7 +350,7 @@ def try_inline_definition(
         return False
     inline_expr, value_def_index = resolve_value(
         instructions, def_indices, var, use_indices[0])
-    if len(use_indices) > 1 and not is_trivial(inline_expr):
+    if len(use_indices) > 1 and not is_trivial(inline_expr) and var.name not in remat:
         rhs = instructions[def_stmt_index].children[1]
         if not isinstance(rhs, IrVar):
             return False
@@ -365,7 +365,8 @@ def try_inline_definition(
     return substituted
 
 
-def substitute_definitions(instructions: list[IrStatement]) -> bool:
+def substitute_definitions(instructions: list[IrStatement],
+                           remat: frozenset = frozenset()) -> bool:
     def_indices: dict[str, list[int]] = compute_def_indices(instructions)
     reads_of, storage_defs, storage_def_keys = compute_storage_reads_and_defs(
         instructions)
@@ -419,7 +420,7 @@ def substitute_definitions(instructions: list[IrStatement]) -> bool:
                     instructions, def_indices, reads_of, storage_defs,
                     storage_def_keys, defined_var,
                     current_vars_def_index[defined_var.name],
-                    uses_instr_count[defined_var.name])
+                    uses_instr_count[defined_var.name], remat)
             current_vars_def_index[defined_var.name] = i
             uses_instr_count[defined_var.name] = []
 
@@ -427,7 +428,7 @@ def substitute_definitions(instructions: list[IrStatement]) -> bool:
         substituted |= try_inline_definition(
             instructions, def_indices, reads_of, storage_defs, storage_def_keys,
             name_to_var[var], current_vars_def_index[var],
-            uses_instr_count.get(var, []))
+            uses_instr_count.get(var, []), remat)
 
     return substituted
 
@@ -459,7 +460,8 @@ def drop_dead_assignments(instructions: list[IrStatement]) -> bool:
     return dropped
 
 
-def inline_fixpoint(instructions: list[IrStatement]) -> None:
+def inline_fixpoint(instructions: list[IrStatement],
+                    remat: frozenset = frozenset()) -> None:
     """Iterate to a fixpoint, in place so a caller holding the list sees the result.
 
     Substitution and deletion are separate phases on purpose: substituting creates
@@ -469,7 +471,7 @@ def inline_fixpoint(instructions: list[IrStatement]) -> None:
     however the preceding phase rewrote things.
     """
     while True:
-        substituted = substitute_definitions(instructions)
+        substituted = substitute_definitions(instructions, remat)
         dropped = drop_dead_assignments(instructions)
         if not substituted and not dropped:
             break
@@ -478,6 +480,15 @@ def inline_fixpoint(instructions: list[IrStatement]) -> None:
 def inline_subexp_block(block: IrBlock) -> None:
     """private"""
     inline_fixpoint(block.children)
+
+
+def rematerialize_block(block: IrBlock, names) -> None:
+    """public
+    Re-inline the named multi-use temporaries into their uses, trading recompute
+    for the memory their long live ranges hold. Every substitution still goes
+    through is_safe_to_inline."""
+    if names:
+        inline_fixpoint(block.children, frozenset(names))
 
 
 def inline_subexp_cfg(cfg: Graph) -> None:

@@ -886,6 +886,18 @@ class Abs_elem_sparse:
         llist.decoalesce()
         assert(len(llist.llist) == 1)
         if llist.llist_flag:
+            layer = self.network[llist.llist[0]]
+            for key, value in zip(list(self.d)[1:], abs_shape):
+                if isinstance(value, (float, int, bool)):
+                    continue
+                bounds = value if self.types[key] in ('Float', 'Int', 'Bool') else value.const
+                expected = [self.batch_size, layer.size]
+                if bounds.total_size.tolist() != expected:
+                    raise ValueError(
+                        f"Layer {llist.llist[0]} ({layer.type.name}) field {key!r}: "
+                        f"expected bounds shape {expected}, got {bounds.total_size.tolist()}"
+                    )
+        if llist.llist_flag:
             keys = list(self.d.keys())
             for i in range(len(abs_shape)):
                 key = keys[i+1]

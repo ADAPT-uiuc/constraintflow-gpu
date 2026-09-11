@@ -116,9 +116,6 @@ class IrMetadataElement:
         return self.shape == obj.shape and self.type == obj.type and self.isConst == obj.isConst and self.broadcast == obj.broadcast
 
     def __str__(self):
-        for i in range(len(self.shape)):
-            print(self.shape[i], self.broadcast[i])
-        print()
         return ' '
 
 def is_expanded_metadata(irMetadata):
@@ -303,6 +300,42 @@ def matchDims(lhsIr, rhsIr):
         rhsIr = IrRepeat(rhsIr, newIrMetadata2)
     return lhsIr, rhsIr
 
+_EQ_BOOKKEEPING = frozenset((
+    'node_name', 'identifier', 'parents', 'children', 'irMetadata',
+    'inside_while', 'while_number', 'ttb_counter', 'while_iteration'))
+
+
+def _value_equal(x, y):
+    """One attribute value; nested IR nodes and torch tensors both turn up here."""
+    if x is y:
+        return True
+    if isinstance(x, IrAst) or isinstance(y, IrAst):
+        return isinstance(x, IrAst) and isinstance(y, IrAst) and x == y
+    if type(x) is not type(y):
+        return False
+    if isinstance(x, (list, tuple)):
+        return len(x) == len(y) and all(_value_equal(p, q) for p, q in zip(x, y))
+    if isinstance(x, dict):
+        return x.keys() == y.keys() and all(_value_equal(x[k], y[k]) for k in x)
+    try:
+        result = (x == y)
+    except Exception:
+        return False
+    if isinstance(result, bool):
+        return result
+    try:
+        return bool(result.all())
+    except Exception:
+        return False
+
+
+def _attrs_equal(a, b):
+    keys = {k for k in vars(a) if k not in _EQ_BOOKKEEPING}
+    if keys != {k for k in vars(b) if k not in _EQ_BOOKKEEPING}:
+        return False
+    return all(_value_equal(getattr(a, k), getattr(b, k)) for k in keys)
+
+
 class IrAst:
     counter = 0
     poly_size = None
@@ -350,17 +383,17 @@ class IrAst:
         return 0   
     
     def __eq__(self, obj):
-        if type(self)==type(obj):
-            if len(self.children) == len(obj.children):
-                for i in range(len(self.children)):
-                    if self.children[i] != obj.children[i]:
-                        return False 
-                if checkEqualMetadata(self.irMetadata, obj.irMetadata):
-                    return True 
-                else:
-                    return False
-        return False
-    
+        if type(self) != type(obj):
+            return False
+        if len(self.children) != len(obj.children):
+            return False
+        if not _attrs_equal(self, obj):
+            return False
+        for i in range(len(self.children)):
+            if self.children[i] != obj.children[i]:
+                return False
+        return checkEqualMetadata(self.irMetadata, obj.irMetadata)
+
 
 class IrExpression(IrAst):
     def __init__(self):
@@ -456,16 +489,10 @@ class IrSparseTensor(IrExpression):
     def __str__(self):
         print(type(self), self.name)
         return ''
-    
-    def __eq__(self, obj):
-        if isinstance(obj, IrSparseTensor):
-            if self.name == obj.name:
-                return True 
-        return False
-    
+
     def __hash__(self):
         return 0
-    
+
     def hash(self):
         self.hash_str = str(type(self))
         self.hash_str += self.start_indices
@@ -589,6 +616,12 @@ class IrTorchExpand(IrExpression):
         self.shape = shape
         self.update_parent_child([inputIr])
 
+class IrTorchPad(IrExpression):
+    def __init__(self, inputIr, pad):
+        super().__init__()
+        self.pad = pad
+        self.update_parent_child([inputIr])
+
 class IrTorchSum(IrExpression):
     def __init__(self, inputIr, dim):
         super().__init__()
@@ -636,6 +669,13 @@ class IrTorchSlice(IrExpression):
         super().__init__()
         self.index = index
         self.update_parent_child([inputIr])
+
+class IrPatchesToDense(IrExpression):
+    def __init__(self, inputIr, geometry):
+        super().__init__()
+        self.geometry = geometry
+        self.update_parent_child([inputIr])
+
 
 class IrTensorScatter(IrExpression):
     def __init__(self, inputIr, valueIr, dim, index):

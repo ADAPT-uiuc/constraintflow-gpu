@@ -60,6 +60,8 @@ def _describe_block(block):
         "block_type": block.block_type,
         "tier": identifySparseBlockType(block.block),
         "total_shape": _plain(block.total_shape),
+        "shape": (list(block.block.shape)
+                  if isinstance(block.block, torch.Tensor) else None),
         "dtype": _dtype(block.block),
         "fields": {name: _plain(getattr(block, name))
                    for name in BLOCK_GEOMETRY[kind]},
@@ -92,6 +94,20 @@ def describe(value):
     return {"node": "opaque", "kind": type(value).__name__}
 
 
+def _describe_network(network):
+    out = {}
+    for i, layer in enumerate(network):
+        params = {name: list(getattr(layer, name).shape)
+                  for name in ('weight', 'bias')
+                  if isinstance(getattr(layer, name, None), torch.Tensor)}
+        if params:
+            out[str(i)] = params
+    return out
+
+
 def save_entry_capture(abs_elem):
-    save_capture(CAPTURE_PATH,
-                 {key: describe(value) for key, value in abs_elem.d.items()})
+    save_capture(CAPTURE_PATH, {
+        "entry": {key: describe(value) for key, value in abs_elem.d.items()},
+        "network": _describe_network(abs_elem.network),
+        "batch_size": abs_elem.batch_size,
+    })

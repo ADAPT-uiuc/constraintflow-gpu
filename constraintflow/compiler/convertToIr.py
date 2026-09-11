@@ -50,7 +50,7 @@ class ConvertToIr(astVisitor.ASTVisitor):
         
 
     def visitBinOp(self, ast_node: AST.BinOpNode, lhsIr=None, rhsIr=None, ast_node_type=None, op=None):
-        print(op, '#################')
+        # print(op, '#################')
         seqIr = []
         if lhsIr==None:
             lhsIr, lhsSeqIr = self.visit(ast_node.left)
@@ -333,8 +333,8 @@ class ConvertToIr(astVisitor.ASTVisitor):
 
             return IrCombineToSym(IrDot(rhsIr, coeff), IrDot(rhsIr, const)), lhsSeqIr + rhsSeqIr
         else:
-            print(lhsIr.irMetadata[-1].type)
-            print(rhsIr.irMetadata[-1].type)
+            # print(lhsIr.irMetadata[-1].type)
+            # print(rhsIr.irMetadata[-1].type)
             assert False
 
         return IrDot(lhsIr, rhsIr), lhsSeqIr + rhsSeqIr

@@ -264,6 +264,9 @@ class _Scalarizer:
         self.cache_log = []
         self.out = []
         self.params = []
+        self.param_meta = {}
+        self.net_shapes = {}
+        self.batch_size = 1
         self._by_path = {}
         self.functional = True
         self.clones_dropped = 0
@@ -278,10 +281,14 @@ class _Scalarizer:
         self.survivors = []
 
     # -- flow parameters -------------------------------------------------
-    def param(self, path, name, shape=None, type_='Float'):
+    def param(self, path, name, shape=None, type_='Float', real_shape=None):
         if path not in self._by_path:
             self._by_path[path] = name
             self.params.append((name, path))
+            if real_shape is not None or shape:
+                self.param_meta[name] = (
+                    list(real_shape) if real_shape is not None
+                    else (list(shape) if shape else None), type_)
         shape = list(shape) if shape else [1]
         return IrVar(self._by_path[path],
                      [IrMetadataElement(shape, type_, [1] * len(shape), False)])
@@ -289,6 +296,9 @@ class _Scalarizer:
     # -- entry descriptors -----------------------------------------------
     def seed_entry(self):
         capture = load_capture(entry_capture.CAPTURE_PATH)
+        self.net_shapes = capture.get('network', {})
+        self.batch_size = capture.get('batch_size', 1)
+        capture = capture['entry']
         for key, var_name in self.ir.flow_entry.items():
             desc = self._from_capture(
                 capture[key], "abs_elem.d['" + key + "']", 'in_' + key)
@@ -310,7 +320,9 @@ class _Scalarizer:
         for i, b in enumerate(node['blocks']):
             payload = TensorDesc(
                 self.param(path + '.blocks[' + str(i) + '].block', name + '_' + str(i),
-                           b['total_shape'], 'Bool' if b['dtype'] == 'bool' else 'Float'),
+                           b['total_shape'],
+                           'Bool' if b['dtype'] == 'bool' else 'Float',
+                           real_shape=b.get('shape')),
                 b['dtype'])
             blocks.append(BlockDesc(b['kind'], payload, tuple(b['total_shape']),
                                     dict(b['fields'])))
@@ -407,8 +419,9 @@ class _Scalarizer:
             return ScalarDesc(expr.const, dtype, expr)
         if isinstance(expr, IrGetKthLayerNetworkParam):
             path = 'abs_elem.network[' + str(expr.layer_index) + '].' + expr.param
+            shape = self.net_shapes.get(str(expr.layer_index), {}).get(expr.param)
             return TensorDesc(self.param(
-                path, 'net_' + str(expr.layer_index) + '_' + expr.param))
+                path, 'net_' + str(expr.layer_index) + '_' + expr.param, shape))
 
         # lists of blocks
         if isinstance(expr, IrEmptyList):
@@ -666,8 +679,17 @@ class _Scalarizer:
         self.dead_dropped = len(block.children) - len(live_stmts)
         clock.mark('dse ' + str(len(live_stmts)) + '/' + str(len(block.children)))
         ret = None
+        layer_of = getattr(self.ir, 'flow_splice_layers', None) or {}
+        bounds, current = [], None
         for done, stmt in enumerate(live_stmts):
             clock.tick(done, len(live_stmts), len(self.out))
+            tag = layer_of.get(id(stmt))
+            if tag is not None and tag[0] is stmt:
+                if current is None:
+                    current = tag[1]
+                elif tag[1] != current:
+                    bounds.append(len(self.out))
+                    current = tag[1]
             if isinstance(stmt, IrAssignment):
                 mark_out, mark_cache = len(self.out), len(self.cache_log)
                 try:
@@ -703,7 +725,10 @@ class _Scalarizer:
         results = [self.densify(self.eval(child)) for child in ret.children[:2]]
         self.out.append(IrTransRetBasic([self.to_ir(d) for d in results]))
         block.update_parent_child(self.out)
+        self.ir.flow_layer_bounds = bounds + [len(self.out)]
         self.ir.flow_params = self.params
+        self.ir.flow_param_meta = self.param_meta
+        self.ir.flow_batch_size = self.batch_size
         return self
 
 

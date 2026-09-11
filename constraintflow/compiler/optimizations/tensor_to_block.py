@@ -800,6 +800,17 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 raise Exception("NOT IMPLEMENTED")
             output = IrTorchRepeat(inputIr, json_obj["repeats"])
 
+        elif json_obj["method"] == "torch_pad":
+            if "json_list_" in json_obj["input"]:
+                inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            elif json_obj["input"] == "lhs":
+                inputIr = lhs
+            elif json_obj["input"] == "rhs":
+                inputIr = rhs
+            else:
+                raise Exception("NOT IMPLEMENTED")
+            output = IrTorchPad(inputIr, json_obj["pad"])
+
         elif json_obj["method"] == "torch_expand":
             if "json_list_" in json_obj["input"]:
                 inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
@@ -901,6 +912,10 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             size = json_obj["size"]
             stride = json_obj["stride"]
             output = IrTorchAsStrided(inputIr, size, stride)
+
+        elif json_obj["method"] == "patches_to_dense":
+            inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
+            output = IrPatchesToDense(inputIr, json_obj["geometry"])
 
         elif json_obj["method"] == "tensor_scatter":
             inputIr = output_vars[int(json_obj["input"].split("_")[-1])]
@@ -2060,6 +2075,7 @@ def splice_flow(ir, shape_fields):
     entry = {key: abs_elem_param(key) + '_L0' for key in shape_fields}
     state = dict(entry)
     stmts, terminator = [], None
+    layer_of = {}
     for layer_index in order:
         cfg = cfgs[layer_index]
         block = cfg.ir[cfg.entry_node]
@@ -2089,10 +2105,14 @@ def splice_flow(ir, shape_fields):
                 IrConst(int(rows[layer_index][name]), 'Int')))
 
         terminator = next(s for s in body if isinstance(s, IrTransRetBasic))
-        stmts.extend(s for s in body if s is not terminator)
+        added = [s for s in body if s is not terminator]
+        stmts.extend(added)
+        for stmt in added:                 # keep a ref; a freed id gets reused
+            layer_of[id(stmt)] = (stmt, layer_index)
         for key in shape_fields:
             state[key] = rename[abs_elem_param(key) + '_out']
 
     ir.flow_block = IrBlock(stmts + [IrTransRetBasic(
         list(terminator.children[:len(shape_fields)]))])
     ir.flow_entry = entry
+    ir.flow_splice_layers = layer_of

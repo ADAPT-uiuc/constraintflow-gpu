@@ -24,10 +24,11 @@ class ImageDataset:
         if dataset == 'mnist':
             canonical_dataset = 'mnist'
             mean, std = ImageDataset.mnist_mean, ImageDataset.mnist_std
-        elif dataset in ['cifar10', 'cifar']:
+        elif dataset in ['cifar10', 'cifar', 'tinyimagenet']:
+            # Note: in the original constraintflow, tinyimagenet is normalized with cifar10 mean and std. So replicating that. 
             canonical_dataset = 'cifar10'
             mean, std = ImageDataset.cifar10_mean, ImageDataset.cifar10_std
-        elif dataset in ['tinyimagenet', 'imagenet']:
+        elif dataset == 'imagenet':
             canonical_dataset = 'imagenet'
             mean, std = ImageDataset.imagenet_mean, ImageDataset.imagenet_std
         else:

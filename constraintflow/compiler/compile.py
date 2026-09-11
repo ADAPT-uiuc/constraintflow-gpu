@@ -1,3 +1,8 @@
+import os
+import time
+
+import time
+
 import antlr4 as antlr
 
 from constraintflow.ast_cflow import dslLexer
@@ -19,6 +24,8 @@ from constraintflow.compiler.optimizations import rewrite
 from constraintflow.compiler.optimizations import subexp_inlining
 from constraintflow.compiler.optimizations import constant_folding
 from constraintflow.compiler.optimizations import sroa as sroa_pass
+from constraintflow.compiler.optimizations import block_passes
+from constraintflow.compiler.optimizations import sign_convs, sign_reductions
 from constraintflow.compiler import single_bound
 from constraintflow.lib.globals import *
 
@@ -95,6 +102,7 @@ def compile(inputfile, output_path):
         if sroa_build():
             tensor_to_block.splice_flow(ir, list(ir.shape.keys()))
             stats = sroa_pass.sroa(ir)
+            ir.flow_functional = stats['functional']
             print('[sroa] {aggregates} aggregates removed, {clones_dropped} clones and '
                   '{lambdas_dropped} identity lambdas and {casts_dropped} casts dropped, {dead_dropped} dead stores removed, {statements} tensor '
                   'statements, {params} flow params '
@@ -103,8 +111,37 @@ def compile(inputfile, output_path):
                 print('[sroa] {} values not scalarized:'.format(len(stats['survivors'])))
                 for reason in sorted(set(stats['survivors']))[:10]:
                     print('[sroa]   ' + reason)
+            if stats['view_writes'] == 0:
+                started = time.time()
+                block_stats = block_passes.run(ir.flow_block,
+                                              getattr(ir, 'flow_layer_bounds', None))
+                print('[block-opt] {statements_before} -> {statements_after} statements ('
+                      .format(**block_stats)
+                      + ', '.join(k + '=' + str(v)
+                                  for k, v in block_stats['counts'].items())
+                      + ') in %.1fs' % (time.time() - started))
+                ir.flow_layers = block_stats['layers']
+            else:
+                print('[block-opt] skipped: {} view writes remain, block passes '
+                      'assume SSA'.format(stats['view_writes']))
             subexp_inlining.inline_subexp_block(ir.flow_block)
-            subexp_inlining.recycle_temp_names_block(ir.flow_block.children)
+            # The topology-level affine substitution cannot follow residual
+            # branches. Finish the optimization on tensor SSA, where identical
+            # weights and complementary clamps can be proved without guessing
+            # the traversal order. Keep the explicit flag for other certifiers.
+            if (fuse_sign_convs.get_flag()
+                    or (fuse_affine_subst.get_flag() and stats['functional'])):
+                count = sign_convs.run(ir.flow_block)
+                print('[sign-convs] {} redundant convolutions removed'.format(count))
+                if count:
+                    subexp_inlining.inline_subexp_block(ir.flow_block)
+                count = sign_reductions.run(ir.flow_block)
+                print('[sign-reductions] {} redundant reductions removed'.format(count))
+            # Partitioning needs SSA. Recycled names merge unrelated lifetimes
+            # and can make segment interfaces refer to the wrong definition.
+            needs_ssa = (stats['functional'] or early_reductions.get_flag() or flow_segment_mb.get_value() > 0)
+            if os.environ.get('CF_NO_RECYCLE') != '1' and not needs_ssa:
+                subexp_inlining.recycle_temp_names_block(ir.flow_block.children)
         else:
             subexp_inlining.inline_subexp(ir)
             subexp_inlining.recycle_temp_names(ir)

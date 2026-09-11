@@ -1,4 +1,5 @@
 import os
+import gc
 import sys
 import constraintflow.lib.globals as globals
 
@@ -112,8 +113,10 @@ def get_dataset(
     elif dataset == "tinyimagenet":
         train = True
         transform = transforms.Compose([
-            # But its onnx model expects 56x56, why?
-            transforms.Resize((56, 56)),  # TinyImageNet images are 64x64
+            # Match the reference input: resize to 64, then take the 56x56
+            # top-left crop below. Resizing directly to 56 changes the pixels
+            # and therefore the verification problem despite identical shapes.
+            transforms.Resize((64, 64)),
             transforms.ToTensor(),
         ])
         root_dir = "tinyimagenet/tiny-imagenet-200"
@@ -244,13 +247,17 @@ def simulacrum_compile(
     print_intermediate_results: bool = typer.Option(False, help="Print intermediate results during the simulacrum trace pass"),
     dense: bool = typer.Option(False, help="Use dense blocks by default"),
     jit_dir: str = typer.Option("jit_captures", help="Common parent folder for all jit_* capture files"),
-    in_memory: bool = typer.Option(False, "--in-memory", help="Keep jit captures in a process-local dict instead of writing/reading capture files on disk (jit only)."),
+    in_memory: bool = typer.Option(True, "--in-memory/--disk-captures", help="Keep jit captures in a process-local dict instead of writing/reading capture files on disk (jit only)."),
     no_barriers: bool = typer.Option(False, "--no-barriers", help="Inline every single-use temporary unconditionally (skip is_safe_to_inline's safety analysis)."),
     inductor: bool = typer.Option(False, help="Emit @torch.compile(backend='inductor') on the reuse build"),
+    compact_patches: bool = typer.Option(True, "--compact-patches", help="Use direct patch-to-dense gathering and switch representation when a composed patch is at least as large as the full input feature map. Set for both capture and reuse."),
     paired_unroll: bool = typer.Option(False, "--paired-unroll", help="Interleave the paired lower/upper traverse() loops when unrolling them, instead of emitting one traversal after the other. Reuse compile only; falls back to sequential unrolling whenever the two traversals are not provably independent."),
     fused_flow: bool = typer.Option(True, "--fused-flow/--no-fused-flow", help="Emit a layer-unrolled flow() into transformers.py instead of using the interpretive Flow.flow, replaying abs_elem.update from its simulacrum capture, and (under --inductor) compile the whole flow as one graph instead of one per op. Reuse compile only."),
-    fuse_affine_subst: bool = typer.Option(False, "--fuse-affine-subst/--no-fuse-affine-subst", help="Two optimizations gated by one flag: (1) skip both concretizing traversals at any Affine layer that feeds only further Affine layers (always sound; single_bound.py). (2) Assert every Affine op's L and U outputs are identical (true for all deeppoly*/crown specs here) and drop the redundant sign-split when a traverse() substitution step crosses an Affine layer -- unsound if the assertion doesn't hold. Both take effect on the simulacrum and reuse compile passes below."),
+    fuse_affine_subst: bool = typer.Option(False, "--fuse-affine-subst/--no-fuse-affine-subst", help="Two optimizations gated by one flag: (1) skip both concretizing traversals at any Affine layer that feeds only further Affine layers (always sound; single_bound.py). (2) Assert every Affine op's L and U outputs are identical (true for all deeppoly*/crown specs here) and drop the redundant sign-split when a traverse() substitution step crosses an Affine layer -- unsound if the assertion doesn't hold. Both take effect on the simulacrum and reuse compile passes below. Functional --sroa also proves and removes matching sign-split convolution pairs across residual branches."),
     sroa: bool = typer.Option(True, "--sroa/--no-sroa", help="Splice every layer into one flow() and scalar-replace the Jit* aggregates, so the compiled region is pure tensor code. Requires --fused-flow. Reuse compile only."),
+    early_reductions: bool = typer.Option(False, "--early-reductions", help="Compute traversal sums as soon as their inputs exist, releasing large coefficients before later traversal steps. Requires functional --sroa; preserves the arithmetic tree."),
+    fuse_sign_convs: bool = typer.Option(True, "--fuse-sign-convs", help="Replace positive/negative convolution pairs by one convolution only when their inputs, weights, views and settings provably match. Requires functional --sroa. Uses linearity and can change floating-point rounding."),
+    flow_segment_mb: float = typer.Option(0.0, "--flow-segment-mb", help="Split functional SSA flow into regions with approximately this many MB of named allocations. This is a compilation-region budget, not a bound on total GPU memory. Requires --sroa; Inductor automatically compiles each segment separately. 0 disables."),
 ):
     """
     Compile a ConstraintFlow program through the whole simulacrum+reuse pipeline
@@ -258,13 +265,19 @@ def simulacrum_compile(
     """
     start_time = time.perf_counter()
     globals.fuse_affine_subst.set_flag() if fuse_affine_subst else globals.fuse_affine_subst.reset_flag()
+    globals.compact_patches.set_flag() if compact_patches else globals.compact_patches.reset_flag()
     globals.paired_unroll.set_flag() if paired_unroll else globals.paired_unroll.reset_flag()
-    # Set for both passes: the simulacrum writes the update capture the reuse pass replays.
     globals.fused_flow.set_flag() if fused_flow else globals.fused_flow.reset_flag()
     globals.sroa.set_flag() if sroa else globals.sroa.reset_flag()
     if sroa and not fused_flow:
         typer.echo("Error: --sroa requires --fused-flow.")
         raise typer.Exit(code=1)
+    if (early_reductions or flow_segment_mb > 0) and not sroa:
+        raise typer.BadParameter('--early-reductions and --flow-segment-mb require --sroa')
+    if fuse_sign_convs and not sroa:
+        raise typer.BadParameter('--fuse-sign-convs requires --sroa')
+    if flow_segment_mb < 0:
+        raise typer.BadParameter('--flow-segment-mb must be nonnegative')
     if fused_flow and print_intermediate_results:
         typer.echo("Error: --fused-flow drops the per-layer densification, so --print-intermediate-results does not apply.")
         raise typer.Exit(code=1)
@@ -310,9 +323,10 @@ def simulacrum_compile(
     compile_code(program_file, output_path)
 
     sys.path.insert(0, os.path.abspath(output_path))
+    network_file = get_network(network, network_format, dataset)
+
     from main import run as _probe_run  # probe build provides this
 
-    network_file = get_network(network, network_format, dataset)
     dataset_device = device_mode.get_device() if is_cuda else None
     X, y = get_dataset(batch_size, dataset, train=train, device=dataset_device)
     _probe_run(
@@ -340,6 +354,9 @@ def simulacrum_compile(
     globals.reuse_mode.set_flag()
     if inductor:
         globals.inductor_mode.set_flag()
+    globals.early_reductions.set_flag() if early_reductions else globals.early_reductions.reset_flag()
+    globals.fuse_sign_convs.set_flag() if fuse_sign_convs else globals.fuse_sign_convs.reset_flag()
+    globals.flow_segment_mb.set_value(flow_segment_mb)
     globals.set_network_path(network_file)
     try:
         compile_code(program_file, output_path)
@@ -347,6 +364,10 @@ def simulacrum_compile(
         globals.reuse_mode.reset_flag()
         globals.inductor_mode.reset_flag()
         globals.fused_flow.reset_flag()
+        globals.compact_patches.reset_flag()
+        globals.early_reductions.reset_flag()
+        globals.fuse_sign_convs.reset_flag()
+        globals.flow_segment_mb.set_value(0.0)
         globals.set_network_path(None)
         if in_memory:
             globals.jit_store_clear()
@@ -386,9 +407,7 @@ def run(
     no_barriers: bool = typer.Option(False, "--no-barriers", help="Inline every single-use temporary unconditionally (skip is_safe_to_inline's safety analysis). Lower peak memory, not guaranteed value-preserving."),
     warmup: int = typer.Option(0, help="Number of warmup runs on different data before the timed run"),
     repeat: int = typer.Option(1, "--repeat", help="Number of timed runs, each reported separately. Independent of --warmup: the warmup runs (if any) still happen once, before the first timed run."),
-    aot_save: bool = typer.Option(False, "--aot-save", help="Compile each inductor kernel ahead of time and store it under <output-path>/aot, instead of timing a run."),
-    aot: bool = typer.Option(False, "--aot", help="Load the kernels stored by --aot-save instead of compiling them. Errors out if they are missing or stale."),
-    use_cache: bool = typer.Option(False, "--use-cache", help="Point --output-path at the shared kernel_cache entry (see bench/configs.py:kernel_dir), keyed by network/dataset/certifier/batch-size/inductor. Hard errors if that cache entry is missing. Combine with --aot to also load its prebuilt AOT kernels."),
+    use_cache: bool = typer.Option(False, "--use-cache", help="Point --output-path at the shared kernel_cache entry (see bench/configs.py:kernel_dir), keyed by network/dataset/certifier/batch-size/inductor. Hard errors if that cache entry is missing."),
     perturb_eps: float = typer.Option(0.0, "--perturb-eps", help="Std of iid Gaussian noise added to the network's weights independently before each warmup and each timed run, to test whether weight values (not just shapes) affect measured runtime. 0 (default) disables perturbation and every run uses the unmodified network."),
     perturb_seed: int = typer.Option(0, "--perturb-seed", help="Seed for --perturb-eps's noise, for reproducible sweeps."),
 ):
@@ -442,133 +461,12 @@ def run(
     if device == "gpu":
         _configure_cuda_cpu_threads()
 
-    if aot_save and aot:
-        typer.echo("Error: --aot-save builds the kernels and --aot loads them; pass one or the other.")
-        raise typer.Exit(code=1)
-    if (aot_save or aot) and not inductor:
-        typer.echo("Error: --aot-save/--aot is not possible without inductor")
-        raise typer.Exit(code=1)
-    if aot_save and warmup:
-        typer.echo("Error: --aot-save measures build time and returns before the timed run; --warmup does not apply.")
-        raise typer.Exit(code=1)
-    if aot_save and repeat != 1:
-        typer.echo("Error: --aot-save measures build time and returns before the timed run; --repeat does not apply.")
-        raise typer.Exit(code=1)
     if repeat < 1:
         typer.echo("Error: --repeat must be >= 1.")
         raise typer.Exit(code=1)
-    if aot_save:
-        torch._dynamo.config.enable_aot_compile = True
 
     sys.path.insert(0, os.path.abspath(output_path))
     from main import run  # compiled code provides this
-
-    aot_dir = os.path.join(os.path.abspath(output_path), "aot")
-    # if aot_save or aot:
-    #     import builtins
-    #     import hashlib
-    #     import io
-    #     import json
-    #     import re
-    #     import torch._inductor.runtime.triton_heuristics as triton_heuristics
-    #     autotune_to_one_config = triton_heuristics.CachingAutotuner.autotune_to_one_config
-    #     transformers_module = sys.modules["transformers"]
-    #     source_hash = hashlib.sha256(
-    #         open(os.path.join(os.path.abspath(output_path), "transformers.py"), "rb").read()
-    #     ).hexdigest()
-    #     stamp = {
-    #         "torch": torch.__version__,
-    #         "transformers_sha256": source_hash,
-    #         "vec_isa_ok": os.environ.get("TORCHINDUCTOR_VEC_ISA_OK"),
-    #         "device": device,
-    #         "capability": list(torch.cuda.get_device_capability()) if device == "gpu" else None,
-    #     }
-
-    # if aot_save:
-    #     os.makedirs(aot_dir, exist_ok=True)
-    #     saved = []
-    #     tuned = {}
-
-    #     def record_tuning(self, *args, **kwargs):
-    #         autotune_to_one_config(self, *args, **kwargs)
-    #         kernel_name = (self.inductor_meta or {}).get("kernel_name")
-    #         if kernel_name and self.launchers:
-    #             tuned[kernel_name] = str(self.launchers[0].config)
-
-    #     triton_heuristics.CachingAutotuner.autotune_to_one_config = record_tuning
-    #     for cls_name, cls in list(vars(transformers_module).items()):
-    #         if not isinstance(cls, type):
-    #             continue
-    #         for method_name, method in list(vars(cls).items()):
-    #             if not hasattr(method, "aot_compile"):
-    #                 continue
-
-    #             def shim(_cls_name=cls_name, _method_name=method_name, _method=method, _state={}):
-    #                 def call(*args, **kwargs):
-    #                     if "fn" not in _state:
-    #                         name = f"{_cls_name}.{_method_name}"
-    #                         typer.echo(f"  compiling {name} ...")
-    #                         compiled = _method.aot_compile((args, kwargs))
-    #                         compiled.save_compiled_function(os.path.join(aot_dir, name + ".pt"))
-    #                         _state["fn"] = compiled
-    #                         saved.append(name)
-    #                     return _state["fn"](*args, **kwargs)
-
-    #                 return call
-
-    #             setattr(cls, method_name, shim())
-
-    # if aot:
-    #     manifest_path = os.path.join(aot_dir, "manifest.json")
-    #     if not os.path.exists(manifest_path):
-    #         typer.echo(f"Error: no AOT kernels found at {aot_dir}. Build them with --aot-save.")
-    #         raise typer.Exit(code=1)
-    #     with open(manifest_path) as f:
-    #         manifest = json.load(f)
-    #     for key, value in stamp.items():
-    #         if manifest.get(key) != value:
-    #             typer.echo(
-    #                 f"Error: AOT kernels in {aot_dir} are stale: {key} was "
-    #                 f"{manifest.get(key)!r} at build time, is {value!r} now. Rebuild with --aot-save."
-    #             )
-    #             raise typer.Exit(code=1)
-    #     tuned = manifest.get("tuned_configs", {})
-
-    #     def replay_tuning(self, *args, **kwargs):
-    #         kernel_name = (self.inductor_meta or {}).get("kernel_name")
-    #         wanted = tuned.get(kernel_name)
-    #         if wanted and self.launchers:
-    #             for launcher in self.launchers:
-    #                 if str(launcher.config) == wanted:
-    #                     self.launchers = [launcher]
-    #                     return
-    #         autotune_to_one_config(self, *args, **kwargs)
-
-    #     triton_heuristics.CachingAutotuner.autotune_to_one_config = replay_tuning
-
-    #     module_globals = dict(vars(transformers_module))
-    #     for name in manifest["methods"]:
-    #         with open(os.path.join(aot_dir, name + ".pt"), "rb") as f:
-    #             blob = f.read()
-    #         while True:
-    #             try:
-    #                 loaded = torch.compiler.load_compiled_function(
-    #                     io.BytesIO(blob), f_globals=module_globals
-    #                 )
-    #                 break
-    #             except RuntimeError as e:
-    #                 missing = re.findall(r"__builtins_dict___\d+", str(e))
-    #                 if not missing or "Missing required external references" not in str(e):
-    #                     raise
-    #                 for ref in missing:
-    #                     module_globals[ref] = vars(builtins)
-    #         cls_name, method_name = name.split(".")
-    #         setattr(
-    #             getattr(transformers_module, cls_name),
-    #             method_name,
-    #             (lambda _f: lambda *a, **k: _f(*a, **k))(loaded),
-    #         )
-    #     typer.echo(f"Loaded {len(manifest['methods'])} AOT kernels from {aot_dir}")
 
     network_file = get_network(network, network_format, dataset)
     dataset_device = device_mode.get_device() if device == "gpu" else None
@@ -594,31 +492,6 @@ def run(
             return network_file
         return _perturbed_network_copy(network_file, perturb_eps, perturb_dir, tag, perturb_rng)
 
-    # if aot_save:
-    #     start_time = time.perf_counter()
-    #     lb, ub = run(
-    #         network_file,
-    #         batch_size,
-    #         eps,
-    #         X,
-    #         y,
-    #         dataset=dataset,
-    #         train=train,
-    #         print_intermediate_results=print_intermediate_results,
-    #         no_sparsity=no_sparsity,
-    #     )
-    #     if device_mode.get_device() == "cuda":
-    #         torch.cuda.synchronize()
-    #     stamp["methods"] = saved
-    #     stamp["tuned_configs"] = tuned
-    #     with open(os.path.join(aot_dir, "manifest.json"), "w") as f:
-    #         json.dump(stamp, f, indent=2)
-    #     typer.echo(f"Saved {len(saved)} AOT kernels and {len(tuned)} tuned configs to {aot_dir}")
-    #     typer.echo(f"Build time: {time.perf_counter() - start_time:.6f} seconds")
-    #     typer.echo(f"Lower bounds: {lb}")
-    #     typer.echo(f"Upper bounds: {ub}")
-    #     return
-
     is_cuda = device_mode.get_device() == "cuda"
     print(f"WARMMMMMM")
     torch._dynamo.reset()
@@ -626,20 +499,25 @@ def run(
     for i in range(warmup):
         warmup_network = _network_for(f"warmup{i}")
         warmup_start = time.perf_counter()
-        run(
-            warmup_network,
-            batch_size,
-            eps,
-            X[(i + 1) * batch_size : (i + 2) * batch_size],
-            y[(i + 1) * batch_size : (i + 2) * batch_size],
-            dataset=dataset,
-            train=train,
-            print_intermediate_results=False,
-            no_sparsity=no_sparsity,
-        )
+        with torch.no_grad():
+            run(
+                warmup_network,
+                batch_size,
+                eps,
+                X[(i + 1) * batch_size : (i + 2) * batch_size],
+                y[(i + 1) * batch_size : (i + 2) * batch_size],
+                dataset=dataset,
+                train=train,
+                print_intermediate_results=False,
+                no_sparsity=no_sparsity,
+            )
         if is_cuda:
             torch.cuda.synchronize()
         typer.echo(f"Warmup run {i + 1}/{warmup}: {time.perf_counter() - warmup_start:.6f} s")
+        ### Free Memory ####
+        gc.collect()
+        if is_cuda:
+            torch.cuda.empty_cache()
 
     mem_label = "Peak GPU memory" if is_cuda else "Peak CPU memory"
 
@@ -660,17 +538,18 @@ def run(
             torch.cuda.reset_peak_memory_stats()
 
         start_time = time.perf_counter()
-        lb, ub = run(
-            repeat_network,
-            batch_size,
-            eps,
-            X[:batch_size],
-            y[:batch_size],
-            dataset=dataset,
-            train=train,
-            print_intermediate_results=print_intermediate_results,
-            no_sparsity=no_sparsity,
-        )
+        with torch.no_grad():
+            lb, ub = run(
+                repeat_network,
+                batch_size,
+                eps,
+                X[:batch_size],
+                y[:batch_size],
+                dataset=dataset,
+                train=train,
+                print_intermediate_results=print_intermediate_results,
+                no_sparsity=no_sparsity,
+            )
         if is_cuda:
             torch.cuda.synchronize()
         run_time = time.perf_counter() - start_time
@@ -679,6 +558,12 @@ def run(
         repeat_peaks.append(run_peak)
         if repeat > 1:
             typer.echo(f"Run {i + 1}/{repeat}: {run_time:.6f} s, {mem_label}: {run_peak} bytes")
+
+        ### Free Memory ####
+        lb, ub = lb.detach().cpu(), ub.detach().cpu()
+        gc.collect()
+        if is_cuda:
+            torch.cuda.empty_cache()
 
     total_time = sum(repeat_times)
     peak_bytes = max(repeat_peaks)
