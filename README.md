@@ -58,94 +58,9 @@ Download pretrained DNNs from [ERAN](https://github.com/eth-sri/eran) and place 
 
 ### CLI Usage
 
-ConstraintFlow provides the following commands with optional flags:
-
-#### `provesound`
-
-```bash
-constraintflow provesound example.cf [OPTIONS]
-```
-
-**Options:**
-
-| Flag      | Description                           | Default |
-| --------- | ------------------------------------- | ------- |
-| `--nprev` | Number of previous states to consider | 1       |
-| `--nsymb` | Number of symbols to track            | 1       |
-
-#### `compile`
-
-```bash
-constraintflow compile example.cf [OPTIONS]
-```
-
-**Options:**
-
-| Flag            | Description                  | Default   |
-| --------------- | ---------------------------- | --------- |
-| `--output-path` | Directory for generated code | `output/` |
-
-
-#### `run`
-
-```bash
-constraintflow run example.cf [OPTIONS]
-```
-
-**Options:**
-
-| Flag                           | Description                                 | Default           |
-| ------------------------------ | ------------------------------------------- | ----------------- |
-| `--network`                    | Network name                                | `mnist_relu_3_50` |
-| `--network-format`             | Format of the network file                  | `onnx`            |
-| `--dataset`                    | Dataset to use (`mnist` or `cifar`)         | `mnist`           |
-| `--batch-size`                 | Batch size                                  | 1                 |
-| `--eps`                        | Epsilon                                     | 0.01              |
-| `--train`                      | Use training dataset                        | False             |
-| `--print-intermediate-results` | Print intermediate results during execution | False             |
-| `--no-sparsity`                | Disable sparsity optimizations              | False             |
-| `--output-path`                | Path where compiled program is stored       | `output/`         |
-| `--compile`                    | Compile the program before running          | False             |
-| `--warmup`                      | Number of warmup runs on different data before the timed run               | 0                 |
-| `--repeat`                      | Number of timed runs, each reported separately                             | 1                 |
-| `--simulacrum`                  | Run Simulacrum (dummy blocks)                                               | False             |
-| `--reuse`                       | Reuse stored indices from a prior dummy-blocks run                         | False             |
+To run the JIT optimization, first use the jit command and then use the run command. 
 
 #### `JIT Optimization`
-
-To apply the JIT optimization, there is a two-step process.
-
-##### `Step 1: Profiling Pass (Simulacrum)`
-
-Run the first pass to profile shape and index metadata:
-
-```bash
-constraintflow compile example.cf --simulacrum --compile [OPTIONS]
-```
-
-##### `Step 2: Reuse Pass`
-
-Using the profiled information, run the second pass to generate optimized code:
-
-```bash
-constraintflow compile example.cf --reuse --compile [OPTIONS]
-```
-
-
-**Options:**
-
-| Flag                           | Description                                 | Default           |
-| ------------------------------ | ------------------------------------------- | ----------------- |
-| `--network`                    | Network name                                | `mnist_relu_3_50` |
-| `--network-format`             | Format of the network file                  | `onnx`            |
-| `--dataset`                    | Dataset to use (`mnist` or `cifar`)         | `mnist`           |
-| `--batch-size`                 | Batch size                                  | 1                 |
-| `--eps`                        | Epsilon                                     | 0.01              |
-| `--train`                      | Use training dataset                        | False             |
-| `--print-intermediate-results` | Print intermediate results during execution | False             |
-| `--no-sparsity`                | Disable sparsity optimizations              | False             |
-| `--output-path`                | Path where compiled program is stored       | `output/`         |
-
 
 ##### `Both Passes in One Go (JIT)`
 Both passes can be run in one go using the jit command (in-memory keeps the simulacrum metadata in the memory instead of saving it in json files):
@@ -173,6 +88,34 @@ constraintflow jit example.cf --in-memory [OPTIONS]
 | `--fused-flow` / `--no-fused-flow` | Emit a single `flow()` instead of a layered flow           | True              |
 | `--fuse-affine-subst` / `--no-fuse-affine-subst` | Pass to optimize redundant Affine calculations (only sound for deeppoly/crown)  | False       |
 | `--sroa` / `--no-sroa`          | Scalar-replace the Jit* aggregates into pure tensor code (requires `--fused-flow`)  | True              |
+
+
+
+
+#### `run`
+
+```bash
+constraintflow run example.cf [OPTIONS]
+```
+
+**Options:**
+
+| Flag                           | Description                                 | Default           |
+| ------------------------------ | ------------------------------------------- | ----------------- |
+| `--network`                    | Network name                                | `mnist_relu_3_50` |
+| `--network-format`             | Format of the network file                  | `onnx`            |
+| `--dataset`                    | Dataset to use (`mnist` or `cifar`)         | `mnist`           |
+| `--batch-size`                 | Batch size                                  | 1                 |
+| `--eps`                        | Epsilon                                     | 0.01              |
+| `--train`                      | Use training dataset                        | False             |
+| `--print-intermediate-results` | Print intermediate results during execution | False             |
+| `--no-sparsity`                | Disable sparsity optimizations              | False             |
+| `--output-path`                | Path where compiled program is stored       | `output/`         |
+| `--compile`                    | Compile the program before running          | False             |
+| `--warmup`                      | Number of warmup runs on different data before the timed run               | 0                 |
+| `--repeat`                      | Number of timed runs, each reported separately                             | 1                 |
+| `--simulacrum`                  | Run Simulacrum (dummy blocks)                                               | False             |
+| `--reuse`                       | Reuse stored indices from a prior dummy-blocks run                         | False             |
 
 
 
