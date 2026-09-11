@@ -168,22 +168,22 @@ class SparseBlock:
             memo[id(self)] = copied
         return copied
 
-    def get_dense(self):
+    def get_dense(self, *args, **kwargs):
         raise Exception(f'Not implemented for {type(self)}')
     
-    def repeat(self):
+    def repeat(self, *args, **kwargs):
         raise Exception(f'Not implemented for {type(self)}')
     
-    def unsqueeze(self, index):
+    def unsqueeze(self, index, *args, **kwargs):
         raise Exception(f'Not implemented for {type(self)}')
     
-    def squeeze(self, index):
+    def squeeze(self, index, *args, **kwargs):
         raise Exception(f'Not implemented for {type(self)}')
     
-    def matmul_equal_dims(self, sp_block):
+    def matmul_equal_dims(self, sp_block, *args, **kwargs):
         raise Exception(f'Not implemented for {type(self)}')
     
-    def matmul_unequal_dims(self, sp_block):
+    def matmul_unequal_dims(self, sp_block, *args, **kwargs):
         raise Exception(f'Not implemented for {type(self)}')
     
     def binary(self, sp_block, op, json_list=[], lhs_index=-1, rhs_index=-1):
@@ -667,6 +667,29 @@ class SparseBlock:
             return res, res_index
         return res
 
+
+
+def patches_to_dense(pieces, batch, oc, ox, oy, ic, kx, ky, ix, iy, px, py, sx, sy):
+    """Gather only valid image coefficients, without a padded scatter buffer.
+
+    Every dense matrix row is one patch, so there are no overlapping writes or
+    reductions. Coordinates depend only on geometry and fuse into the gather
+    under Inductor. Independent x/y strides support rectangular feature maps.
+    """
+    rows = ox * oy
+    x = torch.arange(ix, device=pieces.device)[None, :] + px - (
+        torch.arange(ox, device=pieces.device)[:, None] * sx)
+    y = torch.arange(iy, device=pieces.device)[None, :] + py - (
+        torch.arange(oy, device=pieces.device)[:, None] * sy)
+    valid = ((x >= 0) & (x < kx))[:, None, :, None] & (
+        (y >= 0) & (y < ky))[None, :, None, :]
+    index = (x.clamp(0, kx - 1)[:, None, :, None] * ky
+             + y.clamp(0, ky - 1)[None, :, None, :])
+    source = pieces.reshape(-1, oc, rows, ic, kx * ky).expand(batch, oc, rows, ic, kx * ky)
+    index = index.reshape(1, 1, rows, 1, ix * iy).expand(batch, oc, rows, ic, ix * iy)
+    result = source.gather(-1, index)
+    return torch.where(valid.reshape(1, 1, rows, 1, ix * iy), result, 0).reshape(
+        batch, oc * rows, ic * ix * iy)
 
 
 def col2im_columns(out_x, out_y, ker_x, ker_y, padded_rows, padded_cols, stride,
@@ -2714,6 +2737,7 @@ class DiagonalBlock(SparseBlock):
         
 
     def matmul_unequal_dims(self, sp_block, json_list=[], lhs_index=-1, rhs_index=-1):
+        print(sp_block.block_type)
         start_time_total = time.perf_counter()
         if isinstance(sp_block, DenseBlock):
             start_op_time = time.perf_counter()
@@ -2780,6 +2804,42 @@ class DiagonalBlock(SparseBlock):
             rhs_index = sp_block.json_index
             res, res_index = self.matmul_unequal_dims(sp_block, json_list=json_list, lhs_index=lhs_index, rhs_index=rhs_index)
             return res, res_index
+        elif isinstance(sp_block, ConstBlock) and self.diag_index == len(self.total_shape)-1:
+            # Contraction is over the diagonal's own last dim, so the const scales
+            # the compressed diagonal directly -- no densifying either side.
+            new_total_shape = self.total_shape.clone()[:-1]
+            if sp_block.block == 0:
+                res = ConstBlock(0, new_total_shape, json_list)
+                res_index = res.json_index
+            else:
+                start_op_time = time.perf_counter()
+                json_obj = {
+                    "method": "sparse_block_extract",
+                    "input": "json_list_" + str(lhs_index),
+                    "block_type": self.block_type,
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                lhs_index = len(json_list) - 1
+                json_obj = {
+                    "method": "sparse_block_extract",
+                    "input": "json_list_" + str(rhs_index),
+                    "block_type": sp_block.block_type,
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                rhs_index = len(json_list) - 1
+                json_obj = {
+                    "method": "torch_mul",
+                    "lhs": "json_list_" + str(lhs_index),
+                    "rhs": "json_list_" + str(rhs_index),
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                block = self.block * sp_block.block
+                unequal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
+                res = DenseBlock(block, json_list, len(json_list) - 1)
+                res_index = res.json_index
         else:
             res, res_index = super().matmul_unequal_dims(sp_block, json_list=json_list, lhs_index=lhs_index, rhs_index=rhs_index)
         unequal_matmul_profilier.update_total_time(time.perf_counter() - start_time_total)
@@ -3070,6 +3130,16 @@ class PatchesBlock(SparseBlock):
 
     def matmul_equal_dims(self, sp_block, json_list=[], lhs_index=-1, rhs_index=-1):
         start_time_total = time.perf_counter()
+        # Avoid convolving an oversized receptive field full of padding. The
+        # dense representation has exactly the feature-map extent and cuDNN
+        # can apply the network's padding directly to it.
+        if compact_patches and isinstance(sp_block, KernelBlock):
+            next_kx = (self.kx - 1) * sp_block.sx + sp_block.kx
+            next_ky = (self.ky - 1) * sp_block.sy + sp_block.ky
+            if next_kx * next_ky >= sp_block.ix * sp_block.iy:
+                dense, index = self.get_dense(json_list, lhs_index, simulacrum=True)
+                dense = DenseBlock(dense, json_list, index)
+                return dense.matmul_equal_dims(sp_block, json_list, dense.json_index, rhs_index)
         # AVAL: understand the if case
         if isinstance(sp_block, KernelBlock):
             start_op = time.perf_counter()
@@ -3552,117 +3622,129 @@ class PatchesBlock(SparseBlock):
         padding = (self.py, self.py, self.px, self.px)
         stride = self.sx
 
-        # DUSH: On block
-        json_obj = {
-            "method": "sparse_block_extract",
-            "input": "json_list_" + str(template_index),
-            "block_type": self.block_type,
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        pieces_index = len(json_list) - 1
-        pieces = self.block
-        # pieces = self.block.permute(1,0,2,3)
-        # pieces = pieces.view(batch_size, output_channel, output_x, output_y, input_channel, kernel_x, kernel_y).transpose(0, 1)
-        json_obj = {
-            "method": "torch_view",
-            "input": "json_list_" + str(pieces_index),
-            "shape": (-1, output_channel, output_x, output_y, input_channel, kernel_x, kernel_y),
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        pieces_index = len(json_list) - 1
-        pieces = pieces.view(-1, output_channel, output_x, output_y, input_channel, kernel_x, kernel_y)
-        if pieces.shape[0] < batch_size:
+        if compact_patches:
+            json_list.append({"method": "sparse_block_extract",
+                              "input": "json_list_" + str(template_index),
+                              "block_type": self.block_type, "output": len(json_list)})
+            geometry = [int(v) for v in (batch_size, output_channel, output_x, output_y,
+                                        input_channel, kernel_x, kernel_y, input_x, input_y,
+                                        self.px, self.py, self.sx, self.sy)]
+            json_list.append({"method": "patches_to_dense",
+                              "input": "json_list_" + str(len(json_list) - 1),
+                              "geometry": geometry, "output": len(json_list)})
+            A_matrix = patches_to_dense(self.block, *geometry)
+        else:
+            # DUSH: On block
             json_obj = {
-                "method": "torch_expand",
-                "input": "json_list_" + str(pieces_index),
-                "shape": (int(batch_size), *pieces.shape[1:]),
+                "method": "sparse_block_extract",
+                "input": "json_list_" + str(template_index),
+                "block_type": self.block_type,
                 "output": len(json_list),
             }
             json_list.append(json_obj)
             pieces_index = len(json_list) - 1
-            # If the batch size of pieces is not equal to the batch size of the total shape, we need to expand it.
-            pieces = pieces.expand(batch_size, *pieces.shape[1:])
-        pieces_current_index = len(json_list) - 1
-        # col2im as one out-of-place scatter along the flattened spatial axis:
-        # row p of the matrix holds its patch at padded position
-        # (p//oy*stride + kxi, p%oy*stride + kyi). The destination columns are
-        # pure geometry, so the index is a constant the compiled graph can fold.
-        padded_cols = input_y + padding[0] + padding[1]
-        flat_spatial = (input_x + padding[2] + padding[3]) * padded_cols
-        rows = output_x * output_y
-        scatter_shape = (int(batch_size), output_channel, rows, input_channel, flat_spatial)
-        json_obj = {
-            "method": "torch_zeros",
-            "size": scatter_shape,
-            "device": "device_mode.get_device()",
-            "dtype": str(pieces.dtype),
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        A_matrix_index = len(json_list) - 1
-        A_matrix = torch.zeros(*scatter_shape, device=pieces.device, dtype=pieces.dtype)
+            pieces = self.block
+            # pieces = self.block.permute(1,0,2,3)
+            # pieces = pieces.view(batch_size, output_channel, output_x, output_y, input_channel, kernel_x, kernel_y).transpose(0, 1)
+            json_obj = {
+                "method": "torch_view",
+                "input": "json_list_" + str(pieces_index),
+                "shape": (-1, output_channel, output_x, output_y, input_channel, kernel_x, kernel_y),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            pieces_index = len(json_list) - 1
+            pieces = pieces.view(-1, output_channel, output_x, output_y, input_channel, kernel_x, kernel_y)
+            if pieces.shape[0] < batch_size:
+                json_obj = {
+                    "method": "torch_expand",
+                    "input": "json_list_" + str(pieces_index),
+                    "shape": (int(batch_size), *pieces.shape[1:]),
+                    "output": len(json_list),
+                }
+                json_list.append(json_obj)
+                pieces_index = len(json_list) - 1
+                # If the batch size of pieces is not equal to the batch size of the total shape, we need to expand it.
+                pieces = pieces.expand(batch_size, *pieces.shape[1:])
+            pieces_current_index = len(json_list) - 1
+            # col2im as one out-of-place scatter along the flattened spatial axis:
+            # row p of the matrix holds its patch at padded position
+            # (p//oy*stride + kxi, p%oy*stride + kyi). The destination columns are
+            # pure geometry, so the index is a constant the compiled graph can fold.
+            padded_cols = input_y + padding[0] + padding[1]
+            flat_spatial = (input_x + padding[2] + padding[3]) * padded_cols
+            rows = output_x * output_y
+            scatter_shape = (int(batch_size), output_channel, rows, input_channel, flat_spatial)
+            json_obj = {
+                "method": "torch_zeros",
+                "size": scatter_shape,
+                "device": "device_mode.get_device()",
+                "dtype": str(pieces.dtype),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            A_matrix_index = len(json_list) - 1
+            A_matrix = torch.zeros(*scatter_shape, device=pieces.device, dtype=pieces.dtype)
 
-        # pieces have shape (batch, out_c, out_h, out_w, c, h, w).
-        json_obj = {
-            "method": "torch_reshape",
-            "input": "json_list_" + str(pieces_index),
-            "shape": [int(batch_size), output_channel, rows, input_channel, kernel_x * kernel_y],
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        pieces_flat_index = len(json_list) - 1
-        pieces_flat = pieces.reshape(batch_size, output_channel, rows, input_channel,
-                                     kernel_x * kernel_y)
+            # pieces have shape (batch, out_c, out_h, out_w, c, h, w).
+            json_obj = {
+                "method": "torch_reshape",
+                "input": "json_list_" + str(pieces_index),
+                "shape": [int(batch_size), output_channel, rows, input_channel, kernel_x * kernel_y],
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            pieces_flat_index = len(json_list) - 1
+            pieces_flat = pieces.reshape(batch_size, output_channel, rows, input_channel,
+                                         kernel_x * kernel_y)
 
-        cols = col2im_columns(output_x, output_y, kernel_x, kernel_y,
-                               input_x + padding[2] + padding[3], padded_cols, stride,
-                               device=pieces.device)
-        cols_expr = ('col2im_columns(' + ', '.join(str(v) for v in (
-            output_x, output_y, kernel_x, kernel_y,
-            input_x + padding[2] + padding[3], padded_cols, stride))
-            + ', device=device_mode.get_device()).view(1, 1, ' + str(rows) + ', 1, '
-            + str(kernel_x * kernel_y) + ').expand' + str(scatter_shape[:4] + (kernel_x * kernel_y,)))
-        json_obj = {
-            "method": "tensor_scatter",
-            "input": "json_list_" + str(A_matrix_index),
-            "value": "json_list_" + str(pieces_flat_index),
-            "dim": -1,
-            "index": cols_expr,
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        A_matrix = A_matrix.scatter(
-            -1, cols.view(1, 1, rows, 1, kernel_x * kernel_y).expand(
-                *scatter_shape[:4], kernel_x * kernel_y), pieces_flat)
+            cols = col2im_columns(output_x, output_y, kernel_x, kernel_y,
+                                   input_x + padding[2] + padding[3], padded_cols, stride,
+                                   device=pieces.device)
+            cols_expr = ('col2im_columns(' + ', '.join(str(v) for v in (
+                output_x, output_y, kernel_x, kernel_y,
+                input_x + padding[2] + padding[3], padded_cols, stride))
+                + ', device=device_mode.get_device()).view(1, 1, ' + str(rows) + ', 1, '
+                + str(kernel_x * kernel_y) + ').expand' + str(scatter_shape[:4] + (kernel_x * kernel_y,)))
+            json_obj = {
+                "method": "tensor_scatter",
+                "input": "json_list_" + str(A_matrix_index),
+                "value": "json_list_" + str(pieces_flat_index),
+                "dim": -1,
+                "index": cols_expr,
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            A_matrix = A_matrix.scatter(
+                -1, cols.view(1, 1, rows, 1, kernel_x * kernel_y).expand(
+                    *scatter_shape[:4], kernel_x * kernel_y), pieces_flat)
 
-        json_obj = {
-            "method": "torch_view",
-            "input": "json_list_" + str(len(json_list) - 1),
-            "shape": (int(batch_size), output_channel * output_x * output_y, input_channel, input_x + padding[2] + padding[3], input_y + padding[0] + padding[1]),
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        A_matrix = A_matrix.view(batch_size, output_channel * output_x * output_y, input_channel, input_x + padding[2] + padding[3], input_y + padding[0] + padding[1])
-        json_obj = {
-            "method": "torch_slice",
-            "input": "json_list_" + str(len(json_list) - 1),
-            "index": [0, 0, 0, [padding[2], input_x + padding[2]], [padding[0], input_y + padding[0]]],
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        A_matrix = A_matrix[:,:,:,padding[2]:input_x + padding[2],padding[0]:input_y + padding[0]]
+            json_obj = {
+                "method": "torch_view",
+                "input": "json_list_" + str(len(json_list) - 1),
+                "shape": (int(batch_size), output_channel * output_x * output_y, input_channel, input_x + padding[2] + padding[3], input_y + padding[0] + padding[1]),
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            A_matrix = A_matrix.view(batch_size, output_channel * output_x * output_y, input_channel, input_x + padding[2] + padding[3], input_y + padding[0] + padding[1])
+            json_obj = {
+                "method": "torch_slice",
+                "input": "json_list_" + str(len(json_list) - 1),
+                "index": [0, 0, 0, [padding[2], input_x + padding[2]], [padding[0], input_y + padding[0]]],
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            A_matrix = A_matrix[:,:,:,padding[2]:input_x + padding[2],padding[0]:input_y + padding[0]]
         
-        json_obj = {
-            "method": "torch_reshape",
-            "input": "json_list_" + str(len(json_list) - 1),
-            "shape": [int(A_matrix.shape[0]), int(A_matrix.shape[1]), -1],
-            "output": len(json_list),
-        }
-        json_list.append(json_obj)
-        A_matrix = A_matrix.reshape(A_matrix.shape[0], A_matrix.shape[1], -1)
-        # A_matrix = A_matrix.view(batch_size, output_channel*output_x*output_y, input_channel*input_x*input_y)
+            json_obj = {
+                "method": "torch_reshape",
+                "input": "json_list_" + str(len(json_list) - 1),
+                "shape": [int(A_matrix.shape[0]), int(A_matrix.shape[1]), -1],
+                "output": len(json_list),
+            }
+            json_list.append(json_obj)
+            A_matrix = A_matrix.reshape(A_matrix.shape[0], A_matrix.shape[1], -1)
+            # A_matrix = A_matrix.view(batch_size, output_channel*output_x*output_y, input_channel*input_x*input_y)
         end_time = time.time()
         patches_to_mat_time.update_total_time(end_time - start_time)
         if len(A_matrix.shape)!=len(self.total_shape):
@@ -3743,6 +3825,102 @@ class PatchesBlock(SparseBlock):
             res_index = res.json_index
             return res, res_index
         
+    def alignment_pad(self, sp_block):
+        """(dx, dy) padding that grows self's kernel to sp_block's, or None if the
+        two patch geometries are not concentric over the same input and grid."""
+        if not isinstance(sp_block, PatchesBlock):
+            return None
+        if (self.ix, self.iy, self.ox, self.oy, self.sx, self.sy,
+                self.num_channels, self.num_kernels) != (
+                sp_block.ix, sp_block.iy, sp_block.ox, sp_block.oy,
+                sp_block.sx, sp_block.sy,
+                sp_block.num_channels, sp_block.num_kernels):
+            return None
+        dkx, dky = sp_block.kx - self.kx, sp_block.ky - self.ky
+        if dkx < 0 or dky < 0 or dkx % 2 or dky % 2:
+            return None
+        dx, dy = dkx // 2, dky // 2
+        # concentric windows: the extra taps must be matched by extra padding
+        if sp_block.px - self.px != dx or sp_block.py - self.py != dy:
+            return None
+        if dx == 0 and dy == 0:
+            return None
+        return dx, dy
+
+    def pad_kernel(self, dx, dy, json_list=[], template_index=-1):
+        """Zero-pad the kernel by (dx, dy) each side; the dense value is unchanged."""
+        rows = self.block.shape[1]
+        wide = [int(self.block.shape[0]), int(rows), self.num_channels,
+                self.kx + 2 * dx, self.ky + 2 * dy]
+        flat = [int(self.block.shape[0]), int(rows),
+                self.num_channels * (self.kx + 2 * dx) * (self.ky + 2 * dy)]
+        json_list.append({
+            "method": "sparse_block_extract",
+            "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
+            "output": len(json_list),
+        })
+        json_list.append({
+            "method": "torch_view",
+            "input": "json_list_" + str(len(json_list) - 1),
+            "shape": [int(self.block.shape[0]), int(rows), self.num_channels,
+                      self.kx, self.ky],
+            "output": len(json_list),
+        })
+        json_list.append({
+            "method": "torch_pad",
+            "input": "json_list_" + str(len(json_list) - 1),
+            "pad": [dy, dy, dx, dx],
+            "output": len(json_list),
+        })
+        json_list.append({
+            "method": "torch_reshape",
+            "input": "json_list_" + str(len(json_list) - 1),
+            "shape": flat,
+            "output": len(json_list),
+        })
+        block = torch.nn.functional.pad(
+            self.block.view(*[int(self.block.shape[0]), int(rows),
+                              self.num_channels, self.kx, self.ky]),
+            (dy, dy, dx, dx)).reshape(*flat)
+        res = PatchesBlock(block, self.total_shape, self.ix, self.iy, self.ox,
+                           self.oy, self.sx, self.sy, self.px + dx, self.py + dy,
+                           self.kx + 2 * dx, self.ky + 2 * dy,
+                           self.num_channels, self.num_kernels,
+                           json_list, len(json_list) - 1)
+        return res, res.json_index
+
+    def align_pair(self, sp_block, json_list, lhs_index, rhs_index):
+        """Grow whichever side has the smaller kernel so both share one geometry."""
+        if (compact_patches and isinstance(sp_block, PatchesBlock)
+                and max(self.kx, sp_block.kx) * max(self.ky, sp_block.ky) >= self.ix * self.iy):
+            return None  # the existing dense fallback is smaller
+        pad = self.alignment_pad(sp_block)
+        if pad is not None:
+            lhs, lhs_index = self.pad_kernel(pad[0], pad[1], json_list, lhs_index)
+            return lhs, lhs_index, sp_block, rhs_index
+        pad = sp_block.alignment_pad(self) if isinstance(sp_block, PatchesBlock) else None
+        if pad is not None:
+            rhs, rhs_index = sp_block.pad_kernel(pad[0], pad[1], json_list, rhs_index)
+            return self, lhs_index, rhs, rhs_index
+        return None
+
+    def disjunctive_binary(self, sp_block, op, json_list=[], lhs_index=-1, rhs_index=-1):
+        if self.parameters() != getattr(sp_block, "parameters", lambda: None)():
+            aligned = self.align_pair(sp_block, json_list, lhs_index, rhs_index)
+            if aligned is not None:
+                lhs, lhs_index, rhs, rhs_index = aligned
+                return SparseBlock.disjunctive_binary(lhs, rhs, op, json_list, lhs_index, rhs_index)
+        return SparseBlock.disjunctive_binary(self, sp_block, op, json_list, lhs_index, rhs_index)
+
+    def conjunctive_binary(self, sp_block, op, json_list=[], lhs_index=-1, rhs_index=-1):
+        if self.parameters() != getattr(sp_block, "parameters", lambda: None)():
+            aligned = self.align_pair(sp_block, json_list, lhs_index, rhs_index)
+            if aligned is not None:
+                lhs, lhs_index, rhs, rhs_index = aligned
+                return SparseBlock.conjunctive_binary(lhs, rhs, op, json_list, lhs_index, rhs_index)
+        return SparseBlock.conjunctive_binary(self, sp_block, op, json_list, lhs_index, rhs_index)
+
     def binary(self, sp_block, op, json_list=[], lhs_index=-1, rhs_index=-1):
         start_time = time.perf_counter()
         if isinstance(sp_block, RepeatBlock):
@@ -4180,15 +4358,26 @@ class ConstBlock(SparseBlock):
             "output": len(json_list),
         }
         json_list.append(json_obj)
+        block_index = len(json_list) - 1
+        # Summing a const over dim is a scale by that dim's size; it goes on the tape as
+        # its own scalar_const slot -- a bare tensor here is not JSON serializable.
+        count = float(self.total_shape[dim])
+        json_obj = {
+            "method": "scalar_const",
+            "value": count,
+            "output": len(json_list),
+        }
+        json_list.append(json_obj)
+        count_index = len(json_list) - 1
         json_obj = {
             "method": "torch_mul",
-            "lhs": "json_list_" + str(len(json_list)-1),
-            "rhs": self.total_shape[dim],
+            "lhs": "json_list_" + str(block_index),
+            "rhs": "json_list_" + str(count_index),
             "output": len(json_list),
         }
         json_list.append(json_obj)
         mul_index = len(json_list) - 1
-        res = ConstBlock(self.block * self.total_shape[dim], torch.concat([self.total_shape[:dim], self.total_shape[dim+1:]]), json_list, mul_index)
+        res = ConstBlock(self.block * count, torch.concat([self.total_shape[:dim], self.total_shape[dim+1:]]), json_list, mul_index)
         const_index = res.json_index
         if simulacrum:
             return res, const_index

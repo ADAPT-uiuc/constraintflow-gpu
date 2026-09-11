@@ -221,6 +221,8 @@ class IRVisitor:
 
         elif isinstance(node, IR.IrTorchExpand):
             return self.visitIrTorchExpand(node)
+        elif isinstance(node, IR.IrTorchPad):
+            return self.visitIrTorchPad(node)
 
         elif isinstance(node, IR.IrTorchSum):
             return self.visitIrTorchSum(node)
@@ -242,6 +244,8 @@ class IRVisitor:
 
         elif isinstance(node, IR.IrTorchAsStrided):
             return self.visitIrTorchAsStrided(node)
+        elif isinstance(node, IR.IrPatchesToDense):
+            return self.visitIrPatchesToDense(node)
         elif isinstance(node, IR.IrTensorScatter):
             return self.visitIrTensorScatter(node)
 

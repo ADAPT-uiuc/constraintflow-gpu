@@ -83,39 +83,67 @@ dummy_mode = Flag()
 reuse_mode = Flag()
 dense_default_mode = Flag()
 inductor_mode = Flag()
-# When set (via --no-barriers), subexp_inlining folds every single-use temporary
-# unconditionally: 
+# For debugging. 
 no_barriers = Flag()
-# When set (via `jit --in-memory`), jit captures are kept in the process-local
-# _jit_store dict instead of written to / read from disk. See save_capture.
+
+# Preserves the captures in memory instead of writing json files.
 in_memory_captures = Flag()
 
-# --fuse-affine-subst (compile, jit): gates two optimizations.
-# (1) single_bound.py's inject_affine_skip: skip both concretizing traversals at
-# any Affine layer that feeds only further Affine layers (see network.py's
-# feeds_nonlin). Always sound -- with stop_traverse=false, such a layer's
-# concrete l/u have zero consumers -- but there's no dedicated flag for it, so
-# it rides on this one instead of always running unconditionally.
-# (2) the user asserts every Affine op's L and U outputs are identical (true for
-# all deeppoly*/crown specs in this repo). Under that assertion, a traverse()
-# substitution step through an Affine layer needs no clamp-based sign split --
-# clamp+(c).L + clamp-(c).U collapses to c.L exactly. Only takes effect during a
-# jit reuse compile (tensor_to_block.py); a no-op on plain `compile` since that
-# path never runs tensor_to_block. Unsound if the assertion is violated -- the
-# flag exists precisely to shift that burden to the caller, so default off.
+
 fuse_affine_subst = Flag()
 
+# Turn patches box into dense 
+compact_patches = Flag()
+
 # --paired-unroll (jit): interleave the paired lower/upper traverse() loops
-# instead of unrolling them back to back. Reuse compile only.
 paired_unroll = Flag()
 
-# --fused-flow (jit): emit a layer-unrolled flow() into transformers.py, with
-# abs_elem.update replayed from its capture, and compile it as one graph.
+# --fused-flow (jit): emit a layer-unrolled flow() into transformers.py
 fused_flow = Flag()
 
 # --sroa (jit): splice every layer into one flow() and scalar-replace the
 # Jit* aggregates. Requires reuse_mode + fused_flow.
 sroa = Flag(True)
+
+
+class Count:
+    def __init__(self, initial=1):
+        self.value = initial
+
+    def set_value(self, value):
+        self.value = value
+
+    def get_value(self):
+        return self.value
+
+    def __str__(self):
+        return f'count: {self.value}'
+
+
+class Mode:
+    def __init__(self, initial):
+        self.initial = initial
+        self.value = initial
+
+    def set_value(self, value):
+        self.value = value
+
+    def reset(self):
+        self.value = self.initial
+
+    def get_value(self):
+        return self.value
+
+    def __str__(self):
+        return f'mode: {self.value}'
+
+
+# Early reduction scheduling and bounded Inductor compilation regions.
+early_reductions = Flag()
+flow_segment_mb = Mode(0.0)
+
+# Prove identical-weight positive/negative convolution pairs in tensor SSA.
+fuse_sign_convs = Flag()
 
 
 class DeviceMode:

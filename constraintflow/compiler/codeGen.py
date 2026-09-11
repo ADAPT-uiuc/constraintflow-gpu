@@ -9,6 +9,12 @@ from . import irVisitor
 import copy
 from .ir import *
 from constraintflow.lib.globals import dummy_mode, reuse_mode, load_capture, capture_exists, inductor_mode, fused_flow, sroa
+from constraintflow.compiler.optimizations import flow_split
+from constraintflow.compiler.optimizations import flow_shapes
+from constraintflow.compiler.optimizations import subexp_inlining
+from constraintflow.compiler.optimizations import early_reductions as early_reductions_pass
+from constraintflow.lib.globals import early_reductions, flow_segment_mb
+from constraintflow.compiler.optimizations import conv_partials
 
 def fused_build():
     """True only on the reuse pass of a --fused-flow build, where flow() is emitted."""
@@ -171,8 +177,125 @@ class CodeGen(irVisitor.IRVisitor):
         self.indent -= 1
         self.write('')
 
+    def _render_stmts(self, stmts, trailer=None):
+        """Render statements into their own buffer so the caller can wrap them."""
+        real_file = self.file
+        self.file = io.StringIO()
+        self.indent = 1
+        for stmt in stmts:
+            self.visit(stmt)
+        if trailer is not None:
+            self.write(trailer)
+        body_text = self.file.getvalue()
+        self.file = real_file
+        return body_text
+
+    def _emit_explode_inputs(self, params):
+        self.indent = 0
+        self.write('')
+        # No leading underscore: `from transformers import *` drops those.
+        self.write('def explode_inputs(abs_elem, batch_size):')
+        self.indent += 1
+        self.write('return (' + ', '.join(path for _, path in params) + ',)')
+        self.indent -= 1
+        self.write('')
+
+    def emit_sroa_flow_segmented(self, node, segments):
+        """Emit the scalarized flow as chained per-segment functions.
+
+        Under fullgraph a decorator on the driver inlines the segments back into
+        one graph. Compile each segment instead to preserve the boundaries.
+        """
+        self._method_has_view_write = False
+        bodies = []
+        for seg in segments:
+            trailer = None if seg is segments[-1] else (
+                'return (' + ''.join(n + ', ' for n in seg.live_out) + ')')
+            text = self._render_stmts(seg.stmts, trailer)
+            names = list(seg.live_in)
+            if _BATCH_SIZE_RE.search(text) and 'batch_size' not in names:
+                names.append('batch_size')
+            bodies.append((seg, names, text))
+
+        params = list(node.flow_params)
+        if any('batch_size' in names for _, names, _ in bodies):
+            params.append(('batch_size', 'batch_size'))
+        self._emit_explode_inputs(params)
+
+        decorator = ('@torch.compile(fullgraph='
+                     + str(not self._method_has_view_write) + ', backend="inductor")')
+        for seg, names, text in bodies:
+            self.indent = 0
+            if inductor_mode.get_flag():
+                self.write(decorator)
+            self.write('def ' + seg.name + '(' + ', '.join(names) + '):')
+            self.file.write(text)
+            self.write('')
+
+        self.indent = 0
+        self.write('def flow(' + ', '.join(name for name, _ in params) + '):')
+        self.indent += 1
+        local_names = {name for name, _ in params}
+        local_names.update(n for seg, _, _ in bodies for n in seg.live_out)
+        last_call = {name: i for i, (_, names, _) in enumerate(bodies)
+                     for name in names if name in local_names}
+        for seg, names, _ in bodies:
+            call = seg.name + '(' + ', '.join(names) + ')'
+            if seg is segments[-1]:
+                self.write('return ' + call)
+            else:
+                if seg.live_out:
+                    self.write(', '.join(seg.live_out) + ', = ' + call)
+                else:
+                    self.write(call)
+                dead = sorted(n for n in names if last_call.get(n) == seg.index)
+                if dead:
+                    self.write('del ' + ', '.join(dead))
+        self.indent -= 1
+        self.write('')
+
+    def _probe_sizes(self, node):
+        """Fake-execute the block for real byte sizes; None when unavailable."""
+        meta = getattr(node, 'flow_param_meta', None)
+        if not meta:
+            return None
+        stmts = node.flow_block.children
+        helpers = len(self.view_write_helpers)
+        had_write = self._method_has_view_write
+        sources = [self._render_stmts([s]).strip() for s in stmts]
+        prelude = self.view_write_helpers[helpers:]
+        sized = flow_shapes.probe(stmts, sources, meta,
+                                  getattr(node, 'flow_batch_size', 1), self.const_pool,
+                                  prelude)
+        del self.view_write_helpers[helpers:]   # emission re-renders them
+        self._method_has_view_write = had_write
+        if sized:
+            print('[flow-sizes] ' + flow_shapes.summary(stmts, sized))
+        return sized
+
     def emit_sroa_flow(self, node):
         """Emit explode_inputs() and the scalarized flow()."""
+        sized = self._probe_sizes(node)
+        if early_reductions.get_flag():
+            count = early_reductions_pass.run(node.flow_block)
+            print('[early-reductions] {} reductions scheduled after their inputs'.format(count))
+            sized = self._probe_sizes(node)
+        # Expose partial sums explicitly after reduction scheduling, independently
+        # of whether the emitted flow will be segmented. Requires functional SSA.
+        if getattr(node, 'flow_functional', False):
+            count = conv_partials.run(node.flow_block)
+            print('[conv-partials] {} partial results exposed'.format(count))
+            sized = self._probe_sizes(node)
+        if flow_segment_mb.get_value() > 0:
+            segments = flow_split.split(
+                node.flow_block, sized,
+                max_region_bytes=flow_segment_mb.get_value() * 1024 ** 2)
+            if segments is not None:
+                print('[flow-split] ' + str(len(segments)) + ' segments: '
+                      + flow_split.describe(segments)
+                      + (' (compiled per segment)' if inductor_mode.get_flag() else ' (eager)'))
+                return self.emit_sroa_flow_segmented(node, segments)
+            print('[flow-split] not split, emitting one flow()')
         real_file = self.file
         self.file = io.StringIO()
         self.indent = 1
@@ -348,7 +471,7 @@ class CodeGen(irVisitor.IRVisitor):
             self.write('from constraintflow.lib.polyexp import PolyExpSparse')
         if reuse_mode.get_flag():
             self.write('from constraintflow.lib.symexp import SymExpSparse')
-            self.write('from constraintflow.gbcsr.sparse_block import col2im_columns')
+            self.write('from constraintflow.gbcsr.sparse_block import col2im_columns, patches_to_dense')
             # self.write('from constraintflow.lib.symexp import get_new_eps')
             # self.write('from constraintflow.gbcsr.op_helper import binary_to_identity_unary')
 
@@ -817,6 +940,9 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrTorchExpand(self, node):
         return self.visit(node.children[0]) + '.expand(' + self.visit(node.shape) + ')'
 
+    def visitIrTorchPad(self, node):
+        return 'F.pad(' + self.visit(node.children[0]) + ', ' + str(list(node.pad)) + ')'
+
     def visitIrTorchSum(self, node):
         return self.visit(node.children[0]) + '.sum(dim=' + str(node.dim) + ')'
 
@@ -852,6 +978,10 @@ class CodeGen(irVisitor.IRVisitor):
             'torch.as_strided(' + self.visit(node.children[0]) + ', '
             + self.visit(node.size) + ', ' + self.visit(node.stride) + ')'
         )
+
+    def visitIrPatchesToDense(self, node):
+        return ('patches_to_dense(' + self.visit(node.children[0]) + ', '
+                + ', '.join(str(v) for v in node.geometry) + ')')
 
     def visitIrTensorScatter(self, node):
         # out-of-place: no aliasing for dynamo to reason about, so no graph break

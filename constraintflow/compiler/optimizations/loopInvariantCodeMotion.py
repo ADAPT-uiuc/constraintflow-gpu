@@ -27,8 +27,8 @@ def licm_while_block(block, combined_ir_list, predecessors, cfg):
             vars = get_vars_expr(ir_list[i].children[1])
             can_be_removed = True
             for var in vars:
-                d = var.defs 
-                if d in combined_ir_list:
+                d = var.defs
+                if any(d is x for x in combined_ir_list):
                     can_be_removed = False
                     break
             if can_be_removed:
