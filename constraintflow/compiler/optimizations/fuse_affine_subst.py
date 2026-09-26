@@ -44,6 +44,18 @@ def crossed_layer_at(layer_index, iteration, parents):
     return current
 
 
+def selected_layers_at(layer_index, while_number, iteration):
+    """Actual priority selection; never infer a residual traversal from depth."""
+    from constraintflow.lib.globals import capture_exists, load_capture
+    path = f"jit_selection/selection_{layer_index}_{while_number}_{iteration}.json"
+    if not capture_exists(path):
+        return []
+    selection = load_capture(path)
+    if not selection.get('substitutions'):
+        raise ValueError(f'Unvalidated priority selection {path}; rebuild captures.')
+    return selection['layers']
+
+
 def _deref(expr):
     if isinstance(expr, IrVar) and expr.defs is not None:
         return expr.defs.children[1]

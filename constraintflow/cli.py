@@ -499,18 +499,17 @@ def run(
     for i in range(warmup):
         warmup_network = _network_for(f"warmup{i}")
         warmup_start = time.perf_counter()
-        with torch.no_grad():
-            run(
-                warmup_network,
-                batch_size,
-                eps,
-                X[(i + 1) * batch_size : (i + 2) * batch_size],
-                y[(i + 1) * batch_size : (i + 2) * batch_size],
-                dataset=dataset,
-                train=train,
-                print_intermediate_results=False,
-                no_sparsity=no_sparsity,
-            )
+        run(
+            warmup_network,
+            batch_size,
+            eps,
+            X[(i + 1) * batch_size : (i + 2) * batch_size],
+            y[(i + 1) * batch_size : (i + 2) * batch_size],
+            dataset=dataset,
+            train=train,
+            print_intermediate_results=False,
+            no_sparsity=no_sparsity,
+        )
         if is_cuda:
             torch.cuda.synchronize()
         typer.echo(f"Warmup run {i + 1}/{warmup}: {time.perf_counter() - warmup_start:.6f} s")
@@ -538,18 +537,17 @@ def run(
             torch.cuda.reset_peak_memory_stats()
 
         start_time = time.perf_counter()
-        with torch.no_grad():
-            lb, ub = run(
-                repeat_network,
-                batch_size,
-                eps,
-                X[:batch_size],
-                y[:batch_size],
-                dataset=dataset,
-                train=train,
-                print_intermediate_results=print_intermediate_results,
-                no_sparsity=no_sparsity,
-            )
+        lb, ub = run(
+            repeat_network,
+            batch_size,
+            eps,
+            X[:batch_size],
+            y[:batch_size],
+            dataset=dataset,
+            train=train,
+            print_intermediate_results=print_intermediate_results,
+            no_sparsity=no_sparsity,
+        )
         if is_cuda:
             torch.cuda.synchronize()
         run_time = time.perf_counter() - start_time

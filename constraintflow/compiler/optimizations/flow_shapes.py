@@ -6,6 +6,7 @@ rendered statement under FakeTensorMode gives exact shapes with no allocation --
 cheaper and less code than shape rules for every IrTorch* node.
 """
 
+import weakref
 import operator
 
 import torch
@@ -32,12 +33,26 @@ class _Recorder(TorchDispatchMode):
 
     def __init__(self):
         self.bytes = []
+        self.known_roots = set()
+        self.live = {}
+        self.temporary_peak = 0
 
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         out = func(*args, **(kwargs or {}))
         for t in tree_flatten(out)[0]:
             if isinstance(t, torch.Tensor) and t._base is None:
                 self.bytes.append(t.numel() * t.element_size())
+            if isinstance(t, torch.Tensor):
+                storage = t.untyped_storage()
+                root = storage._cdata
+                if root not in self.known_roots:
+                    refs, size = self.live.setdefault(root, ([], storage.nbytes()))
+                    refs.append(weakref.ref(t))
+        self.live = {root: ([r for r in refs if r() is not None], size)
+                     for root, (refs, size) in self.live.items()
+                     if any(r() is not None for r in refs)}
+        self.temporary_peak = max(self.temporary_peak,
+                                  sum(size for refs, size in self.live.values()))
         return out
 
 
@@ -78,12 +93,18 @@ def probe(stmts, sources, param_meta, batch_size, consts, prelude=()):
                     seen.setdefault(key, (storage, 'input:' + name))
                     inputs.add(key)
                     out.inputs[name] = {'root': seen[key][1],
-                                        'storage_bytes': storage.nbytes()}
+                                        'storage_bytes': storage.nbytes(),
+                                        'shape': list(value.shape), 'dtype': str(value.dtype),
+                                        'stride': list(value.stride()),
+                                        'device': str(value.device)}
             recorder = _Recorder()
             for i, (stmt, src) in enumerate(zip(stmts, sources)):
                 if not src or src.startswith('return'):
                     break
                 recorder.bytes = []
+                recorder.known_roots = set(seen)
+                recorder.live = {}
+                recorder.temporary_peak = 0
                 with recorder:
                     exec(src, env)
                 transient = sum(recorder.bytes)
@@ -101,7 +122,11 @@ def probe(stmts, sources, param_meta, batch_size, consts, prelude=()):
                 out[i] = {'name': name, 'root': root, 'nbytes': nbytes,
                           'storage_bytes': storage.nbytes(), 'input': key in inputs,
                           'alloc': storage.nbytes() if fresh else 0,
-                          'transient': transient, 'peak': peak}
+                          'transient': transient, 'peak': peak,
+                          'temporary_peak': recorder.temporary_peak,
+                          'shape': list(value.shape), 'dtype': str(value.dtype),
+                                        'stride': list(value.stride()),
+                                        'device': str(value.device)}
     except Exception as e:
         print('[flow-sizes] fake execution failed at statement ' + str(i)
               + ': ' + type(e).__name__ + ': ' + str(e))
@@ -125,3 +150,15 @@ def summary(stmts, sized):
             'live, worst statement {} (largest op {})'.format(
                 len(stmts), len(sized) - views, views,
                 _mb(total), _mb(peak), _mb(transient), _mb(op)))
+
+
+def peak_live_bytes(stmts, sized):
+    """Named live storage plus simultaneously live intra-expression storage.
+
+    Backend workspaces are deliberately separate: FakeTensor cannot measure
+    cuDNN's algorithm-dependent allocations.
+    """
+    sizes, definitions, last = flow_split.root_liveness(stmts, sized)
+    live = flow_split.live_bytes(stmts, sizes, definitions, last)
+    return max((live[i] + sized.get(i, {}).get('temporary_peak', 0)
+                for i in range(len(stmts))), default=0)

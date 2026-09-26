@@ -121,7 +121,7 @@ def where_block(x, y, z, json_list=None, cond_index=-1, lhs_index=-1, rhs_index=
 class SparseBlock:
     repeat_dims = []
     def __init__(self, block, total_shape, block_type='D'):
-        self.total_shape = total_shape
+        self.total_shape = torch.as_tensor(total_shape, dtype=torch.int64)
         self.block_type = block_type
         if block_type != 'C' and dummy_mode:
             block_shape = block.shape if isinstance(block, torch.Tensor) else self.total_shape

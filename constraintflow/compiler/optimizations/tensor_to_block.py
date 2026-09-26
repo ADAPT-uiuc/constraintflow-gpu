@@ -1504,8 +1504,8 @@ def remove_while(layer_index, num_iterations, cfg, root_node, first_while_node, 
     for i in range(num_iterations):
         combined_list = copy.deepcopy(first_while_block.children + second_while_block.children)
         if layer_parents is not None:
-            crossed = fuse_affine_subst.crossed_layer_at(layer_index, i, layer_parents)
-            is_affine = crossed is not None and layer_types.get(crossed) in affine_types
+            selected = fuse_affine_subst.selected_layers_at(layer_index, first_while_block.while_number, i)
+            is_affine = bool(selected) and all(layer_types.get(x) in affine_types for x in selected)
             fuse_affine_subst.fuse_iteration(combined_list, is_affine)
         tensor_to_block_block(None, layer_index=layer_index, ir_list=combined_list, while_iteration=i)
         ir_list += combined_list
@@ -1720,8 +1720,8 @@ def _build_iterations(cfg, layer_index, header_node, body_node, count,
     for i in range(count):
         stmts = copy.deepcopy(cfg.ir[header_node].children + cfg.ir[body_node].children)
         if layer_parents is not None:
-            crossed = fuse_affine_subst.crossed_layer_at(layer_index, i, layer_parents)
-            is_affine = crossed is not None and layer_types.get(crossed) in affine_types
+            selected = fuse_affine_subst.selected_layers_at(layer_index, cfg.ir[header_node].while_number, i)
+            is_affine = bool(selected) and all(layer_types.get(x) in affine_types for x in selected)
             fuse_affine_subst.fuse_iteration(stmts, is_affine)
         tensor_to_block_block(None, layer_index=layer_index, ir_list=stmts, while_iteration=i)
         iterations.append(stmts)

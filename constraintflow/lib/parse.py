@@ -72,13 +72,28 @@ def get_net_format(net_name):
         net_format = 'onnx'
     return net_format
 
-def get_net(net_name, spec_weight, spec_bias, no_sparsity):
+def get_net(net_name, spec_weight, spec_bias, no_sparsity, initializers=None):
     net_format = get_net_format(net_name)
     if net_format == 'onnx':
         net_onnx = onnx.load(net_name)
         # net type: constraintflow.lib.network.Network (inherits list)
         # net element type: constraintflow.lib.network.Layer
         model_name_to_val_dict = _initializer_tensors(net_onnx, net_name)
+        if initializers is not None:
+            unknown = set(initializers) - set(model_name_to_val_dict)
+            if unknown:
+                raise ValueError(f"Unknown ONNX initializer names: {sorted(unknown)}")
+            for name, tensor in initializers.items():
+                if not isinstance(tensor, torch.Tensor):
+                    raise TypeError(f"Initializer {name!r} must be a torch.Tensor")
+                if tensor.shape != model_name_to_val_dict[name].shape:
+                    raise ValueError(f"Initializer {name!r} has incorrect shape: {tensor.shape}")
+                if tensor.dtype != model_name_to_val_dict[name].dtype:
+                    raise ValueError(f"Initializer {name!r} must retain its ONNX dtype")
+                if tensor.device != spec_weight.device:
+                    raise ValueError(f"Initializer {name!r} and inputs must share a device")
+                # Preserve the live Parameter (or differentiable view) itself.
+                model_name_to_val_dict[name] = tensor
         net = parse_onnx_layers(
             net_onnx,
             spec_weight,
