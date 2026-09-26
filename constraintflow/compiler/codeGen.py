@@ -14,7 +14,7 @@ from constraintflow.compiler.optimizations import flow_shapes
 from constraintflow.compiler.optimizations import subexp_inlining
 from constraintflow.compiler.optimizations import early_reductions as early_reductions_pass
 from constraintflow.lib.globals import early_reductions, flow_segment_mb
-from constraintflow.compiler.optimizations import conv_partials
+from constraintflow.compiler.optimizations import conv_partials, region_reuse
 
 def fused_build():
     """True only on the reuse pass of a --fused-flow build, where flow() is emitted."""
@@ -89,7 +89,7 @@ class CodeGen(irVisitor.IRVisitor):
         self.write("from transformers import *")
         self.write("\n")
         # self.write("torch.cuda.reset_peak_memory_stats()")
-        self.write("def run(network_file, batch_size, eps, dataset_X, dataset_y, dataset, train, print_intermediate_results, no_sparsity):")
+        self.write("def run(network_file, batch_size, eps, dataset_X, dataset_y, dataset, train, print_intermediate_results, no_sparsity, initializers=None):")
         
         self.indent += 1
         self.visited = set()
@@ -224,8 +224,19 @@ class CodeGen(irVisitor.IRVisitor):
 
         decorator = ('@torch.compile(fullgraph='
                      + str(not self._method_has_view_write) + ', backend="inductor")')
+        sized = getattr(self, '_flow_sizes', {})
+        shapes = dict(getattr(sized, 'inputs', {}))
+        shapes.update({v['name']: v for v in sized.values() if 'shape' in v})
+        reused, distinct = {}, 0
         for seg, names, text in bodies:
+            signature = region_reuse.key(text, names, shapes)
             self.indent = 0
+            if signature is not None and signature in reused:
+                self.write(seg.name + ' = ' + reused[signature])
+                continue
+            if signature is not None:
+                reused[signature] = seg.name
+            distinct += 1
             if inductor_mode.get_flag():
                 self.write(decorator)
             self.write('def ' + seg.name + '(' + ', '.join(names) + '):')
@@ -233,6 +244,8 @@ class CodeGen(irVisitor.IRVisitor):
             self.write('')
 
         self.indent = 0
+        print('[region-reuse] {} unique / {} emitted regions'.format(distinct, len(bodies)))
+        self._region_count = distinct
         self.write('def flow(' + ', '.join(name for name, _ in params) + '):')
         self.indent += 1
         local_names = {name for name, _ in params}
@@ -286,6 +299,12 @@ class CodeGen(irVisitor.IRVisitor):
             count = conv_partials.run(node.flow_block)
             print('[conv-partials] {} partial results exposed'.format(count))
             sized = self._probe_sizes(node)
+        self._flow_sizes = sized or {}
+        self._flow_metrics = {
+            'statements': len(node.flow_block.children),
+            'estimated_peak_tensor_bytes': flow_shapes.peak_live_bytes(node.flow_block.children, sized) if sized else None,
+            'workspace_included': False,
+        }
         if flow_segment_mb.get_value() > 0:
             segments = flow_split.split(
                 node.flow_block, sized,
@@ -342,6 +361,13 @@ class CodeGen(irVisitor.IRVisitor):
     def finish(self):
         """Flush the hoisted constant pool to <folder>/jit_constants.py. Called
         once after visit(ir) completes, since the pool is only complete then."""
+        if hasattr(self, '_flow_metrics'):
+            metrics = dict(self._flow_metrics, unique_regions=getattr(self, '_region_count', 1))
+            if not self.file.closed:
+                self.file.flush()
+            metrics['generated_source_bytes'] = sum(os.path.getsize(p) for p in (self.main_file, self.transformers_file))
+            with open(os.path.join(self.folder, 'compile_metrics.json'), 'w') as f:
+                json.dump(metrics, f, indent=2)
         if not reuse_mode.get_flag():
             return
         path = self.folder + '/jit_constants.py'
@@ -451,7 +477,7 @@ class CodeGen(irVisitor.IRVisitor):
         temp_dict += '}'
 
 
-        self.write("network, l, u, L, U, Z, llist = get_network_and_input_spec(network_file, batch_size, dataset_X, dataset_y, dataset, eps=eps, train=train, no_sparsity=no_sparsity)")
+        self.write("network, l, u, L, U, Z, llist = get_network_and_input_spec(network_file, batch_size, dataset_X, dataset_y, dataset, eps=eps, train=train, no_sparsity=no_sparsity, initializers=initializers)")
         self.write("abs_elem = Abs_elem_sparse(" + temp_dict + ", " + str(temp_shape) + ", network, batch_size=batch_size, no_sparsity=no_sparsity)")
         
 

@@ -26,7 +26,10 @@ def jit_path(*parts):
 
 
 # jit-memory
+CAPTURE_ABI = 3
 _jit_store = {}
+# Host-only network coordinates for capture-time traversal validation.
+capture_layers = ()
 
 def jit_store_clear():
     _jit_store.clear()
@@ -34,19 +37,24 @@ def jit_store_clear():
 def save_capture(rel_path, obj):
     """Persist a jit capture under its relative path (dir/file.json)."""
     if in_memory_captures:
-        _jit_store[rel_path] = json.dumps(obj)
+        _jit_store[rel_path] = json.dumps({"capture_abi": CAPTURE_ABI, "data": obj})
         return
     path = jit_path(rel_path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w') as f:
-        json.dump(obj, f)
+        json.dump({"capture_abi": CAPTURE_ABI, "data": obj}, f)
 
 def load_capture(rel_path):
     """Load a jit capture previously written with save_capture."""
     if in_memory_captures:
-        return json.loads(_jit_store[rel_path])
-    with open(jit_path(rel_path), 'r') as f:
-        return json.load(f)
+        record = json.loads(_jit_store[rel_path])
+    else:
+        with open(jit_path(rel_path), 'r') as f:
+            record = json.load(f)
+    if not isinstance(record, dict) or record.get('capture_abi') != CAPTURE_ABI:
+        raise ValueError(f"Incompatible JIT capture {rel_path}; rebuild captures with this compiler.")
+    return record['data']
+
 
 def capture_exists(rel_path):
     if in_memory_captures:

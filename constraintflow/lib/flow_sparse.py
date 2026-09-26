@@ -5,6 +5,7 @@ from constraintflow.lib.llist import *
 from constraintflow.lib.network import Network, LayerType, JIT_OP_FOR_LAYER, JIT_OPS
 from constraintflow.lib.globals import *
 from constraintflow.lib import entry_capture
+from constraintflow.lib import globals as G
 from constraintflow.gbcsr.sparse_tensor import _tdtype
 
 import torch
@@ -103,6 +104,7 @@ class Flow:
     def flow(self):
         begin_time = time.time()
         if dummy_mode:
+            G.capture_layers = tuple((int(l.identifier), int(l.start), int(l.end)) for l in self.model)
             entry_capture.save_entry_capture(self.abs_elem)
         prev_size = self.model.input_size
         size = self.model.input_size

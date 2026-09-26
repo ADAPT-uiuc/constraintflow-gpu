@@ -1,8 +1,10 @@
-import torch 
+import torch
+import builtins
 import math
 import operator
 from constraintflow.gbcsr.sparse_tensor import *
 from constraintflow.lib.globals import *
+from constraintflow.lib import globals as G
 
 input_size = 784
 
@@ -536,10 +538,12 @@ def get_default_stop(shape, abs_elem, batch_size, curr_size, poly_size, layer_in
 
 def get_max_priority(sp_tensor, active_vertices: SparseTensor, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None):
     priorities = []
+    active_blocks = []
     for i in range(sp_tensor.num_blocks):
         # print(f'sp_tensor.blocks[i] type: {type(sp_tensor.blocks[i])}')
         assert(isinstance(sp_tensor.blocks[i], ConstBlock))
-        if active_vertices.exists_sub_block(sp_tensor.start_indices[i], sp_tensor.end_indices[i]):
+        active_blocks.append(active_vertices.exists_sub_block(sp_tensor.start_indices[i], sp_tensor.end_indices[i]))
+        if active_blocks[-1]:
             priorities.append(sp_tensor.blocks[i].block)
         else:
             priorities.append(float('-inf'))
@@ -555,7 +559,7 @@ def get_max_priority(sp_tensor, active_vertices: SparseTensor, layer_index=None,
     json_list.append({"method": "initialise", "value": "[]", "output": 0})
     current_list_index = 0
     for i in range(sp_tensor.num_blocks):
-        if priorities[i] == max_priority:
+        if active_blocks[i] and priorities[i] == max_priority:
             # if active_vertices.get_sparse_custom_range(sp_tensor.start_indices[i], sp_tensor.end_indices[i]).any():
             const_block = ConstBlock(True, sp_tensor.blocks[i].total_shape, json_list)
             res_blocks.append(const_block)
@@ -573,6 +577,12 @@ def get_max_priority(sp_tensor, active_vertices: SparseTensor, layer_index=None,
     if dummy_mode:
         capture_path = f"jit_priority/priority_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json"
         save_capture(capture_path, json_list)
+        ranges = [(int(s[-1]), int(e[-1])) for s, e in zip(res.start_indices, res.end_indices)]
+        selected = [ident for ident, start, end in G.capture_layers
+                    if builtins.any(start < hi and lo < end for lo, hi in ranges)]
+        save_capture(f"jit_selection/selection_{layer_index}_{while_number}_{while_iteration}.json",
+                     {'layers': selected, 'ranges': ranges,
+                      'priority': float(max_priority), 'substitutions': {}})
     return res
 
 def filter_trav_exp_stop(trav_exp, stop, layer_index=None, counter=None, inside_while=False, while_number=None, while_iteration=None):
@@ -627,6 +637,9 @@ def filter_trav_exp_not_stop(trav_exp, stop, layer_index=None, counter=None, ins
     stop_not = stop.unary(operator.not_, json_list=json_list, lhs_index=stop_index)
     stop_float = stop_not.float(json_list=json_list, lhs_index=stop_not.json_index)
     polyexp_not_stop_mat = binary(trav_exp.mat, stop_float, operator.mul, layer_index=layer_index, counter=counter, inside_while=inside_while, while_number=while_number, while_iteration=while_iteration, parent_json_list=json_list, x_index=lhs_index, y_index=stop_float.json_index)
+    if dummy_mode:
+        from constraintflow.gbcsr.traversal_capture import validate_substitution
+        validate_substitution(polyexp_not_stop_mat, layer_index, counter, while_number, while_iteration)
     polyexp_not_stop = trav_exp.create_similar(mat = polyexp_not_stop_mat, const = polyexp_not_stop_const)
     json_obj = {
         "method": "create_similar",

@@ -152,12 +152,12 @@ def create_llist(network):
 
 
 
-def get_network_and_input_spec(network_file, batch_size, X, y, dataset, eps, train=False, no_sparsity=False):
+def get_network_and_input_spec(network_file, batch_size, X, y, dataset, eps, train=False, no_sparsity=False, initializers=None):
     if dataset == 'tinyimagenet':
         X = X.to(torch.float32) / 255.0
 
     spec_weight, spec_bias = ImageDataset.get_output_spec_weight_and_bias(X, y, dataset)
-    network = get_net(network_file, spec_weight, spec_bias, no_sparsity)
+    network = get_net(network_file, spec_weight, spec_bias, no_sparsity, initializers=initializers)
     l = ImageDataset.create_l(X, network.size, batch_size, eps, dataset, no_sparsity)
     u = ImageDataset.create_u(X, network.size, batch_size, eps, dataset, no_sparsity)
     L = create_L(l, network, batch_size, no_sparsity)

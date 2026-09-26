@@ -439,9 +439,9 @@ class SparseTensor:
             json_list.append(json_obj)
             blocks_json_list_entry = "json_list_" + str(len(json_list)-1)
 
-        self.start_indices = start_indices
+        self.start_indices = [torch.as_tensor(x, dtype=torch.int64) for x in start_indices]
         self.blocks = blocks
-        self.total_size = total_size.int()
+        self.total_size = torch.as_tensor(total_size, dtype=torch.int64)
         self.dims = dims
         # assert(dims == total_size.shape[0])
         self.num_blocks = len(start_indices)
@@ -450,11 +450,12 @@ class SparseTensor:
         # assert(self.num_blocks == len(blocks))
         # if self.num_blocks!=0:
         #     assert(self.dims == len(start_indices[0]))
-        self.end_indices = end_indices 
+        self.end_indices = (None if end_indices is None else
+                            [torch.as_tensor(x, dtype=torch.int64) for x in end_indices])
         if self.end_indices is None:
             self.end_indices = []
             for i in range(self.num_blocks):
-                self.end_indices.append(start_indices[i] + torch.as_tensor(blocks[i].total_shape))
+                self.end_indices.append(self.start_indices[i] + blocks[i].total_shape)
                 if not inductor_mode.get_flag():
                     if not  (self.end_indices[i] <= self.total_size).all():
                         print(self.end_indices)
@@ -1106,16 +1107,14 @@ Blocks Types: "
         return SparseTensor(res_start_indices, res_blocks, self.dims, self.total_size, res_end_indices, type=self.type, dense_const=self.dense_const)
     
     def check_dense(self):
-        def mult_list(l):
-            if len(l)==1:
-                return l[0]
-            return mult_list(l[1:])*l[0]
-        t = 0
-        for i in range(self.num_blocks):
-            t += mult_list(list(self.blocks[i].total_shape)) 
-        if t < mult_list(list(self.total_size)):
-            return False
-        return True
+        """Full coverage of the disjoint block partition, without tensor overflow.
+
+        Shape products are host metadata. Even int64 products can overflow for
+        symbolic tensors, so use arbitrary-precision Python integers here.
+        Over-counting is not proof of coverage (e.g. invalid overlapping blocks).
+        """
+        volume = lambda shape: math.prod(int(d) for d in shape)
+        return sum(volume(b.total_shape) for b in self.blocks) == volume(self.total_size)
 
     def unary(self, op, json_list=[], lhs_index=-1):
         if op == operator.not_:
