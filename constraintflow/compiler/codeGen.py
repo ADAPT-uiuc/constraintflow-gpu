@@ -14,7 +14,7 @@ from constraintflow.compiler.optimizations import flow_shapes
 from constraintflow.compiler.optimizations import subexp_inlining
 from constraintflow.compiler.optimizations import early_reductions as early_reductions_pass
 from constraintflow.lib.globals import early_reductions, flow_segment_mb
-from constraintflow.compiler.optimizations import conv_partials, region_reuse
+from constraintflow.compiler.optimizations import conv_partials, pad_inputs, region_reuse
 
 def fused_build():
     """True only on the reuse pass of a --fused-flow build, where flow() is emitted."""
@@ -299,6 +299,11 @@ class CodeGen(irVisitor.IRVisitor):
             count = conv_partials.run(node.flow_block)
             print('[conv-partials] {} partial results exposed'.format(count))
             sized = self._probe_sizes(node)
+        barriers = set()
+        if inductor_mode.get_flag() and getattr(node, 'flow_functional', False):
+            barriers = set(pad_inputs.run(node.flow_block))
+            print('[pad-inputs] {} pad inputs materialized'.format(len(barriers)))
+            sized = self._probe_sizes(node)
         self._flow_sizes = sized or {}
         self._flow_metrics = {
             'statements': len(node.flow_block.children),
@@ -308,7 +313,8 @@ class CodeGen(irVisitor.IRVisitor):
         if flow_segment_mb.get_value() > 0:
             segments = flow_split.split(
                 node.flow_block, sized,
-                max_region_bytes=flow_segment_mb.get_value() * 1024 ** 2)
+                max_region_bytes=flow_segment_mb.get_value() * 1024 ** 2,
+                barriers=barriers)
             if segments is not None:
                 print('[flow-split] ' + str(len(segments)) + ' segments: '
                       + flow_split.describe(segments)

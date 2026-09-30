@@ -1,6 +1,9 @@
 import os
 import gc
 import sys
+
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import constraintflow.lib.globals as globals
 
 os.environ.setdefault("TORCHINDUCTOR_VEC_ISA_OK", "1")

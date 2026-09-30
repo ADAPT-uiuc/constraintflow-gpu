@@ -132,7 +132,7 @@ def allocation_cuts(stmts, sized, budget):
     return cuts
 
 
-def split(block, sized=None, max_region_bytes=0):
+def split(block, sized=None, max_region_bytes=0, barriers=()):
     """Partition functional SSA by newly allocated storage, with no statement cap."""
     if max_region_bytes <= 0:
         return None
@@ -142,7 +142,9 @@ def split(block, sized=None, max_region_bytes=0):
         raise ValueError('flow splitting requires SSA; partition before recycling names')
     if not sized:
         raise ValueError('--flow-segment-mb requires a successful shape probe')
-    cuts = allocation_cuts(stmts, sized, max_region_bytes)
+    cuts = set(allocation_cuts(stmts, sized, max_region_bytes))
+    cuts |= {i + 1 for i, s in enumerate(stmts[:-1]) if _def_name(s) in barriers}
+    cuts = sorted(cuts)
     if not cuts:
         return None
     def_at, last_use = liveness(stmts)
