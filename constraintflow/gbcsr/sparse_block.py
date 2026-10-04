@@ -300,11 +300,22 @@ class SparseBlock:
             traced_res = DenseBlock(block, json_list, len(json_list) - 1)
             return traced_res, traced_res.json_index
         elif not isinstance(self, type(sp_block)):
-            block_1 = self 
+            block_1 = self
             block_2 = sp_block
             if isinstance(self, KernelBlock):
                 block_1, lhs_index = self.convert_to_patches(json_list=json_list, index=lhs_index,  simulacrum=True)
                 return block_1.disjunctive_binary(block_2, op, json_list, lhs_index, rhs_index)
+            # Identity-skip + conv-path coefficients (a residual Add's back-substitution
+            # meeting at the shared input): keep them compact as patches instead of
+            # densifying both. Falls through to the dense path if the geometry doesn't fit.
+            if isinstance(self, DiagonalBlock) and isinstance(sp_block, PatchesBlock):
+                converted = self.as_unit_patches(sp_block, json_list, lhs_index)
+                if converted is not None:
+                    return converted[0].disjunctive_binary(sp_block, op, json_list, converted[1], rhs_index)
+            if isinstance(self, PatchesBlock) and isinstance(sp_block, DiagonalBlock):
+                converted = sp_block.as_unit_patches(self, json_list, rhs_index)
+                if converted is not None:
+                    return self.disjunctive_binary(converted[0], op, json_list, lhs_index, converted[1])
             if isinstance(self, ConstBlock):
                 self_block, lhs_index = self.get_dense(json_list=json_list, template_index=lhs_index,  simulacrum=True)
                 block_1 = DenseBlock(self_block, json_list, lhs_index)
@@ -669,6 +680,16 @@ class SparseBlock:
 
 
 
+# cuDNN falls back to a ~15x slower transposed-conv kernel once the batch reaches 65536.
+CONV_TRANSPOSE_MAX_BATCH = 32768
+
+
+def conv_transpose2d(x, weight, **kwargs):
+    if x.shape[0] <= CONV_TRANSPOSE_MAX_BATCH:
+        return F.conv_transpose2d(x, weight, **kwargs)
+    return torch.cat([F.conv_transpose2d(c, weight, **kwargs) for c in x.split(CONV_TRANSPOSE_MAX_BATCH)])
+
+
 def patches_to_dense(pieces, batch, oc, ox, oy, ic, kx, ky, ix, iy, px, py, sx, sy):
     """Gather only valid image coefficients, without a padded scatter buffer.
 
@@ -703,6 +724,10 @@ def col2im_columns(out_x, out_y, ker_x, ker_y, padded_rows, padded_cols, stride,
             + (torch.arange(ker_x, device=device) * padded_cols).view(1, -1, 1)
             + torch.arange(ker_y, device=device).view(1, 1, -1)
             ).reshape(out_x * out_y, ker_x * ker_y)
+
+
+# Called by name from generated flow code; codeGen imports and flow_shapes evaluates them.
+RUNTIME_HELPERS = {f.__name__: f for f in (col2im_columns, patches_to_dense, conv_transpose2d)}
 
 
 def identifySparseBlockType(block):
@@ -1003,7 +1028,7 @@ class DenseBlock(SparseBlock):
                 "output": len(json_list),
             }
             json_list.append(json_obj)
-            output_tensor = F.conv_transpose2d(input_tensor, kernel, stride=(sx, sy), padding=(px, py), output_padding=(new_px, new_py))
+            output_tensor = conv_transpose2d(input_tensor, kernel, stride=(sx, sy), padding=(px, py), output_padding=(new_px, new_py))
 
             json_obj = {
                 "method": "torch_reshape",
@@ -2329,6 +2354,49 @@ class DiagonalBlock(SparseBlock):
                 save_capture(f"jit_DiagonalBlock/DiagonalBlock_{layer_index}_{counter}_{inside_while}_{while_number}_{while_iteration}.json", json_list)
                 self.json_list = None
 
+    def as_unit_patches(self, partner, json_list=[], template_index=-1):
+        """This [batch, n, n] diagonal as a 1x1 PatchesBlock over `partner`'s grid, or None.
+
+        Valid when the diagonal is a per-neuron identity map of a K x H x W feature map
+        onto itself: partner's rows are that map (num_kernels*ox*oy == n), its columns the
+        same map (num_channels == num_kernels, ix == ox, iy == oy) and its stride is 1.
+        Row k*H*W + p then holds a single tap at channel k, which as patches is
+        [batch, K*H*W, K] with d[k, p] on the channel diagonal. Uses ~n*K memory instead
+        of the dense path's n*n.
+        """
+        p = partner
+        if not (len(self.total_shape) == 3 and self.block.dim() == 2
+                and int(self.total_shape[1]) == int(self.total_shape[2])):
+            return None
+        n = int(self.total_shape[1])
+        K, H, W = p.num_kernels, p.ox, p.oy
+        if (n != K * H * W or p.num_channels != K or (p.ix, p.iy) != (H, W)
+                or (p.sx, p.sy) != (1, 1) or int(self.block.shape[1]) != n):
+            return None
+        B = int(self.block.shape[0])
+        steps = [("torch_view", "shape", [B, K, H * W]),
+                 ("torch_permute", "permutation", [0, 2, 1]),
+                 ("torch_diag_embed", None, None),
+                 ("torch_permute", "permutation", [0, 2, 1, 3]),
+                 ("torch_reshape", "shape", [B, n, K])]
+        json_list.append({
+            "method": "sparse_block_extract",
+            "input": "json_list_" + str(template_index),
+            "block_type": self.block_type,
+            "output": len(json_list),
+        })
+        for method, key, value in steps:
+            obj = {"method": method, "input": "json_list_" + str(len(json_list) - 1),
+                   "output": len(json_list)}
+            if key is not None:
+                obj[key] = value
+            json_list.append(obj)
+        block = torch.diag_embed(self.block.view(B, K, H * W).permute(0, 2, 1)
+                                 ).permute(0, 2, 1, 3).reshape(B, n, K)
+        res = PatchesBlock(block, self.total_shape, H, W, H, W, 1, 1, 0, 0, 1, 1, K, K,
+                           json_list, len(json_list) - 1)
+        return res, res.json_index
+
     def get_dense(self, json_list=[], template_index=-1, simulacrum=False):
         if self.diag_index == len(self.total_shape):
             json_obj = {
@@ -3180,7 +3248,7 @@ class PatchesBlock(SparseBlock):
             json_list.append(json_obj)
             patches_index = len(json_list) - 1
             flattened_patches = self.block.reshape(self.batch_size*self.num_kernels*self.ox*self.oy, self.num_channels, self.kx, self.ky)
-            patches = F.conv_transpose2d(flattened_patches, sp_block.block, stride=(sp_block.sx, sp_block.sy))
+            patches = conv_transpose2d(flattened_patches, sp_block.block, stride=(sp_block.sx, sp_block.sy))
             kx = patches.shape[-2]
             ky = patches.shape[-1]
 

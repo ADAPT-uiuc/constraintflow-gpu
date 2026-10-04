@@ -16,7 +16,7 @@ from torch.utils._pytree import tree_flatten
 
 from constraintflow.compiler.optimizations import flow_split
 from constraintflow.lib.globals import device_mode
-from constraintflow.gbcsr.sparse_block import patches_to_dense
+from constraintflow.gbcsr.sparse_block import RUNTIME_HELPERS
 
 _DTYPE = {'Bool': torch.bool, 'Int': torch.int64}
 
@@ -73,7 +73,7 @@ def probe(stmts, sources, param_meta, batch_size, consts, prelude=()):
         with FakeTensorMode(allow_non_fake_inputs=True):
             env = {'torch': torch, 'F': F, 'operator': operator,
                    'device_mode': device_mode, 'batch_size': batch_size,
-                   'patches_to_dense': patches_to_dense}
+                   **RUNTIME_HELPERS}
             for name, (shape, type_) in param_meta.items():
                 if shape is None:                 # scalar payload, not a tensor
                     env[name] = (type_ == 'Bool') and False or 0.0

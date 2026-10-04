@@ -137,6 +137,12 @@ def inject_builtin_ops(ir, converter):
     alive across the call instead of discarding it), so get_var()/visitBinOp
     continue the same variable/counter state DSL ops already used.
     """
+    from constraintflow.lib import globals as G
+    G.program_add_rule.reset_flag()
     for transformer_name in ir.tstore.keys():
-        ir.tstore[transformer_name].append(_build_add_cfg(converter, ir.shape))
+        # A program's own `Neuron_add` rule (lowered to an 'Add' op) takes precedence.
+        if any(op.op == 'Add' for op in ir.tstore[transformer_name]):
+            G.program_add_rule.set_flag()
+        else:
+            ir.tstore[transformer_name].append(_build_add_cfg(converter, ir.shape))
         ir.tstore[transformer_name].append(_build_concat_cfg(converter, ir.shape))

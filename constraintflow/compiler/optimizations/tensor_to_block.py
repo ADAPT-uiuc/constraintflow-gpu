@@ -8,7 +8,7 @@ from constraintflow.compiler.ir import *
 from constraintflow.compiler.optimizations import uses, fuse_affine_subst, subexp_inlining
 from constraintflow.compiler.optimizations.subexp_inlining import get_vars_expr_occurrences
 from constraintflow.gbcsr.sparse_tensor import get_operator_func
-from constraintflow.lib.globals import load_capture, capture_exists
+from constraintflow.lib.globals import load_capture, capture_exists, program_add_rule
 from constraintflow.lib.network import LayerType
 import constraintflow.lib.globals as globals
 
@@ -1499,6 +1499,8 @@ def remove_while(layer_index, num_iterations, cfg, root_node, first_while_node, 
     if globals.fuse_affine_subst.get_flag() and globals.network_path is not None:
         layer_types, layer_parents = fuse_affine_subst._load_topology(globals.network_path)
     affine_types = (LayerType.Linear, LayerType.Conv2D)
+    if program_add_rule:  # a program-defined Add has L == U, like Affine
+        affine_types += (LayerType.Add,)
 
     ir_list = root_block.children
     for i in range(num_iterations):
@@ -1716,6 +1718,8 @@ def _match_paired_whiles(cfg, layer_index, root_node, root_block, live_nodes):
 def _build_iterations(cfg, layer_index, header_node, body_node, count,
                       layer_types, layer_parents):
     affine_types = (LayerType.Linear, LayerType.Conv2D)
+    if program_add_rule:  # a program-defined Add has L == U, like Affine
+        affine_types += (LayerType.Add,)
     iterations = []
     for i in range(count):
         stmts = copy.deepcopy(cfg.ir[header_node].children + cfg.ir[body_node].children)
