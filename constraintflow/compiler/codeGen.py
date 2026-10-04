@@ -15,6 +15,7 @@ from constraintflow.compiler.optimizations import subexp_inlining
 from constraintflow.compiler.optimizations import early_reductions as early_reductions_pass
 from constraintflow.lib.globals import early_reductions, flow_segment_mb
 from constraintflow.compiler.optimizations import conv_partials, pad_inputs, region_reuse
+from constraintflow.gbcsr.sparse_block import RUNTIME_HELPERS
 
 def fused_build():
     """True only on the reuse pass of a --fused-flow build, where flow() is emitted."""
@@ -503,7 +504,7 @@ class CodeGen(irVisitor.IRVisitor):
             self.write('from constraintflow.lib.polyexp import PolyExpSparse')
         if reuse_mode.get_flag():
             self.write('from constraintflow.lib.symexp import SymExpSparse')
-            self.write('from constraintflow.gbcsr.sparse_block import col2im_columns, patches_to_dense')
+            self.write('from constraintflow.gbcsr.sparse_block import ' + ', '.join(RUNTIME_HELPERS))
             # self.write('from constraintflow.lib.symexp import get_new_eps')
             # self.write('from constraintflow.gbcsr.op_helper import binary_to_identity_unary')
 
@@ -1039,7 +1040,7 @@ class CodeGen(irVisitor.IRVisitor):
         if node.output_padding is not None:
             kwargs.append('output_padding=' + self.visit(node.output_padding))
         return (
-            'F.conv_transpose2d(' + self.visit(node.children[0]) + ', '
+            'conv_transpose2d(' + self.visit(node.children[0]) + ', '
             + self.visit(node.children[1])
             + (', ' + ', '.join(kwargs) if kwargs else '') + ')'
         )

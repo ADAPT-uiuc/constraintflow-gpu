@@ -2,7 +2,12 @@ import os
 import gc
 import sys
 
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+DISABLE_TF32 = os.environ.get("CF_DISABLE_TF32", "0") not in ("", "0")
+if DISABLE_TF32:
+    os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
+    import torch
+    torch.backends.cudnn.allow_tf32 = False
+    torch.backends.cuda.matmul.allow_tf32 = False
 
 import constraintflow.lib.globals as globals
 
@@ -20,6 +25,7 @@ print(f'dummy_mode in cli: {globals.dummy_mode}')
 print(f'reuse_mode in cli: {globals.reuse_mode}')
 print(f'no_barriers in cli: {globals.no_barriers}')
 print(f'inductor_mode in cli: {globals.inductor_mode}')
+print(f'tf32 in cli: {"disabled (CF_DISABLE_TF32)" if DISABLE_TF32 else "PyTorch default"}')
 
 
 import os
@@ -256,10 +262,10 @@ def simulacrum_compile(
     compact_patches: bool = typer.Option(True, "--compact-patches", help="Use direct patch-to-dense gathering and switch representation when a composed patch is at least as large as the full input feature map. Set for both capture and reuse."),
     paired_unroll: bool = typer.Option(False, "--paired-unroll", help="Interleave the paired lower/upper traverse() loops when unrolling them, instead of emitting one traversal after the other. Reuse compile only; falls back to sequential unrolling whenever the two traversals are not provably independent."),
     fused_flow: bool = typer.Option(True, "--fused-flow/--no-fused-flow", help="Emit a layer-unrolled flow() into transformers.py instead of using the interpretive Flow.flow, replaying abs_elem.update from its simulacrum capture, and (under --inductor) compile the whole flow as one graph instead of one per op. Reuse compile only."),
-    fuse_affine_subst: bool = typer.Option(True, "--fuse-affine-subst/--no-fuse-affine-subst", help="Two optimizations gated by one flag: (1) skip both concretizing traversals at any Affine layer that feeds only further Affine layers (always sound; single_bound.py). (2) Assert every Affine op's L and U outputs are identical (true for all deeppoly*/crown specs here) and drop the redundant sign-split when a traverse() substitution step crosses an Affine layer -- unsound if the assertion doesn't hold. Both take effect on the simulacrum and reuse compile passes below. Functional --sroa also proves and removes matching sign-split convolution pairs across residual branches."),
+    fuse_affine_subst: bool = typer.Option(False, "--fuse-affine-subst/--no-fuse-affine-subst", help="Two optimizations gated by one flag: (1) skip both concretizing traversals at any Affine layer that feeds only further Affine layers (always sound; single_bound.py). (2) Assert every Affine op's L and U outputs are identical (true for all deeppoly*/crown specs here) and drop the redundant sign-split when a traverse() substitution step crosses an Affine layer -- unsound if the assertion doesn't hold. Both take effect on the simulacrum and reuse compile passes below. Functional --sroa also proves and removes matching sign-split convolution pairs across residual branches."),
     sroa: bool = typer.Option(True, "--sroa/--no-sroa", help="Splice every layer into one flow() and scalar-replace the Jit* aggregates, so the compiled region is pure tensor code. Requires --fused-flow. Reuse compile only."),
-    early_reductions: bool = typer.Option(True, "--early-reductions", help="Compute traversal sums as soon as their inputs exist, releasing large coefficients before later traversal steps. Requires functional --sroa; preserves the arithmetic tree."),
-    fuse_sign_convs: bool = typer.Option(True, "--fuse-sign-convs", help="Replace positive/negative convolution pairs by one convolution only when their inputs, weights, views and settings provably match. Requires functional --sroa. Uses linearity and can change floating-point rounding."),
+    early_reductions: bool = typer.Option(True, "--early-reductions/--no-early-reductions", help="Compute traversal sums as soon as their inputs exist, releasing large coefficients before later traversal steps. Requires functional --sroa; preserves the arithmetic tree."),
+    fuse_sign_convs: bool = typer.Option(True, "--fuse-sign-convs/--no-fuse-sign-convs", help="Replace positive/negative convolution pairs by one convolution only when their inputs, weights, views and settings provably match. Requires functional --sroa. Uses linearity and can change floating-point rounding."),
     flow_segment_mb: float = typer.Option(0.0, "--flow-segment-mb", help="Split functional SSA flow into regions with approximately this many MB of named allocations. This is a compilation-region budget, not a bound on total GPU memory. Requires --sroa; Inductor automatically compiles each segment separately. 0 disables."),
 ):
     """
@@ -569,8 +575,12 @@ def run(
     total_time = sum(repeat_times)
     peak_bytes = max(repeat_peaks)
 
+    # Full float32 precision (9 significant digits) and no '...' elision, so the harness
+    # can parse the exact bounds into its CSV.
+    torch.set_printoptions(precision=8, sci_mode=True, threshold=sys.maxsize)
     typer.echo(f"Lower bounds: {lb}")
     typer.echo(f"Upper bounds: {ub}")
+    torch.set_printoptions(profile="default")
     typer.echo(f"Total time: {total_time:.6f} seconds")
     typer.echo(f"{mem_label}: {peak_bytes} bytes")
 def main():
