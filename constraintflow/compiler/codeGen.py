@@ -70,7 +70,8 @@ _BATCH_SIZE_RE = re.compile(r'\bbatch_size\b')
 
 
 class CodeGen(irVisitor.IRVisitor):
-    def __init__(self,folder):
+    def __init__(self,folder, target='torch'):
+        self.target = target
         self.folder = folder 
         if self.folder.endswith('/'):
             self.folder = self.folder[:-1]
@@ -386,7 +387,7 @@ class CodeGen(irVisitor.IRVisitor):
             print('[conv-partials] {} partial results exposed'.format(count))
             sized = self._probe_sizes(node)
         barriers = set()
-        if inductor_mode.get_flag() and getattr(node, 'flow_functional', False):
+        if (inductor_mode.get_flag() or self.target == 'jax') and getattr(node, 'flow_functional', False):
             barriers = set(pad_inputs.run(node.flow_block))
             print('[pad-inputs] {} pad inputs materialized'.format(len(barriers)))
             sized = self._probe_sizes(node)
@@ -398,10 +399,15 @@ class CodeGen(irVisitor.IRVisitor):
                 sized = self._probe_sizes(node)
         self._flow_sizes = sized or {}
         self._flow_metrics = {
+            'target': self.target,
             'statements': len(node.flow_block.children),
             'estimated_peak_tensor_bytes': flow_shapes.peak_live_bytes(node.flow_block.children, sized) if sized else None,
             'workspace_included': False,
         }
+        if self.target == 'jax':
+            from .jaxCodeGen import emit_flow
+            emit_flow(self, node, sized, barriers)
+            return
         if flow_segment_mb.get_value() > 0:
             segments = flow_split.split(
                 node.flow_block, sized,
@@ -463,6 +469,8 @@ class CodeGen(irVisitor.IRVisitor):
             if not self.file.closed:
                 self.file.flush()
             metrics['generated_source_bytes'] = sum(os.path.getsize(p) for p in (self.main_file, self.transformers_file))
+            if self.target == 'jax':
+                metrics['generated_source_bytes'] += os.path.getsize(os.path.join(self.folder, 'jax_flow.py'))
             with open(os.path.join(self.folder, 'compile_metrics.json'), 'w') as f:
                 json.dump(metrics, f, indent=2)
         if not reuse_mode.get_flag():
@@ -1818,8 +1826,9 @@ class CodeGen(irVisitor.IRVisitor):
         self.indent += 1
         if sroa_build():
             self.write('res = flow(*explode_inputs(abs_elem, batch_size))')
-            self.write('if not inductor_mode.get_flag():')
-            self.write('    print("Peak memory usage:", torch.cuda.max_memory_allocated() / 1024**2, "MB")')
+            if self.target == 'torch':
+                self.write('if not inductor_mode.get_flag():')
+                self.write('    print("Peak memory usage:", torch.cuda.max_memory_allocated() / 1024**2, "MB")')
             self.write('return res')
             self.indent -= 1
             return

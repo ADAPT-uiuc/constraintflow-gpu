@@ -17,13 +17,11 @@ argv = sys.argv[1:]
 globals.dummy_mode.set_flag() if "--simulacrum" in argv else globals.dummy_mode.reset_flag()
 globals.reuse_mode.set_flag() if "--reuse" in argv else globals.reuse_mode.reset_flag()
 globals.dense_default_mode.set_flag() if "--dense" in argv else globals.dense_default_mode.reset_flag()
-globals.no_barriers.set_flag() if "--no-barriers" in argv else globals.no_barriers.reset_flag()
 globals.inductor_mode.set_flag() if "--inductor" in argv else globals.inductor_mode.reset_flag()
 globals.sroa.reset_flag() if "--no-sroa" in argv else globals.sroa.set_flag()
 
 print(f'dummy_mode in cli: {globals.dummy_mode}')
 print(f'reuse_mode in cli: {globals.reuse_mode}')
-print(f'no_barriers in cli: {globals.no_barriers}')
 print(f'inductor_mode in cli: {globals.inductor_mode}')
 print(f'tf32 in cli: {"disabled (CF_DISABLE_TF32)" if DISABLE_TF32 else "PyTorch default"}')
 
@@ -205,6 +203,7 @@ def provesound(
 def compile_code(
     program_file: str = typer.Argument(..., help="ConstraintFlow program file"),
     output_path: str = typer.Option("output/", help="Output path for generated code"),
+    target: str = 'torch',
 ):
     """
     Compile a ConstraintFlow program into Python.
@@ -217,7 +216,7 @@ def compile_code(
 
 
     program = get_program(program_file)
-    res = _compile(program, output_path)
+    res = _compile(program, output_path, target=target)
     if res:
         typer.echo("Compilation successful ✅")
     else:
@@ -244,6 +243,7 @@ def compile(
 @app.command(name="jit")
 def simulacrum_compile(
     program_file: str = typer.Argument(..., help="ConstraintFlow program file"),
+    target: str = typer.Option('torch', help="Reuse code generation target: torch or jax (jax.jit)."),
     network: str = typer.Option("mnist_relu_3_50", help="Network name"),
     network_format: str = typer.Option("onnx", help="Network format"),
     dataset: str = typer.Option("mnist", help="Dataset (mnist or cifar)"),
@@ -257,10 +257,8 @@ def simulacrum_compile(
     dense: bool = typer.Option(False, help="Use dense blocks by default"),
     jit_dir: str = typer.Option("jit_captures", help="Common parent folder for all jit_* capture files"),
     in_memory: bool = typer.Option(True, "--in-memory/--disk-captures", help="Keep jit captures in a process-local dict instead of writing/reading capture files on disk (jit only)."),
-    no_barriers: bool = typer.Option(False, "--no-barriers", help="Inline every single-use temporary unconditionally (skip is_safe_to_inline's safety analysis)."),
     inductor: bool = typer.Option(False, help="Emit @torch.compile(backend='inductor') on the reuse build"),
     compact_patches: bool = typer.Option(True, "--compact-patches", help="Use direct patch-to-dense gathering and switch representation when a composed patch is at least as large as the full input feature map. Set for both capture and reuse."),
-    paired_unroll: bool = typer.Option(False, "--paired-unroll", help="Interleave the paired lower/upper traverse() loops when unrolling them, instead of emitting one traversal after the other. Reuse compile only; falls back to sequential unrolling whenever the two traversals are not provably independent."),
     fused_flow: bool = typer.Option(True, "--fused-flow/--no-fused-flow", help="Emit a layer-unrolled flow() into transformers.py instead of using the interpretive Flow.flow, replaying abs_elem.update from its simulacrum capture, and (under --inductor) compile the whole flow as one graph instead of one per op. Reuse compile only."),
     fuse_affine_subst: bool = typer.Option(False, "--fuse-affine-subst/--no-fuse-affine-subst", help="Two optimizations gated by one flag: (1) skip both concretizing traversals at any Affine layer that feeds only further Affine layers (always sound; single_bound.py). (2) Assert every Affine op's L and U outputs are identical (true for all deeppoly*/crown specs here) and drop the redundant sign-split when a traverse() substitution step crosses an Affine layer -- unsound if the assertion doesn't hold. Both take effect on the simulacrum and reuse compile passes below. Functional --sroa also proves and removes matching sign-split convolution pairs across residual branches."),
     sroa: bool = typer.Option(True, "--sroa/--no-sroa", help="Splice every layer into one flow() and scalar-replace the Jit* aggregates, so the compiled region is pure tensor code. Requires --fused-flow. Reuse compile only."),
@@ -276,9 +274,16 @@ def simulacrum_compile(
     in one shot.
     """
     start_time = time.perf_counter()
+    if target not in ('torch', 'jax'):
+        raise typer.BadParameter('--target must be torch or jax')
+    if target == 'jax' and (not sroa or not fused_flow):
+        raise typer.BadParameter('--target jax requires --sroa and --fused-flow')
+    if target == 'jax' and inductor:
+        raise typer.BadParameter('--inductor applies to --target torch; JAX uses jax.jit')
+    if target == 'jax' and device == 'gpumac':
+        raise typer.BadParameter('--target jax supports cpu and gpu devices')
     globals.fuse_affine_subst.set_flag() if fuse_affine_subst else globals.fuse_affine_subst.reset_flag()
     globals.compact_patches.set_flag() if compact_patches else globals.compact_patches.reset_flag()
-    globals.paired_unroll.set_flag() if paired_unroll else globals.paired_unroll.reset_flag()
     globals.fused_flow.set_flag() if fused_flow else globals.fused_flow.reset_flag()
     globals.sroa.set_flag() if sroa else globals.sroa.reset_flag()
     if sroa and not fused_flow:
@@ -309,7 +314,6 @@ def simulacrum_compile(
     globals.set_jit_root(jit_dir)
     globals.in_memory_captures.set_flag() if in_memory else globals.in_memory_captures.reset_flag()
     globals.dense_default_mode.set_flag() if dense else globals.dense_default_mode.reset_flag()
-    globals.no_barriers.set_flag() if no_barriers else globals.no_barriers.reset_flag()
 
     valid_devices = {"cpu", "gpu", "gpumac"}
     if device not in valid_devices:
@@ -376,7 +380,7 @@ def simulacrum_compile(
     globals.memory_budget_mb.set_value(memory_budget_mb if early_reductions else 0.0)
     globals.set_network_path(network_file)
     try:
-        compile_code(program_file, output_path)
+        compile_code(program_file, output_path, target=target)
     finally:
         globals.reuse_mode.reset_flag()
         globals.inductor_mode.reset_flag()
@@ -424,13 +428,13 @@ def run(
     dense: bool = typer.Option(False, help="Use dense blocks by default"),
     inductor: bool = typer.Option(False, help="Use PyTorch Inductor for JIT compilation"),
     jit_dir: str = typer.Option("jit_captures", help="Common parent folder for all jit_* capture files"),
-    no_barriers: bool = typer.Option(False, "--no-barriers", help="Inline every single-use temporary unconditionally (skip is_safe_to_inline's safety analysis). Lower peak memory, not guaranteed value-preserving."),
     warmup: int = typer.Option(0, help="Number of warmup runs on different data before the timed run"),
     repeat: int = typer.Option(1, "--repeat", help="Number of timed runs, each reported separately. Independent of --warmup: the warmup runs (if any) still happen once, before the first timed run."),
     use_cache: bool = typer.Option(False, "--use-cache", help="Point --output-path at the shared kernel_cache entry (see bench/configs.py:kernel_dir), keyed by network/dataset/certifier/batch-size/inductor. Hard errors if that cache entry is missing."),
     perturb_eps: float = typer.Option(0.0, "--perturb-eps", help="Std of iid Gaussian noise added to the network's weights independently before each warmup and each timed run, to test whether weight values (not just shapes) affect measured runtime. 0 (default) disables perturbation and every run uses the unmodified network."),
     perturb_seed: int = typer.Option(0, "--perturb-seed", help="Seed for --perturb-eps's noise, for reproducible sweeps."),
-    direct_onnx_load: bool = typer.Option(False, "--direct-onnx-load/--no-direct-onnx-load", help="Load the network without onnx.load: memory-map the file, parse only the graph (weights stripped from the protobuf), and upload each weight from the mapped file through a pinned staging buffer that PyTorch's caching host allocator keeps between runs. Weights are still read and uploaded on every run. Off: onnx.load + numpy copies + pageable upload, as the baselines do."),
+    # UNFAIR LOADING
+    # direct_onnx_load: bool = typer.Option(False, "--direct-onnx-load/--no-direct-onnx-load", help="Load the network without onnx.load: memory-map the file, parse only the graph (weights stripped from the protobuf), and upload each weight from the mapped file through a pinned staging buffer that PyTorch's caching host allocator keeps between runs. Weights are still read and uploaded on every run. Off: onnx.load + numpy copies + pageable upload, as the baselines do."),
     gc_freeze: bool = typer.Option(True, "--gc-freeze/--no-gc-freeze", help="gc.freeze() after warmup, so the untimed gc.collect() between runs scans only per-run garbage instead of the whole torch/inductor heap (which evicts CPU caches before every timed run)."),
 ):
     """
@@ -480,7 +484,8 @@ def run(
         typer.echo("Error: device='gpumac' requested but MPS is not available.")
         raise typer.Exit(code=1)
     device_mode.set_mode(device)
-    globals.direct_onnx_load.set_flag() if direct_onnx_load else globals.direct_onnx_load.reset_flag()
+    # UNFAIR LOADING
+    # globals.direct_onnx_load.set_flag() if direct_onnx_load else globals.direct_onnx_load.reset_flag()
     if device == "gpu":
         _configure_cuda_cpu_threads()
 

@@ -11,7 +11,6 @@ import bisect
 import heapq
 from constraintflow.compiler.ir import *
 from constraintflow.compiler.representations import Graph
-from constraintflow.lib.globals import no_barriers
 
 
 def get_generalized_children(expr) -> list[IrExpression]:
@@ -282,8 +281,6 @@ def is_safe_to_inline(
     def_index and use_index. Only `redefined_between` (name rebinding, not in-place
     mutation) can matter for a bare-var substitution.
     """
-    if no_barriers:
-        return True
     if not isinstance(expr, IrVar):
         read_roots: set = set(_expr_eval_roots(expr, reads_of))
         read_roots |= reads_of.get(var.name, frozenset((var.name,)))

@@ -91,8 +91,6 @@ dummy_mode = Flag()
 reuse_mode = Flag()
 dense_default_mode = Flag()
 inductor_mode = Flag()
-# For debugging. 
-no_barriers = Flag()
 
 # Preserves the captures in memory instead of writing json files.
 in_memory_captures = Flag()
@@ -108,9 +106,6 @@ program_add_rule = Flag()
 
 # Turn patches box into dense 
 compact_patches = Flag()
-
-# --paired-unroll (jit): interleave the paired lower/upper traverse() loops
-paired_unroll = Flag()
 
 # --fused-flow (jit): emit a layer-unrolled flow() into transformers.py
 fused_flow = Flag()
@@ -169,8 +164,9 @@ fuse_sign_convs = Flag()
 # Compile flow() with mode="reduce-overhead" (CUDA graph replay).
 cudagraphs = Flag()
 
+# UNFAIR LOADING
 # Load ONNX initializers with parse.load_onnx_direct instead of onnx.load.
-direct_onnx_load = Flag()
+# direct_onnx_load = Flag()
 
 # Evaluate all-pairs convolution and broadcast mat-vec grids (IBP's W+/W- times l/u) as one operation.
 product_grids = Flag()

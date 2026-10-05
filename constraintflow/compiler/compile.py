@@ -71,7 +71,11 @@ def _reset_compiler_state():
     tensor_to_block.counter = -1
 
 
-def compile(inputfile, output_path):
+def compile(inputfile, output_path, target='torch'):
+    if target not in ('torch', 'jax'):
+        raise ValueError(f'Unknown code generation target: {target}')
+    if target == 'jax' and not sroa_build():
+        raise ValueError('JAX emission requires the reuse pass with --sroa and --fused-flow')
     _reset_compiler_state()
     lexer = dslLexer.dslLexer(antlr.FileStream(inputfile))
     tokens = antlr.CommonTokenStream(lexer)
@@ -103,6 +107,13 @@ def compile(inputfile, output_path):
             tensor_to_block.splice_flow(ir, list(ir.shape.keys()))
             stats = sroa_pass.sroa(ir)
             ir.flow_functional = stats['functional']
+            if target == 'jax' and stats['view_writes'] == 0:
+                # The scalarizer's flag describes mutations in the INPUT IR.
+                # Aggregate payload/shape rebindings emit no statements; after
+                # SROA only retained tensor view writes can make it impure.
+                # Copy alias checks have already succeeded inside sroa().
+                ir.flow_functional = True
+                stats['functional'] = True
             print('[sroa] {aggregates} aggregates removed, {clones_dropped} clones and '
                   '{lambdas_dropped} identity lambdas and {casts_dropped} casts dropped, {dead_dropped} dead stores removed, {statements} tensor '
                   'statements, {params} flow params '
@@ -148,7 +159,7 @@ def compile(inputfile, output_path):
         # constant_folding.constant_fold(ir)
         # copyPropagation.copy_proagate(ir)
 
-    cg = codeGen.CodeGen(output_path)
+    cg = codeGen.CodeGen(output_path, target=target)
     cg.visit(ir)
     cg.finish()
     return True

@@ -2,8 +2,6 @@ import json
 import os
 import torch 
 
-from itertools import zip_longest
-
 from constraintflow.compiler.ir import *
 from constraintflow.compiler.optimizations import uses, fuse_affine_subst, subexp_inlining
 from constraintflow.compiler.optimizations.subexp_inlining import get_vars_expr_occurrences
@@ -1550,289 +1548,6 @@ def remove_while(layer_index, num_iterations, cfg, root_node, first_while_node, 
     cfg.nodes.remove(break_node)
     cfg.nodes.remove(exit_node)
 
-# --- paired traverse() unrolling (--paired-unroll) -------------------------
-
-_paired_stats = {'paired': 0, 'iterations': 0, 'lower_tail': 0, 'upper_tail': 0}
-_paired_fallbacks = []
-
-
-def reset_paired_stats():
-    _paired_stats.update(paired=0, iterations=0, lower_tail=0, upper_tail=0)
-    del _paired_fallbacks[:]
-
-
-def report_paired_unroll():
-    if not globals.paired_unroll.get_flag():
-        return
-    s = _paired_stats
-    print(f"[paired_unroll] paired {s['paired']} loop pair(s), "
-          f"{s['iterations']} interleaved iteration(s), "
-          f"tails L={s['lower_tail']} U={s['upper_tail']}")
-    for reason in dict.fromkeys(_paired_fallbacks):
-        print(f"[paired_unroll] fell back to sequential: {reason}")
-
-
-_INPLACE = (IrAssignToView, IrAssignToBlock, IrSetBlockTotalShapeLastDim)
-
-
-def _stmt_writes(stmt):
-    """Names this statement assigns, deletes, or writes into in place."""
-    if isinstance(stmt, IrAssignment):
-        lhs = stmt.children[0]
-        return {lhs.name} if isinstance(lhs, IrVar) else set()
-    if isinstance(stmt, IrDel):
-        return set(stmt.var_names)
-    if isinstance(stmt, _INPLACE):
-        return {v.name for v in get_vars_expr_occurrences(stmt.children[0])}
-    return set()
-
-
-def _stmt_reads(stmt):
-    if isinstance(stmt, IrDel):
-        return set()
-    src = [stmt.children[1]] if isinstance(stmt, IrAssignment) else list(stmt.children)
-    return {v.name for v in get_vars_expr_occurrences(src)}
-
-
-def _roots(names, reads_of):
-    out = set()
-    for name in names:
-        out |= reads_of.get(name, frozenset((name,)))
-    return out
-
-
-def _rw_sets(stmts, reads_of=None):
-    """Names read and written; with reads_of, in storage-root space instead.
-
-    Only an in-place statement defines storage -- a plain assignment rebinds a
-    name, so expanding its target through reads_of would wrongly claim it
-    mutates everything the right-hand side aliases.
-    """
-    reads, writes = set(), set()
-    for stmt in stmts:
-        reads |= _stmt_reads(stmt)
-        if reads_of is None or isinstance(stmt, _INPLACE):
-            writes |= _stmt_writes(stmt)
-    if reads_of is not None:
-        reads, writes = _roots(reads, reads_of), _roots(writes, reads_of)
-    return reads, writes
-
-
-def _motions_ok(init, post, lower, upper, reads_of=None):
-    """M0 split B, M1 hoist init, M2 interleave, M3 sink post -- all conflict-free."""
-    ri, wi = _rw_sets(init, reads_of)
-    rp, wp = _rw_sets(post, reads_of)
-    rl, wl = _rw_sets(lower, reads_of)
-    ru, wu = _rw_sets(upper, reads_of)
-    if (wi & (rp | wp)) or (wp & (ri | wi)):
-        return 'B split'
-    if (wi & (rl | wl)) or (ri & wl):
-        return 'hoisting upper_init'
-    if (wl & (ru | wu)) or (wu & (rl | wl)):
-        return 'interleaving the traversals'
-    if (wp & (ru | wu)) or (rp & wu):
-        return 'sinking lower_post'
-    return None
-
-
-def _partition_middle(middle, consumer_stmts, cond_names):
-    """Split B into what the upper loop needs (hoisted) and what it doesn't."""
-    need = set(cond_names)
-    for stmt in consumer_stmts:
-        need |= _stmt_reads(stmt)
-    upper_init, lower_post = [], []
-    for stmt in reversed(middle):
-        if _stmt_writes(stmt) & need:
-            need |= _stmt_reads(stmt)
-            upper_init.append(stmt)
-        else:
-            lower_post.append(stmt)
-    upper_init.reverse()
-    lower_post.reverse()
-    return upper_init, lower_post
-
-
-def _interleave(lower_iters, upper_iters):
-    """Alternate paired iterations statement by statement, then append the tail."""
-    out = []
-    common = min(len(lower_iters), len(upper_iters))
-    for i in range(common):
-        for l_stmt, u_stmt in zip_longest(lower_iters[i], upper_iters[i]):
-            if l_stmt is not None:
-                out.append(l_stmt)
-            if u_stmt is not None:
-                out.append(u_stmt)
-    for iteration in lower_iters[common:] + upper_iters[common:]:
-        out += iteration
-    return out
-
-
-def _while_parts(cfg, root_node):
-    """(header, body, break) node ids for the while rooted at root_node."""
-    header_node = cfg.successors[root_node][0]
-    header = cfg.ir[header_node]
-    if header.jump is None or header.inner_jump is None:
-        return None
-    return header_node, cfg.get_block_id(header.jump[1]), cfg.get_block_id(header.inner_jump[1])
-
-
-def _cond_names(block):
-    names = set()
-    for jump in (block.inner_jump, block.jump):
-        if jump is not None:
-            names |= collect_ir_var_names(jump[0])
-    return names
-
-
-def _match_paired_whiles(cfg, layer_index, root_node, root_block, live_nodes):
-    """Recognize A -> W1 -> B -> W2 -> C with both iteration captures present."""
-    middle_node = cfg.get_block_id(root_block.jump[1])
-    if middle_node is None or middle_node not in live_nodes:
-        return None
-    middle = cfg.ir[middle_node]
-    if middle.inner_jump is None or len(middle.inner_jump) != 2:
-        return None
-    if not isinstance(middle.inner_jump[1], IrWhileBlock) or middle.jump is None:
-        return None
-    if not cfg.successors[middle_node]:
-        return None
-    if cfg.successors[middle_node][0] != cfg.get_block_id(middle.inner_jump[1]):
-        return None
-    tail_node = cfg.get_block_id(middle.jump[1])
-    if tail_node is None:
-        return None
-
-    lower = _while_parts(cfg, root_node)
-    upper = _while_parts(cfg, middle_node)
-    if lower is None or upper is None:
-        return None
-    if None in lower or None in upper:
-        return None
-
-    counts = []
-    for header_node in (lower[0], upper[0]):
-        rel = (f"jit_while/while_iterations_layer_{layer_index}"
-               f"_while_{cfg.ir[header_node].while_number}.json")
-        if not capture_exists(rel):
-            return None
-        counts.append(load_capture(rel)["num_iterations"])
-    return middle_node, tail_node, lower, upper, counts
-
-
-def _build_iterations(cfg, layer_index, header_node, body_node, count,
-                      layer_types, layer_parents):
-    affine_types = (LayerType.Linear, LayerType.Conv2D)
-    if program_add_rule:  # a program-defined Add has L == U, like Affine
-        affine_types += (LayerType.Add,)
-    iterations = []
-    for i in range(count):
-        stmts = copy.deepcopy(cfg.ir[header_node].children + cfg.ir[body_node].children)
-        if layer_parents is not None:
-            selected = fuse_affine_subst.selected_layers_at(layer_index, cfg.ir[header_node].while_number, i)
-            is_affine = bool(selected) and all(layer_types.get(x) in affine_types for x in selected)
-            fuse_affine_subst.fuse_iteration(stmts, is_affine)
-        tensor_to_block_block(None, layer_index=layer_index, ir_list=stmts, while_iteration=i)
-        iterations.append(stmts)
-    return iterations
-
-
-def _paired_remove_while(cfg, layer_index, root_node, matched):
-    """Interleave both traversals into root_node. False means fall back."""
-    middle_node, tail_node, lower, upper, counts = matched
-    (l_head, l_body, l_break), (u_head, u_body, u_break) = lower, upper
-    n_lower, n_upper = counts
-
-    root_block = cfg.ir[root_node]
-    middle_block = cfg.ir[middle_node]
-    tail_block = cfg.ir[tail_node]
-
-    upper_stmts = cfg.ir[u_head].children + cfg.ir[u_body].children + cfg.ir[u_break].children
-    lower_stmts = cfg.ir[l_head].children + cfg.ir[l_body].children + cfg.ir[l_break].children
-    cond_names = _cond_names(middle_block) | _cond_names(cfg.ir[u_head])
-    upper_init, lower_post = _partition_middle(middle_block.children, upper_stmts, cond_names)
-
-    conflict = _motions_ok(upper_init, lower_post, lower_stmts, upper_stmts)
-    if conflict is not None:
-        _paired_fallbacks.append(f"layer {layer_index}: conflict when {conflict}")
-        return False
-
-    tensor_to_block_block(root_block, layer_index)
-    tensor_to_block_block(None, layer_index=layer_index, ir_list=upper_init)
-    tensor_to_block_block(None, layer_index=layer_index, ir_list=lower_post)
-    tensor_to_block_block(tail_block, layer_index)
-
-    layer_types = layer_parents = None
-    if globals.fuse_affine_subst.get_flag() and globals.network_path is not None:
-        layer_types, layer_parents = fuse_affine_subst._load_topology(globals.network_path)
-
-    lower_iters = _build_iterations(cfg, layer_index, l_head, l_body, n_lower,
-                                    layer_types, layer_parents)
-    upper_iters = _build_iterations(cfg, layer_index, u_head, u_body, n_upper,
-                                    layer_types, layer_parents)
-    flat_lower = [s for it in lower_iters for s in it]
-    flat_upper = [s for it in upper_iters for s in it]
-
-    # Stage 2: same check in storage-root space, where in-place writes are visible.
-    sequential = (root_block.children + flat_lower + upper_init + lower_post
-                  + flat_upper + tail_block.children)
-    reads_of, _, _ = subexp_inlining.compute_storage_reads_and_defs(sequential)
-    conflict = _motions_ok(upper_init, lower_post, flat_lower, flat_upper, reads_of)
-    if conflict is not None:
-        raise RuntimeError(
-            f"paired_unroll: layer {layer_index} passed the name-level check but "
-            f"aliases storage when {conflict}; rerun without --paired-unroll")
-
-    root_block.update_parent_child(
-        root_block.children + upper_init + _interleave(lower_iters, upper_iters)
-        + lower_post + tail_block.children)
-
-    for pred in list(cfg.predecessors[tail_node]):
-        if pred in cfg.successors and tail_node in cfg.successors[pred]:
-            cfg.successors[pred].remove(tail_node)
-            if root_node not in cfg.successors[pred]:
-                cfg.successors[pred].append(root_node)
-    cfg.successors[root_node] = list(cfg.successors[tail_node])
-    root_block.jump = tail_block.jump
-    root_block.inner_jump = tail_block.inner_jump
-
-    retired = {l_head, l_body, l_break, u_head, u_body, u_break, middle_node, tail_node}
-    retired_blocks = {cfg.ir[n].identifier for n in retired}
-    for node in retired:
-        cfg.ir.pop(node, None)
-        cfg.successors.pop(node, None)
-        cfg.predecessors.pop(node, None)
-        if node in cfg.nodes:
-            cfg.nodes.remove(node)
-    for node in cfg.nodes:
-        cfg.successors[node] = [n for n in cfg.successors[node] if n not in retired]
-        cfg.predecessors[node] = [n for n in cfg.predecessors[node] if n not in retired]
-    for succ in cfg.successors[root_node]:
-        if succ in cfg.predecessors and root_node not in cfg.predecessors[succ]:
-            cfg.predecessors[succ].append(root_node)
-    _assert_retired(cfg, retired, retired_blocks, layer_index)
-
-    _paired_stats['paired'] += 1
-    _paired_stats['iterations'] += min(n_lower, n_upper)
-    _paired_stats['lower_tail'] += max(0, n_lower - n_upper)
-    _paired_stats['upper_tail'] += max(0, n_upper - n_lower)
-    return True
-
-
-def _assert_retired(cfg, retired, retired_blocks, layer_index):
-    for node in cfg.nodes:
-        block = cfg.ir[node]
-        for jump in (block.jump, block.inner_jump):
-            for target in ([] if jump is None else jump[1:]):
-                if target.identifier in retired_blocks:
-                    raise RuntimeError(
-                        f"paired_unroll: layer {layer_index} left block {node} "
-                        f"jumping to a retired block")
-        stale = (set(cfg.successors[node]) | set(cfg.predecessors[node])) & retired
-        if stale:
-            raise RuntimeError(
-                f"paired_unroll: layer {layer_index} left retired ids {sorted(stale)} "
-                f"in the edges of block {node}")
-
 
 def unroll_while(cfg, layer_index):
     i = 0
@@ -1855,12 +1570,6 @@ def unroll_while(cfg, layer_index):
             tensor_to_block_block(block, layer_index)
             i+=1
         else:
-            if globals.paired_unroll.get_flag():
-                matched = _match_paired_whiles(cfg, layer_index, node, block, live_nodes)
-                if matched is None:
-                    _paired_fallbacks.append(f"layer {layer_index}: unpaired while shape")
-                elif _paired_remove_while(cfg, layer_index, node, matched):
-                    continue
             root_node = node
             first_while_node = cfg.successors[node][0]
             first_while_block = cfg.ir[first_while_node]
@@ -2008,7 +1717,6 @@ def splice_update(cfg, layer_index, shape_fields):
 def tensor_to_block(ir):
     # TODO: DEBUG THE FOLLOWING LINE
     # uses.populate_uses_defs(ir)
-    reset_paired_stats()
     filename = "jit_layers/layers.json"
     json_obj = load_capture(filename)
     shape_fields = list(ir.shape.keys())
@@ -2035,7 +1743,6 @@ def tensor_to_block(ir):
 
             transformerIr.layerwise_cfgs = new_cfgs
 
-    report_paired_unroll()
 
 
 # Llist params flow() cannot reconstruct
