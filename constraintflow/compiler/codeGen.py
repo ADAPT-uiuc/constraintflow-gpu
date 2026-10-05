@@ -13,8 +13,9 @@ from constraintflow.compiler.optimizations import flow_split
 from constraintflow.compiler.optimizations import flow_shapes
 from constraintflow.compiler.optimizations import subexp_inlining
 from constraintflow.compiler.optimizations import early_reductions as early_reductions_pass
-from constraintflow.lib.globals import early_reductions, flow_segment_mb
-from constraintflow.compiler.optimizations import conv_partials, pad_inputs, region_reuse
+from constraintflow.lib.globals import early_reductions, flow_segment_mb, memory_budget_mb, MEMORY_BUDGET_FRACTION, device_mode, cudagraphs, product_grids
+from constraintflow.compiler.optimizations import conv_partials, pad_inputs, region_reuse, mem_plan, flow_offload
+from constraintflow.compiler.optimizations import product_grids as product_grids_pass
 from constraintflow.gbcsr.sparse_block import RUNTIME_HELPERS
 
 def fused_build():
@@ -25,6 +26,11 @@ def fused_build():
 def sroa_build():
     """True only on the reuse pass of an --sroa build."""
     return fused_build() and sroa.get_flag()
+
+
+def compile_decorator(fullgraph):
+    mode = ', mode="reduce-overhead"' if cudagraphs.get_flag() else ''
+    return '@torch.compile(fullgraph=' + str(fullgraph) + ', backend="inductor"' + mode + ')'
 
 
 # Matches a torch.tensor(...) call whose contents are a pure numeric literal
@@ -158,7 +164,7 @@ class CodeGen(irVisitor.IRVisitor):
         self.write('')
         self.write('_T = ' + certifier + '()')
         if inductor_mode.get_flag():
-            self.write('@torch.compile(fullgraph=' + str(not self._any_view_write) + ', backend="inductor")')
+            self.write(compile_decorator(not self._any_view_write))
         self.write('def flow(abs_elem, batch_size):')
         self.indent += 1
         self.write(state + ' = ' + ', '.join("abs_elem.d['" + key + "']" for key in fields))
@@ -223,8 +229,7 @@ class CodeGen(irVisitor.IRVisitor):
             params.append(('batch_size', 'batch_size'))
         self._emit_explode_inputs(params)
 
-        decorator = ('@torch.compile(fullgraph='
-                     + str(not self._method_has_view_write) + ', backend="inductor")')
+        decorator = compile_decorator(not self._method_has_view_write)
         sized = getattr(self, '_flow_sizes', {})
         shapes = dict(getattr(sized, 'inputs', {}))
         shapes.update({v['name']: v for v in sized.values() if 'shape' in v})
@@ -247,13 +252,32 @@ class CodeGen(irVisitor.IRVisitor):
         self.indent = 0
         print('[region-reuse] {} unique / {} emitted regions'.format(distinct, len(bodies)))
         self._region_count = distinct
+        offload = None
+        budget = self._memory_budget()
+        if budget and sized:
+            offload = flow_offload.plan(node.flow_block.children, segments, sized, budget)
+            if offload:
+                print('[flow-offload] ' + offload.describe())
+                self._flow_metrics['offloaded_bytes'] = offload.moved_bytes
+            elif offload.overflow:
+                print('[flow-offload] nothing to offload; ' + offload.describe())
         self.write('def flow(' + ', '.join(name for name, _ in params) + '):')
         self.indent += 1
         local_names = {name for name, _ in params}
         local_names.update(n for seg, _, _ in bodies for n in seg.live_out)
         last_call = {name: i for i, (_, names, _) in enumerate(bodies)
                      for name in names if name in local_names}
+        if offload:
+            # Host offload copies run on side streams; see _emit_offload.
+            # Buffers freed behind a copy event fragment fixed-size segments.
+            self.write("(getattr(torch._C, '_accelerator_setAllocatorSettings', None)"
+                       " or torch.cuda.memory._set_allocator_settings)('expandable_segments:True')")
+            self.write('_main = torch.cuda.current_stream()')
+            self.write('_d2h, _h2d = torch.cuda.Stream(), torch.cuda.Stream()')
+            self._evicted_by, self._fetched_by = {}, {}
         for seg, names, _ in bodies:
+            if offload:
+                self._emit_offload(offload, seg.index)
             call = seg.name + '(' + ', '.join(names) + ')'
             if seg is segments[-1]:
                 self.write('return ' + call)
@@ -267,6 +291,51 @@ class CodeGen(irVisitor.IRVisitor):
                     self.write('del ' + ', '.join(dead))
         self.indent -= 1
         self.write('')
+
+    def _emit_offload(self, offload, k):
+        """Driver lines moving values between device and host before call k.
+
+        Evictions run on _d2h and fetches on _h2d, overlapping the segments.
+        An eviction is issued once its value is idle; record_stream returns the
+        buffer only after the copy, and call k waits for the evictions the plan
+        counted as gone by then. A fetch is issued early and call k waits only
+        for the fetches it reads.
+        """
+        issue = offload.evict_issue[k]
+        if issue:
+            self.write('_d2h.wait_stream(_main)')
+            self.write('with torch.cuda.stream(_d2h):')
+            self.indent += 1
+            for n in issue:
+                self.write(n + '_host = ' + n + ".to('cpu', non_blocking=True)")
+            self.indent -= 1
+            self.write('_evicted_' + str(k) + ' = _d2h.record_event()')
+            for n in issue:
+                self.write(n + '.record_stream(_d2h)')
+                self._evicted_by[n] = '_evicted_' + str(k)
+            self.write('del ' + ', '.join(issue))
+        for event in sorted({self._evicted_by[n] for n in offload.evict[k]}):
+            self.write('_main.wait_event(' + event + ')')
+        names = offload.fetch_issue[k]
+        if names:
+            for n in names:
+                self.write(n + ' = torch.empty_strided(' + n + '_host.size(), ' + n
+                           + '_host.stride(), dtype=' + n + '_host.dtype, device=_main.device)')
+            # after the main-stream users of the new buffers and the evictions read
+            self.write('_h2d.wait_stream(_main)')
+            for event in sorted({self._evicted_by[n] for n in names}):
+                self.write('_h2d.wait_event(' + event + ')')
+            self.write('with torch.cuda.stream(_h2d):')
+            self.indent += 1
+            for n in names:
+                self.write(n + '.copy_(' + n + '_host, non_blocking=True)')
+            self.indent -= 1
+            self.write('_fetched_' + str(k) + ' = _h2d.record_event()')
+            self.write('del ' + ', '.join(n + '_host' for n in names))
+            for n in names:
+                self._fetched_by[n] = '_fetched_' + str(k)
+        for event in sorted({self._fetched_by[n] for n in offload.fetch[k]}):
+            self.write('_main.wait_event(' + event + ')')
 
     def _probe_sizes(self, node):
         """Fake-execute the block for real byte sizes; None when unavailable."""
@@ -287,9 +356,25 @@ class CodeGen(irVisitor.IRVisitor):
             print('[flow-sizes] ' + flow_shapes.summary(stmts, sized))
         return sized
 
+    def _memory_budget(self):
+        """Budget in bytes for mem_plan, or 0 when disabled."""
+        mb = memory_budget_mb.get_value()
+        if mb >= 0:
+            return int(mb * 1024 ** 2)
+        import torch
+        if device_mode.get_device() != 'cuda' or not torch.cuda.is_available():
+            return 0
+        return int(torch.cuda.get_device_properties(0).total_memory * MEMORY_BUDGET_FRACTION)
+
     def emit_sroa_flow(self, node):
         """Emit explode_inputs() and the scalarized flow()."""
         sized = self._probe_sizes(node)
+        if product_grids.get_flag() and sized and getattr(node, 'flow_functional', False):
+            count = product_grids_pass.run(node.flow_block, self.visit, sized,
+                                         getattr(node, 'flow_batch_size', 1))
+            print('[product-grids] {} convolutions and mat-vecs evaluated as grids'.format(count))
+            if count:
+                sized = self._probe_sizes(node)
         if early_reductions.get_flag():
             count = early_reductions_pass.run(node.flow_block)
             print('[early-reductions] {} reductions scheduled after their inputs'.format(count))
@@ -305,6 +390,12 @@ class CodeGen(irVisitor.IRVisitor):
             barriers = set(pad_inputs.run(node.flow_block))
             print('[pad-inputs] {} pad inputs materialized'.format(len(barriers)))
             sized = self._probe_sizes(node)
+        budget = self._memory_budget()
+        if budget and sized:
+            log = mem_plan.run(node.flow_block, sized, budget)
+            if log is not None:
+                print('[mem-plan] ' + log)
+                sized = self._probe_sizes(node)
         self._flow_sizes = sized or {}
         self._flow_metrics = {
             'statements': len(node.flow_block.children),
@@ -343,8 +434,7 @@ class CodeGen(irVisitor.IRVisitor):
         self.indent -= 1
         self.write('')
         if inductor_mode.get_flag():
-            self.write('@torch.compile(fullgraph=' + str(not self._method_has_view_write)
-                       + ', backend="inductor")')
+            self.write(compile_decorator(not self._method_has_view_write))
         self.write('def flow(' + ', '.join(name for name, _ in params) + '):')
         self.file.write(body_text)
         self.write('')
@@ -484,7 +574,7 @@ class CodeGen(irVisitor.IRVisitor):
         temp_dict += '}'
 
 
-        self.write("network, l, u, L, U, Z, llist = get_network_and_input_spec(network_file, batch_size, dataset_X, dataset_y, dataset, eps=eps, train=train, no_sparsity=no_sparsity, initializers=initializers)")
+        self.write("network, l, u, L, U, Z, llist = get_network_and_input_spec(network_file, batch_size, dataset_X, dataset_y, dataset, eps=eps, train=train, no_sparsity=no_sparsity, initializers=initializers, members=" + repr(tuple(node.shape.keys())) + ")")
         self.write("abs_elem = Abs_elem_sparse(" + temp_dict + ", " + str(temp_shape) + ", network, batch_size=batch_size, no_sparsity=no_sparsity)")
         
 
@@ -588,7 +678,7 @@ class CodeGen(irVisitor.IRVisitor):
                         # Fused builds carry one decorator on flow() instead of one per method.
                         if inductor_mode.get_flag() and not fused_build():
                             fullgraph = not self._method_has_view_write
-                            self.write('@torch.compile(fullgraph=' + str(fullgraph) + ', backend="inductor")')
+                            self.write(compile_decorator(fullgraph))
                         if fused_build():
                             self._check_no_llist_params(opStmtIr, layer_index, body_text)
                         self.file.write(body_text)
@@ -953,7 +1043,8 @@ class CodeGen(irVisitor.IRVisitor):
         return self.visit(node.children[0]) + '.transpose(' + str(node.dim0) + ', ' + str(node.dim1) + ')'
 
     def visitIrTorchMatmul(self, node):
-        return 'torch.matmul(' + self.visit(node.children[0]) + ', ' + self.visit(node.children[1]) + ')'
+        fn = 'bcast_matmul(' if reuse_mode.get_flag() else 'torch.matmul('
+        return fn + self.visit(node.children[0]) + ', ' + self.visit(node.children[1]) + ')'
 
     def visitIrTorchUnsqueeze(self, node):
         return self.visit(node.children[0]) + '.unsqueeze(' + str(node.index) + ')'
@@ -1063,6 +1154,10 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrTorchEinsum(self, node):
         operands = ', '.join(self.visit(c) for c in node.children)
         return 'torch.einsum(' + repr(node.equation) + ', ' + operands + ')'
+
+    def visitIrTorchCat(self, node):
+        return ('torch.cat([' + ', '.join(self.visit(c) for c in node.children)
+                + '], dim=' + str(node.dim) + ')')
 
     def visitIrAssignToView(self, node):
         view_expr = self.visit(node.children[0])

@@ -79,10 +79,9 @@ class ImageDataset:
             num_classes = 200
         y = y.to(device=X.device)
         eye = torch.eye(num_classes, device=X.device, dtype=X.dtype)
-        weight = eye[y].unsqueeze(1) - eye.unsqueeze(0)
-        class_indices = torch.arange(num_classes, device=X.device, dtype=y.dtype)
-        I = (~(y.unsqueeze(1) == class_indices.unsqueeze(0)))
-        weight = (weight[I].view(X.size(0), num_classes - 1, num_classes))
+        others = torch.arange(num_classes - 1, device=X.device, dtype=y.dtype).unsqueeze(0)
+        others = others + (others >= y.unsqueeze(1))
+        weight = eye[y].unsqueeze(1) - eye[others]
 
         bias = torch.zeros(num_classes - 1, device=X.device, dtype=X.dtype)
         return weight, bias
@@ -152,7 +151,7 @@ def create_llist(network):
 
 
 
-def get_network_and_input_spec(network_file, batch_size, X, y, dataset, eps, train=False, no_sparsity=False, initializers=None):
+def get_network_and_input_spec(network_file, batch_size, X, y, dataset, eps, train=False, no_sparsity=False, initializers=None, members=None):
     if dataset == 'tinyimagenet':
         X = X.to(torch.float32) / 255.0
 
@@ -160,9 +159,9 @@ def get_network_and_input_spec(network_file, batch_size, X, y, dataset, eps, tra
     network = get_net(network_file, spec_weight, spec_bias, no_sparsity, initializers=initializers)
     l = ImageDataset.create_l(X, network.size, batch_size, eps, dataset, no_sparsity)
     u = ImageDataset.create_u(X, network.size, batch_size, eps, dataset, no_sparsity)
-    L = create_L(l, network, batch_size, no_sparsity)
-    U = create_U(u, network, batch_size, no_sparsity)
-    Z = create_Z(l, u, network, no_sparsity)
+    L = create_L(l, network, batch_size, no_sparsity) if members is None or 'L' in members else None
+    U = create_U(u, network, batch_size, no_sparsity) if members is None or 'U' in members else None
+    Z = create_Z(l, u, network, no_sparsity) if members is None or 'Z' in members else None
     # llist type: torch Tensor of bool
     llist = create_llist(network)
     return network, l, u, L, U, Z, llist

@@ -267,6 +267,9 @@ def simulacrum_compile(
     early_reductions: bool = typer.Option(True, "--early-reductions/--no-early-reductions", help="Compute traversal sums as soon as their inputs exist, releasing large coefficients before later traversal steps. Requires functional --sroa; preserves the arithmetic tree."),
     fuse_sign_convs: bool = typer.Option(True, "--fuse-sign-convs/--no-fuse-sign-convs", help="Replace positive/negative convolution pairs by one convolution only when their inputs, weights, views and settings provably match. Requires functional --sroa. Uses linearity and can change floating-point rounding."),
     flow_segment_mb: float = typer.Option(0.0, "--flow-segment-mb", help="Split functional SSA flow into regions with approximately this many MB of named allocations. This is a compilation-region budget, not a bound on total GPU memory. Requires --sroa; Inductor automatically compiles each segment separately. 0 disables."),
+    product_grids: bool = typer.Option(True, "--product-grids/--no-product-grids", help="When same-shape inputs and same-shape weights are combined in every pairing (interval propagation's W+/W- times lower/upper), run one convolution over the inputs stacked on the batch and the weights stacked on output channels, or one GEMM over stacked vectors and a batch-broadcast matrix, and slice each product out. Requires functional --sroa."),
+    cudagraphs: bool = typer.Option(False, "--cudagraphs/--no-cudagraphs", help="Compile flow() with mode='reduce-overhead' so a run replays one CUDA graph instead of launching each kernel. Cuts per-run launch overhead on small networks. Replays allocate from a private pool set up during warmup, so `run`'s per-run peak (max_memory_allocated) no longer counts flow intermediates. Requires --inductor."),
+    memory_budget_mb: float = typer.Option(-1.0, "--memory-budget-mb", help="When the flow's estimated peak tensor memory exceeds this many MB, reorder it group by group and recompute large values instead of keeping them live (mem_plan); with --flow-segment-mb, values a segment does not read are also parked in host memory between segments (flow_offload). Requires --sroa with --early-reductions. -1 (default) uses 70% of the CUDA device's memory; 0 disables."),
 ):
     """
     Compile a ConstraintFlow program through the whole simulacrum+reuse pipeline
@@ -285,6 +288,8 @@ def simulacrum_compile(
         raise typer.BadParameter('--early-reductions and --flow-segment-mb require --sroa')
     if fuse_sign_convs and not sroa:
         raise typer.BadParameter('--fuse-sign-convs requires --sroa')
+    if cudagraphs and not inductor:
+        raise typer.BadParameter('--cudagraphs requires --inductor')
     if flow_segment_mb < 0:
         raise typer.BadParameter('--flow-segment-mb must be nonnegative')
     if fused_flow and print_intermediate_results:
@@ -365,7 +370,10 @@ def simulacrum_compile(
         globals.inductor_mode.set_flag()
     globals.early_reductions.set_flag() if early_reductions else globals.early_reductions.reset_flag()
     globals.fuse_sign_convs.set_flag() if fuse_sign_convs else globals.fuse_sign_convs.reset_flag()
+    globals.cudagraphs.set_flag() if cudagraphs else globals.cudagraphs.reset_flag()
+    globals.product_grids.set_flag() if product_grids else globals.product_grids.reset_flag()
     globals.flow_segment_mb.set_value(flow_segment_mb)
+    globals.memory_budget_mb.set_value(memory_budget_mb if early_reductions else 0.0)
     globals.set_network_path(network_file)
     try:
         compile_code(program_file, output_path)
@@ -376,7 +384,10 @@ def simulacrum_compile(
         globals.compact_patches.reset_flag()
         globals.early_reductions.reset_flag()
         globals.fuse_sign_convs.reset_flag()
+        globals.cudagraphs.reset_flag()
+        globals.product_grids.reset_flag()
         globals.flow_segment_mb.set_value(0.0)
+        globals.memory_budget_mb.reset()
         globals.set_network_path(None)
         if in_memory:
             globals.jit_store_clear()
@@ -419,6 +430,8 @@ def run(
     use_cache: bool = typer.Option(False, "--use-cache", help="Point --output-path at the shared kernel_cache entry (see bench/configs.py:kernel_dir), keyed by network/dataset/certifier/batch-size/inductor. Hard errors if that cache entry is missing."),
     perturb_eps: float = typer.Option(0.0, "--perturb-eps", help="Std of iid Gaussian noise added to the network's weights independently before each warmup and each timed run, to test whether weight values (not just shapes) affect measured runtime. 0 (default) disables perturbation and every run uses the unmodified network."),
     perturb_seed: int = typer.Option(0, "--perturb-seed", help="Seed for --perturb-eps's noise, for reproducible sweeps."),
+    direct_onnx_load: bool = typer.Option(False, "--direct-onnx-load/--no-direct-onnx-load", help="Load the network without onnx.load: memory-map the file, parse only the graph (weights stripped from the protobuf), and upload each weight from the mapped file through a pinned staging buffer that PyTorch's caching host allocator keeps between runs. Weights are still read and uploaded on every run. Off: onnx.load + numpy copies + pageable upload, as the baselines do."),
+    gc_freeze: bool = typer.Option(True, "--gc-freeze/--no-gc-freeze", help="gc.freeze() after warmup, so the untimed gc.collect() between runs scans only per-run garbage instead of the whole torch/inductor heap (which evicts CPU caches before every timed run)."),
 ):
     """
     Run a compiled ConstraintFlow program.
@@ -467,6 +480,7 @@ def run(
         typer.echo("Error: device='gpumac' requested but MPS is not available.")
         raise typer.Exit(code=1)
     device_mode.set_mode(device)
+    globals.direct_onnx_load.set_flag() if direct_onnx_load else globals.direct_onnx_load.reset_flag()
     if device == "gpu":
         _configure_cuda_cpu_threads()
 
@@ -524,8 +538,14 @@ def run(
         typer.echo(f"Warmup run {i + 1}/{warmup}: {time.perf_counter() - warmup_start:.6f} s")
         ### Free Memory ####
         gc.collect()
-        if is_cuda:
-            torch.cuda.empty_cache()
+        # Not needed for the per-run peak (max_memory_allocated counts live tensors only);
+        # it only made the next run re-cudaMalloc its whole working set.
+        # if is_cuda:
+        #     torch.cuda.empty_cache()
+
+    if gc_freeze:
+        gc.collect()
+        gc.freeze()
 
     mem_label = "Peak GPU memory" if is_cuda else "Peak CPU memory"
 
@@ -569,8 +589,10 @@ def run(
         ### Free Memory ####
         lb, ub = lb.detach().cpu(), ub.detach().cpu()
         gc.collect()
-        if is_cuda:
-            torch.cuda.empty_cache()
+        # Not needed for the per-run peak (max_memory_allocated counts live tensors only);
+        # it only made the next run re-cudaMalloc its whole working set.
+        # if is_cuda:
+        #     torch.cuda.empty_cache()
 
     total_time = sum(repeat_times)
     peak_bytes = max(repeat_peaks)
