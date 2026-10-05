@@ -498,12 +498,19 @@ def run(
 
     network_file = get_network(network, network_format, dataset)
     dataset_device = device_mode.get_device() if device == "gpu" else None
+    # Images stay on the host; each run moves only its own batch, as the baselines do.
     X, y = get_dataset(
         batch_size * (warmup + 1),
         dataset,
         train=train,
-        device=dataset_device,
+        device=None,
     )
+
+    def _batch(lo):
+        xs, ys = X[lo : lo + batch_size], y[lo : lo + batch_size]
+        if dataset_device is None:
+            return xs, ys
+        return xs.to(dataset_device), ys.to(dataset_device)
 
     perturb_rng = None
     perturb_dir = None
@@ -531,8 +538,7 @@ def run(
             warmup_network,
             batch_size,
             eps,
-            X[(i + 1) * batch_size : (i + 2) * batch_size],
-            y[(i + 1) * batch_size : (i + 2) * batch_size],
+            *_batch((i + 1) * batch_size),
             dataset=dataset,
             train=train,
             print_intermediate_results=False,
@@ -566,17 +572,18 @@ def run(
     print("REPEAT")
     for i in range(repeat):
         repeat_network = _network_for(f"repeat{i}")
+        resident = 0
         if is_cuda:
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats()
+            resident = torch.cuda.memory_allocated()
 
         start_time = time.perf_counter()
         lb, ub = run(
             repeat_network,
             batch_size,
             eps,
-            X[:batch_size],
-            y[:batch_size],
+            *_batch(0),
             dataset=dataset,
             train=train,
             print_intermediate_results=print_intermediate_results,
@@ -589,7 +596,8 @@ def run(
         repeat_times.append(run_time)
         repeat_peaks.append(run_peak)
         if repeat > 1:
-            typer.echo(f"Run {i + 1}/{repeat}: {run_time:.6f} s, {mem_label}: {run_peak} bytes")
+            resident_note = f", Resident GPU memory: {resident} bytes" if is_cuda else ""
+            typer.echo(f"Run {i + 1}/{repeat}: {run_time:.6f} s, {mem_label}: {run_peak} bytes{resident_note}")
 
         ### Free Memory ####
         lb, ub = lb.detach().cpu(), ub.detach().cpu()
