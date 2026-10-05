@@ -267,6 +267,9 @@ class IRVisitor:
         elif isinstance(node, IR.IrTorchEinsum):
             return self.visitIrTorchEinsum(node)
 
+        elif isinstance(node, IR.IrTorchCat):
+            return self.visitIrTorchCat(node)
+
         elif isinstance(node, IR.IrAssignToView):
             return self.visitIrAssignToView(node)
 

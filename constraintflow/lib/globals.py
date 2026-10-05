@@ -156,8 +156,24 @@ class Mode:
 early_reductions = Flag()
 flow_segment_mb = Mode(0.0)
 
+# MB the reuse build may keep live at once. Over it, mem_plan reorders and
+# recomputes the flow and flow_offload parks idle values in host memory.
+# 0 disables, -1 = auto (MEMORY_BUDGET_FRACTION of the CUDA device's memory at
+# compile time; the real peak runs a few GB above the estimate).
+memory_budget_mb = Mode(-1.0)
+MEMORY_BUDGET_FRACTION = 0.7
+
 # Prove identical-weight positive/negative convolution pairs in tensor SSA.
 fuse_sign_convs = Flag()
+
+# Compile flow() with mode="reduce-overhead" (CUDA graph replay).
+cudagraphs = Flag()
+
+# Load ONNX initializers with parse.load_onnx_direct instead of onnx.load.
+direct_onnx_load = Flag()
+
+# Evaluate all-pairs convolution and broadcast mat-vec grids (IBP's W+/W- times l/u) as one operation.
+product_grids = Flag()
 
 
 class DeviceMode:

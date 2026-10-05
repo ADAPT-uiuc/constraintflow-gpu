@@ -1030,6 +1030,10 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 raise Exception("NOT IMPLEMENTED")
             output = IrTorchEinsum(json_obj["equation"], [lhsIr, rhsIr])
 
+        elif json_obj["method"] == "torch_cat":
+            inputIrs = [output_vars[int(ref.split("_")[-1])] for ref in json_obj["inputs"]]
+            output = IrTorchCat(inputIrs, json_obj["dim"])
+
         elif json_obj["method"] == "torch_diagonal":
             if "json_list_" in json_obj["input"]:
                 inputIr = output_vars[int(json_obj["input"].split("_")[-1])]

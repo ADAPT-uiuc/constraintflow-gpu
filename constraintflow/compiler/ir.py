@@ -722,6 +722,12 @@ class IrTorchEinsum(IrExpression):
         self.equation = equation
         self.update_parent_child(operandIrs)
 
+class IrTorchCat(IrExpression):
+    def __init__(self, inputIrs, dim):
+        super().__init__()
+        self.dim = dim
+        self.update_parent_child(list(inputIrs))
+
 class IrAssignToView(IrStatement):
     def __init__(self, inputIr, index, valueIr):
         super().__init__()

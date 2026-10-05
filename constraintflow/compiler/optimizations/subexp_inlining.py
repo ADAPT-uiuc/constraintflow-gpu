@@ -114,7 +114,7 @@ _FRESH_NODE_TYPES = (
     IrTorchDiagEmbed, IrTorchWhere, IrBlockWhereBlock, IrTensorScatter, IrPatchesToDense,
     IrTensorClamp, IrBlockClamp, IrConvertBoolToFloat,
     IrFConv2d, IrFConvTranspose2d, IrFUnfold,
-    IrTorchStride, IrBlockGetDims, IrTorchPad,
+    IrTorchStride, IrBlockGetDims, IrTorchPad, IrTorchCat,
     IrBlockAll, IrBlockAny, IrBlockCopy,
     IrEmptyList,
 )
