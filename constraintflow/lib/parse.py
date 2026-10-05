@@ -263,6 +263,25 @@ def forward_layers(net, relu_mask, transformers):
     return transformers
 
 
+class _LazyArrays(dict):
+    """Initializer arrays for shape folding, converted on first lookup; weights are never read."""
+
+    def __init__(self, initializers):
+        super().__init__()
+        self._protos = {init.name: init for init in initializers}
+
+    def __contains__(self, name):
+        return dict.__contains__(self, name) or name in self._protos
+
+    def __missing__(self, name):
+        value = numpy_helper.to_array(self._protos[name])
+        self[name] = value
+        return value
+
+    def get(self, name, default=None):
+        return self[name] if name in self else default
+
+
 def _shape_value(node, values, shapes):
     op = node.op_type
     attrs = {a.name: onnx.helper.get_attribute_value(a) for a in node.attribute}
@@ -347,7 +366,7 @@ def parse_onnx_layers(
         model_name_to_val_dict = _initializer_tensors(net)
 
     if values is None:
-        values = {v.name: numpy_helper.to_array(v) for v in net.graph.initializer}
+        values = _LazyArrays(net.graph.initializer)
     else:
         values = dict(values)
     tensor_shapes = {net.graph.input[0].name: input_shape}
