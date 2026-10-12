@@ -13,7 +13,7 @@ from constraintflow.compiler.optimizations import flow_split
 from constraintflow.compiler.optimizations import flow_shapes
 from constraintflow.compiler.optimizations import subexp_inlining
 from constraintflow.compiler.optimizations import early_reductions as early_reductions_pass
-from constraintflow.lib.globals import early_reductions, flow_segment_mb, memory_budget_mb, MEMORY_BUDGET_FRACTION, device_mode, cudagraphs, product_grids
+from constraintflow.lib.globals import early_reductions, flow_segment_mb, memory_budget_mb, MEMORY_BUDGET_FRACTION, device_mode, cudagraphs, product_grids, inductor_layout_opt
 from constraintflow.compiler.optimizations import conv_partials, pad_inputs, region_reuse, mem_plan, flow_offload
 from constraintflow.compiler.optimizations import product_grids as product_grids_pass
 from constraintflow.gbcsr.sparse_block import RUNTIME_HELPERS
@@ -29,8 +29,15 @@ def sroa_build():
 
 
 def compile_decorator(fullgraph):
-    mode = ', mode="reduce-overhead"' if cudagraphs.get_flag() else ''
-    return '@torch.compile(fullgraph=' + str(fullgraph) + ', backend="inductor"' + mode + ')'
+    options = {}
+    if cudagraphs.get_flag():
+        options['triton.cudagraphs'] = True  # what mode="reduce-overhead" sets
+    if not inductor_layout_opt.get_flag():
+        # Inductor would move conv operands to channels-last, where cuDNN picks much
+        # slower kernels for these batch-heavy, few-channel convolutions.
+        options['layout_optimization'] = False
+    opts = ', options=' + repr(options) if options else ''
+    return '@torch.compile(fullgraph=' + str(fullgraph) + ', backend="inductor"' + opts + ')'
 
 
 # Matches a torch.tensor(...) call whose contents are a pure numeric literal
@@ -377,7 +384,7 @@ class CodeGen(irVisitor.IRVisitor):
             if count:
                 sized = self._probe_sizes(node)
         if early_reductions.get_flag():
-            count = early_reductions_pass.run(node.flow_block)
+            count = early_reductions_pass.run(node.flow_block, self.visit)
             print('[early-reductions] {} reductions scheduled after their inputs'.format(count))
             sized = self._probe_sizes(node)
         # Expose partial sums explicitly after reduction scheduling, independently
@@ -1126,7 +1133,9 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrFConv2d(self, node):
         return (
             'F.conv2d(' + self.visit(node.children[0]) + ', '
-            + self.visit(node.children[1]) + ', stride='
+            + self.visit(node.children[1])
+            + (', ' + self.visit(node.children[2]) if len(node.children) > 2 else '')
+            + ', stride='
             + self.visit(node.stride) + ', padding=' + self.visit(node.padding) + ')'
         )
 
@@ -1520,7 +1529,7 @@ class CodeGen(irVisitor.IRVisitor):
         if node.op in ('add', 'mul', 'and_', 'or_'):
             return 'lambda x: x'
         if node.op == 'sub':
-            return 'lambda x: x.unary(operator.neg)'
+            return 'lambda x: operator.neg(x)'
         raise Exception('OP NOT IDENTIFIED', node.op)
 
     def visitIrSimpleBinary(self, node):

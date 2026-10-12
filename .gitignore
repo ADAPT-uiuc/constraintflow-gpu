@@ -29,9 +29,13 @@ cifar_relu_9_200.onnx_cifar_cpu.csv
 scripts/*
 scripts
 tests/*
+!tests/test_jax_target.py
+!tests/test_jax_pipeline.py
 resnet*/*
 output/*
 output*/
 docs*/*
 experiments/*
 cfg/*
+local_cache/
+tiny-data.tar.gz

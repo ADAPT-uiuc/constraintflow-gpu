@@ -47,6 +47,12 @@ from collections import deque
 #         _cuda_initializer_cache_key = cache_key
 #     return _cuda_initializer_cache
 
+#FEAT: weight cast for --dtype float64.
+def _default_float(t):
+    """Float weights in the run's dtype (fp32 weights, or exact fp64 copies under --dtype float64)."""
+    return t.to(torch.get_default_dtype()) if t.is_floating_point() else t
+
+
 def _initializer_tensors(net, net_name=None):
     target_device = (
         device_mode.get_device()
@@ -54,10 +60,11 @@ def _initializer_tensors(net, net_name=None):
         else "cpu"
     )
     return {
-        init_vals.name: torch.tensor(
+        #FEAT: float weights follow the run dtype.
+        init_vals.name: _default_float(torch.tensor(
             numpy_helper.to_array(init_vals),
             device=target_device,
-        )
+        ))
         for init_vals in net.graph.initializer
     }
 
@@ -263,6 +270,25 @@ def forward_layers(net, relu_mask, transformers):
     return transformers
 
 
+class _LazyArrays(dict):
+    """Initializer arrays for shape folding, converted on first lookup; weights are never read."""
+
+    def __init__(self, initializers):
+        super().__init__()
+        self._protos = {init.name: init for init in initializers}
+
+    def __contains__(self, name):
+        return dict.__contains__(self, name) or name in self._protos
+
+    def __missing__(self, name):
+        value = numpy_helper.to_array(self._protos[name])
+        self[name] = value
+        return value
+
+    def get(self, name, default=None):
+        return self[name] if name in self else default
+
+
 def _shape_value(node, values, shapes):
     op = node.op_type
     attrs = {a.name: onnx.helper.get_attribute_value(a) for a in node.attribute}
@@ -347,7 +373,7 @@ def parse_onnx_layers(
         model_name_to_val_dict = _initializer_tensors(net)
 
     if values is None:
-        values = {v.name: numpy_helper.to_array(v) for v in net.graph.initializer}
+        values = _LazyArrays(net.graph.initializer)
     else:
         values = dict(values)
     tensor_shapes = {net.graph.input[0].name: input_shape}

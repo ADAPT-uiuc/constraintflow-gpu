@@ -25,7 +25,7 @@ from constraintflow.compiler.optimizations import subexp_inlining
 from constraintflow.compiler.optimizations import constant_folding
 from constraintflow.compiler.optimizations import sroa as sroa_pass
 from constraintflow.compiler.optimizations import block_passes
-from constraintflow.compiler.optimizations import sign_convs, sign_reductions
+from constraintflow.compiler.optimizations import sign_convs, sign_reductions, box_concretize
 from constraintflow.compiler import single_bound
 from constraintflow.lib.globals import *
 
@@ -148,6 +148,11 @@ def compile(inputfile, output_path, target='torch'):
                     subexp_inlining.inline_subexp_block(ir.flow_block)
                 count = sign_reductions.run(ir.flow_block)
                 print('[sign-reductions] {} redundant reductions removed'.format(count))
+            if center_radius.get_flag() and stats['functional']:
+                count = box_concretize.run(ir.flow_block)
+                print('[box-concretize] {} input-box concretizations in center/radius form'.format(count))
+                count = box_concretize.fold_conv_bias(ir.flow_block)
+                print('[conv-bias] {} interval convolutions take the bias in the center conv'.format(count))
             # Partitioning needs SSA. Recycled names merge unrelated lifetimes
             # and can make segment interfaces refer to the wrong definition.
             needs_ssa = (stats['functional'] or early_reductions.get_flag() or flow_segment_mb.get_value() > 0)
