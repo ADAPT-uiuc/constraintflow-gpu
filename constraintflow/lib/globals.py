@@ -161,8 +161,17 @@ MEMORY_BUDGET_FRACTION = 0.7
 # Prove identical-weight positive/negative convolution pairs in tensor SSA.
 fuse_sign_convs = Flag()
 
+# Lower a sign-selected concretization over Float bounds, (c >= 0) ? c*X : c*Y, to
+# c*(X+Y)/2 + |c|*(X-Y)/2 (center/radius) instead of c+*X + c-*Y. The sign-split form
+# subtracts two large nearly equal sums when X ~ Y (narrow intervals), and loses the
+# interval width to fp32 rounding; auto_LiRPA concretizes with center/radius.
+center_radius = Flag(True)
+
 # Compile flow() with mode="reduce-overhead" (CUDA graph replay).
 cudagraphs = Flag()
+
+# Leave Inductor's conv layout optimization (channels-last operands) on; off by default.
+inductor_layout_opt = Flag()
 
 # UNFAIR LOADING
 # Load ONNX initializers with parse.load_onnx_direct instead of onnx.load.

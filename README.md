@@ -88,6 +88,7 @@ constraintflow jit example.cf --in-memory [OPTIONS]
 | `--fused-flow` / `--no-fused-flow` | Emit a single `flow()` instead of a layered flow           | True              |
 | `--fuse-affine-subst` / `--no-fuse-affine-subst` | Pass to optimize redundant Affine calculations (only sound for deeppoly/crown)  | False       |
 | `--sroa` / `--no-sroa`          | Scalar-replace the Jit* aggregates into pure tensor code (requires `--fused-flow`)  | True              |
+| `--memory-budget-mb`            | Over this estimated peak, reorder/recompute the flow and offload idle values to host memory (`-1`: 70% of GPU memory, `0`: off) | `-1`              |
 
 
 
@@ -177,3 +178,57 @@ You can then run, compile, or verify any `.cf` file using the CLI.
 ## 📄 License
 
 MIT License. See [LICENSE](LICENSE) for details.
+
+## JAX target after JIT optimization
+
+`jit --target jax` uses the existing Torch simulacrum capture and shared compiler
+passes, then emits JAX from the final functional tensor IR. Torch remains the
+default target. Install the optional CPU dependency with `python -m pip install -e '.[jax]'`;
+for GPU execution, install a JAX build appropriate for your CUDA
+environment using the [JAX installation guide](https://docs.jax.dev/en/latest/installation.html).
+
+```bash
+python -m constraintflow.cli jit examples/compiler_examples/deeppoly.cf \
+  --network /absolute/path/to/network.onnx --dataset mnist --batch-size 1 \
+  --eps 0.01 --device cpu --target jax --output-path output/jax
+
+python -m constraintflow.cli run examples/compiler_examples/deeppoly.cf \
+  --network /absolute/path/to/network.onnx --dataset mnist --batch-size 1 \
+  --eps 0.01 --device cpu --output-path output/jax
+```
+
+Use `--device gpu` for CUDA capture/preparation and a CUDA-enabled JAX runtime.
+Do not combine `--target jax` with `--inductor`, `--no-sroa`, or
+`--no-fused-flow`. Unsupported residual aggregate mutations, storage-stride
+operations, and unspecialized control flow fail during emission.
+
+The output contains:
+
+- `jax_flow.py`: pure JAX tensor code with `jax.jit`; this kernel accepts JAX
+  arrays directly, including weights as runtime inputs. Shape-dependent
+  `batch_size` arguments are static. Kernels specialize to the captured network
+  geometry and batch size.
+- `transformers.py`: the input extractor and a Torch/JAX boundary adapter.
+- `main.py`: the existing network and input preparation interface. It returns
+  Torch bounds using DLPack and waits for JAX completion before returning, so
+  the existing `run` command can execute the artifact.
+
+The shared passes include block optimization, inlining, sign-convolution and
+sign-reduction simplification, early reductions, convolution partials, padding
+preparation, and memory planning according to their existing flags.
+`--flow-segment-mb` splits the optimized flow and JIT-compiles regions separately;
+equivalent regions reuse generated functions. `--memory-budget-mb` still drives
+the shared reorder/recompute planner, using Torch shape-probe estimates. Those
+estimates are not an XLA memory guarantee. The Torch CUDA stream host-offload
+driver is not emitted for JAX, and Torch CUDA peak-memory counters do not measure
+JAX allocations. JAX chooses allocation and fusion within each region.
+
+Numerical comparisons use float32 tolerances: XLA and Torch may reorder
+floating-point arithmetic. Matmul and convolution request JAX's highest
+precision. Explicit 64-bit bridge inputs require `JAX_ENABLE_X64=1`.
+
+Run CPU regression tests, including synthetic ONNX models (no dataset downloads):
+
+```bash
+JAX_PLATFORMS=cpu python -m unittest discover -s tests -p 'test_jax*.py' -v
+```

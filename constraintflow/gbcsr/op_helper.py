@@ -56,8 +56,8 @@ def binary_to_identity_unary(op, json_list=None):
     elif op == operator.sub:
         _record_lambda(op, json_list)
         if json_list is not None:
-            return lambda x: x.unary(operator.neg), len(json_list) - 1
-        return lambda x: x.unary(operator.neg)
+            return lambda x: operator.neg(x), len(json_list) - 1
+        return lambda x: operator.neg(x)
     elif op == operator.and_:
         _record_lambda(op, json_list)
         if json_list is not None:

@@ -13,6 +13,37 @@ from constraintflow.compiler.ir import *
 from constraintflow.compiler.representations import Graph
 
 
+#FIX FOR: reuse.cf on 9-layer nets (N5/N7/N21) failed to compile: inlining built one statement
+# nested 258 parentheses deep, past CPython's parser limit of 200.
+# Inlining stops where the use site would nest deeper than this many IR levels; the
+# value then stays a named temporary (same ops, same order). CPython's parser rejects
+# more than 200 nested parentheses, and reuse.cf on 9-layer nets otherwise sums 2**9
+# back-substitution terms into one 258-deep statement. Wrapper nodes render no
+# parentheses (N4 reuse: IR depth > 64 renders 35 deep), so the cap sits well above
+# what normal programs reach and leaves their code unchanged.
+MAX_INLINE_DEPTH = 150
+depth_capped = [0]   # uses left un-inlined by the cap, reported by the caller
+
+
+def expr_depth(expr) -> int:
+    """Nesting depth of an expression tree (a leaf is 1)."""
+    if expr is None or isinstance(expr, (int, float, str)):
+        return 0
+    depth, stack = 0, [(expr, 1)]
+    while stack:
+        node, d = stack.pop()
+        depth = max(depth, d)
+        for child in get_generalized_children(node):
+            if child is not None and not isinstance(child, (int, float, str)):
+                stack.append((child, d + 1))
+    return depth
+
+
+def _stmt_depth(stmt) -> int:
+    operands = [stmt.children[1]] if isinstance(stmt, IrAssignment) else stmt.children
+    return max((expr_depth(o) for o in operands), default=0)
+
+
 def get_generalized_children(expr) -> list[IrExpression]:
     ret: list[IrExpression] = []
     if isinstance(expr, IrSimpleUnary) and isinstance(expr.op, IrVar):
@@ -353,7 +384,13 @@ def try_inline_definition(
             return False
         inline_expr, value_def_index = rhs, def_stmt_index
     substituted = False
+    #FIX FOR: statements nested too deep for CPython's parser; skip inlining past MAX_INLINE_DEPTH.
+    inline_depth = 0 if is_trivial(inline_expr) else expr_depth(inline_expr)
     for use_index in use_indices:
+        if (inline_depth > 1
+                and _stmt_depth(instructions[use_index]) + inline_depth - 1 > MAX_INLINE_DEPTH):
+            depth_capped[0] += 1
+            continue
         if is_safe_to_inline(def_indices, reads_of, storage_defs, storage_def_keys,
                              var, inline_expr, value_def_index, use_index):
             replace_var_with_expr(
@@ -476,7 +513,12 @@ def inline_fixpoint(instructions: list[IrStatement],
 
 def inline_subexp_block(block: IrBlock) -> None:
     """private"""
+    #FIX FOR: reuse N5/N7/N21 compile failure (too-deep nesting); log uses kept by the depth cap.
+    depth_capped[0] = 0
     inline_fixpoint(block.children)
+    if depth_capped[0]:
+        print('[inline] {} uses kept as temporaries: inlining would nest deeper than {} '
+              'IR levels'.format(depth_capped[0], MAX_INLINE_DEPTH))
 
 
 def rematerialize_block(block: IrBlock, names) -> None:

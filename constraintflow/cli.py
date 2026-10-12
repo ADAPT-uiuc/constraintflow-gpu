@@ -9,6 +9,14 @@ if DISABLE_TF32:
     torch.backends.cudnn.allow_tf32 = False
     torch.backends.cuda.matmul.allow_tf32 = False
 
+#FEAT: --dtype float64 (fp64 precision oracle) must be applied before modules that read torch.float at import.
+from constraintflow.lib.precision import dtype_from_argv, use_float64
+DTYPE = dtype_from_argv(sys.argv[1:])
+if DTYPE not in ("float32", "float64"):
+    sys.exit(f"Error: --dtype must be float32 or float64, got {DTYPE!r}")
+if DTYPE == "float64":
+    use_float64()
+
 import constraintflow.lib.globals as globals
 
 os.environ.setdefault("TORCHINDUCTOR_VEC_ISA_OK", "1")
@@ -24,6 +32,8 @@ print(f'dummy_mode in cli: {globals.dummy_mode}')
 print(f'reuse_mode in cli: {globals.reuse_mode}')
 print(f'inductor_mode in cli: {globals.inductor_mode}')
 print(f'tf32 in cli: {"disabled (CF_DISABLE_TF32)" if DISABLE_TF32 else "PyTorch default"}')
+#FEAT: report the run dtype.
+print(f'dtype in cli: {DTYPE}')
 
 
 import os
@@ -228,9 +238,11 @@ def compile(
     program_file: str = typer.Argument(..., help="ConstraintFlow program file"),
     output_path: str = typer.Option("output/", help="Output path for generated code"),
     fuse_affine_subst: bool = typer.Option(False, "--fuse-affine-subst", help="Two optimizations gated by one flag: (1) skip both concretizing traversals at any Affine layer that feeds only further Affine layers (always sound; single_bound.py). (2) Assert every Affine op's L and U outputs are identical (true for all deeppoly*/crown specs here) and drop the redundant sign-split when a traverse() substitution step crosses an Affine layer -- only affects a jit reuse compile (no-op on plain compile, which never runs tensor_to_block); unsound if the assertion doesn't hold."),
+    center_radius: bool = typer.Option(True, "--center-radius/--no-center-radius", help="Concretize sign-selected bounds (c >= 0 ? c*u : c*l, and the final input-box concretization) as c*mid + |c|*rad, as auto_LiRPA does, and fold conv biases into the center conv. --no-center-radius restores original constraintflow's sign split c+*u + c-*l, which loses interval width in fp32 on narrow boxes."),
 ):
     start_time = time.perf_counter()
     globals.fuse_affine_subst.set_flag() if fuse_affine_subst else globals.fuse_affine_subst.reset_flag()
+    globals.center_radius.set_flag() if center_radius else globals.center_radius.reset_flag()
     compile_code(program_file, output_path)
     total_time = time.perf_counter() - start_time
     typer.echo(f"Total time: {total_time:.6f} seconds")
@@ -267,7 +279,11 @@ def simulacrum_compile(
     flow_segment_mb: float = typer.Option(0.0, "--flow-segment-mb", help="Split functional SSA flow into regions with approximately this many MB of named allocations. This is a compilation-region budget, not a bound on total GPU memory. Requires --sroa; Inductor automatically compiles each segment separately. 0 disables."),
     product_grids: bool = typer.Option(True, "--product-grids/--no-product-grids", help="When same-shape inputs and same-shape weights are combined in every pairing (interval propagation's W+/W- times lower/upper), run one convolution over the inputs stacked on the batch and the weights stacked on output channels, or one GEMM over stacked vectors and a batch-broadcast matrix, and slice each product out. Requires functional --sroa."),
     cudagraphs: bool = typer.Option(False, "--cudagraphs/--no-cudagraphs", help="Compile flow() with mode='reduce-overhead' so a run replays one CUDA graph instead of launching each kernel. Cuts per-run launch overhead on small networks. Replays allocate from a private pool set up during warmup, so `run`'s per-run peak (max_memory_allocated) no longer counts flow intermediates. Requires --inductor."),
+    center_radius: bool = typer.Option(True, "--center-radius/--no-center-radius", help="Concretize sign-selected bounds (c >= 0 ? c*u : c*l, and the final input-box concretization) as c*mid + |c|*rad, as auto_LiRPA does, and fold conv biases into the center conv. --no-center-radius restores original constraintflow's sign split c+*u + c-*l, which loses interval width in fp32 on narrow boxes."),
+    inductor_layout_opt: bool = typer.Option(False, "--inductor-layout-opt/--no-inductor-layout-opt", help="Let Inductor move convolution operands to channels-last (its layout_optimization). Off by default: on these batch-heavy, few-channel convolutions cuDNN's channels-last kernels are several times slower. Requires --inductor."),
     memory_budget_mb: float = typer.Option(-1.0, "--memory-budget-mb", help="When the flow's estimated peak tensor memory exceeds this many MB, reorder it group by group and recompute large values instead of keeping them live (mem_plan); with --flow-segment-mb, values a segment does not read are also parked in host memory between segments (flow_offload). Requires --sroa with --early-reductions. -1 (default) uses 70% of the CUDA device's memory; 0 disables."),
+    #FEAT: --dtype on jit, so typer accepts it (applied from argv above).
+    dtype: str = typer.Option("float32", "--dtype", help="float32, or float64 to compute every float tensor in fp64 (a precision oracle for bound mismatches; compile and run must agree). Read from argv before the imports; listed here so typer accepts it."),
 ):
     """
     Compile a ConstraintFlow program through the whole simulacrum+reuse pipeline
@@ -286,6 +302,7 @@ def simulacrum_compile(
     globals.compact_patches.set_flag() if compact_patches else globals.compact_patches.reset_flag()
     globals.fused_flow.set_flag() if fused_flow else globals.fused_flow.reset_flag()
     globals.sroa.set_flag() if sroa else globals.sroa.reset_flag()
+    globals.center_radius.set_flag() if center_radius else globals.center_radius.reset_flag()  # simulacrum and reuse passes alike
     if sroa and not fused_flow:
         typer.echo("Error: --sroa requires --fused-flow.")
         raise typer.Exit(code=1)
@@ -375,6 +392,7 @@ def simulacrum_compile(
     globals.early_reductions.set_flag() if early_reductions else globals.early_reductions.reset_flag()
     globals.fuse_sign_convs.set_flag() if fuse_sign_convs else globals.fuse_sign_convs.reset_flag()
     globals.cudagraphs.set_flag() if cudagraphs else globals.cudagraphs.reset_flag()
+    globals.inductor_layout_opt.set_flag() if inductor_layout_opt else globals.inductor_layout_opt.reset_flag()
     globals.product_grids.set_flag() if product_grids else globals.product_grids.reset_flag()
     globals.flow_segment_mb.set_value(flow_segment_mb)
     globals.memory_budget_mb.set_value(memory_budget_mb if early_reductions else 0.0)
@@ -389,7 +407,9 @@ def simulacrum_compile(
         globals.early_reductions.reset_flag()
         globals.fuse_sign_convs.reset_flag()
         globals.cudagraphs.reset_flag()
+        globals.inductor_layout_opt.reset_flag()
         globals.product_grids.reset_flag()
+        globals.center_radius.set_flag()   # back to the default
         globals.flow_segment_mb.set_value(0.0)
         globals.memory_budget_mb.reset()
         globals.set_network_path(None)
@@ -430,12 +450,18 @@ def run(
     jit_dir: str = typer.Option("jit_captures", help="Common parent folder for all jit_* capture files"),
     warmup: int = typer.Option(0, help="Number of warmup runs on different data before the timed run"),
     repeat: int = typer.Option(1, "--repeat", help="Number of timed runs, each reported separately. Independent of --warmup: the warmup runs (if any) still happen once, before the first timed run."),
+    num_images: int = typer.Option(0, "--num-images", help="Verify this many test images, batch-size at a time, one timed run per batch (batch i = images [i*batch_size, (i+1)*batch_size)); warmup j uses the images right after them. Requires --results-file; replaces --repeat. 0 (default): the --repeat protocol, every timed run on the first batch."),
+    results_file: str = typer.Option(None, "--results-file", help="With --num-images: write one JSON line per warmup and per timed batch (time, peak/resident memory, bounds) here, outside the timer."),
     use_cache: bool = typer.Option(False, "--use-cache", help="Point --output-path at the shared kernel_cache entry (see bench/configs.py:kernel_dir), keyed by network/dataset/certifier/batch-size/inductor. Hard errors if that cache entry is missing."),
     perturb_eps: float = typer.Option(0.0, "--perturb-eps", help="Std of iid Gaussian noise added to the network's weights independently before each warmup and each timed run, to test whether weight values (not just shapes) affect measured runtime. 0 (default) disables perturbation and every run uses the unmodified network."),
     perturb_seed: int = typer.Option(0, "--perturb-seed", help="Seed for --perturb-eps's noise, for reproducible sweeps."),
     # UNFAIR LOADING
     # direct_onnx_load: bool = typer.Option(False, "--direct-onnx-load/--no-direct-onnx-load", help="Load the network without onnx.load: memory-map the file, parse only the graph (weights stripped from the protobuf), and upload each weight from the mapped file through a pinned staging buffer that PyTorch's caching host allocator keeps between runs. Weights are still read and uploaded on every run. Off: onnx.load + numpy copies + pageable upload, as the baselines do."),
     gc_freeze: bool = typer.Option(True, "--gc-freeze/--no-gc-freeze", help="gc.freeze() after warmup, so the untimed gc.collect() between runs scans only per-run garbage instead of the whole torch/inductor heap (which evicts CPU caches before every timed run)."),
+    #FEAT: --dtype on run, so typer accepts it (applied from argv above).
+    dtype: str = typer.Option("float32", "--dtype", help="float32, or float64 to compute every float tensor in fp64 (a precision oracle for bound mismatches; compile and run must agree). Read from argv before the imports; listed here so typer accepts it."),
+    #FEAT: --profile-comm records CPU-GPU communication per timed batch (lib/comm_profile.py).
+    profile_comm: bool = typer.Option(False, "--profile-comm", help="With --num-images: profile each timed batch with torch.profiler and add syncs, alloc_syncs, gpu_idle_pct and sync_calls to its results line; its time goes to profiled_time_s instead of time_s. Warmups are not profiled."),
 ):
     """
     Run a compiled ConstraintFlow program.
@@ -492,6 +518,19 @@ def run(
     if repeat < 1:
         typer.echo("Error: --repeat must be >= 1.")
         raise typer.Exit(code=1)
+    if num_images:
+        if num_images < 0 or num_images % batch_size:
+            typer.echo(f"Error: --num-images ({num_images}) must be a positive multiple of --batch-size ({batch_size}).")
+            raise typer.Exit(code=1)
+        if not results_file:
+            typer.echo("Error: --num-images requires --results-file.")
+            raise typer.Exit(code=1)
+        if perturb_eps > 0:
+            typer.echo("Error: --perturb-eps is only supported with the --repeat protocol.")
+            raise typer.Exit(code=1)
+    elif profile_comm:
+        typer.echo("Error: --profile-comm requires --num-images.")
+        raise typer.Exit(code=1)
 
     sys.path.insert(0, os.path.abspath(output_path))
     from main import run  # compiled code provides this
@@ -500,7 +539,7 @@ def run(
     dataset_device = device_mode.get_device() if device == "gpu" else None
     # Images stay on the host; each run moves only its own batch, as the baselines do.
     X, y = get_dataset(
-        batch_size * (warmup + 1),
+        num_images + warmup * batch_size if num_images else batch_size * (warmup + 1),
         dataset,
         train=train,
         device=None,
@@ -530,6 +569,12 @@ def run(
     is_cuda = device_mode.get_device() == "cuda"
     print(f"WARMMMMMM")
     torch._dynamo.reset()
+
+    if num_images:
+        _run_image_batches(run, _batch, network_file, batch_size, eps, num_images, warmup,
+                           results_file, is_cuda, gc_freeze, dataset, train,
+                           print_intermediate_results, no_sparsity, profile_comm)
+        return
 
     for i in range(warmup):
         warmup_network = _network_for(f"warmup{i}")
@@ -618,6 +663,75 @@ def run(
     torch.set_printoptions(profile="default")
     typer.echo(f"Total time: {total_time:.6f} seconds")
     typer.echo(f"{mem_label}: {peak_bytes} bytes")
+def _run_image_batches(run, _batch, network_file, batch_size, eps, num_images, warmup,
+                       results_file, is_cuda, gc_freeze, dataset, train,
+                       print_intermediate_results, no_sparsity, profile_comm=False):
+    """The --num-images protocol: warmups on the images after the evaluated ones, then one
+    timed run per batch. The timed region is the --repeat protocol's (network load and
+    build, box, spec, host-to-device copy, bounds, sync); the results line is written after
+    the timer stops. No error handling: a failing batch kills the process, and the
+    batches already written stay in the results file."""
+    import json as _json
+    #FEAT: --profile-comm profiles each timed region.
+    from constraintflow.lib.comm_profile import CommProfile
+
+    def _write(f, record):
+        f.write(_json.dumps(record) + "\n")
+        f.flush()
+
+    with open(results_file, "w") as out:
+        for j in range(warmup):
+            lo = num_images + j * batch_size
+            warmup_start = time.perf_counter()
+            run(network_file, batch_size, eps, *_batch(lo), dataset=dataset, train=train,
+                print_intermediate_results=False, no_sparsity=no_sparsity)
+            if is_cuda:
+                torch.cuda.synchronize()
+            warmup_time = time.perf_counter() - warmup_start
+            typer.echo(f"Warmup run {j + 1}/{warmup}: {warmup_time:.6f} s")
+            _write(out, {"kind": "warmup", "index": j, "images": [lo, lo + batch_size],
+                         "time_s": warmup_time})
+            gc.collect()
+
+        if gc_freeze:
+            gc.collect()
+            gc.freeze()
+
+        for i in range(num_images // batch_size):
+            lo = i * batch_size
+            typer.echo(f"=== batch {i} start ===")
+            resident = None
+            #FEAT: profiler on around the timer; comm.region() is exactly the timed region.
+            comm = CommProfile(profile_comm)
+            with comm:
+                if is_cuda:
+                    torch.cuda.synchronize()
+                    torch.cuda.reset_peak_memory_stats()
+                    resident = torch.cuda.memory_allocated()
+
+                start_time = time.perf_counter()
+                with comm.region():
+                    lb, ub = run(network_file, batch_size, eps, *_batch(lo), dataset=dataset,
+                                 train=train, print_intermediate_results=print_intermediate_results,
+                                 no_sparsity=no_sparsity)
+                    if is_cuda:
+                        torch.cuda.synchronize()
+                run_time = time.perf_counter() - start_time
+            # Per-run peaks exist only on the GPU; a CPU process's peak RSS is lifetime-wide.
+            peak = torch.cuda.max_memory_allocated() if is_cuda else None
+
+            _write(out, {"kind": "batch", "batch": i, "images": [lo, lo + batch_size],
+                         comm.time_key: run_time, "peak_bytes": peak, "resident_bytes": resident,
+                         "lower": lb.detach().cpu().tolist(), "upper": ub.detach().cpu().tolist(),
+                         **comm.metrics()})
+            comm.save_trace(results_file, i)
+            typer.echo(f"Run {i + 1}/{num_images // batch_size}: {run_time:.6f} s, "
+                       f"Peak memory: {peak} bytes, Resident memory: {resident} bytes")
+            typer.echo(f"=== batch {i} end ===")
+            del lb, ub
+            gc.collect()
+
+
 def main():
     app()
 
