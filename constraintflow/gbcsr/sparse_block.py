@@ -1,6 +1,7 @@
 from numpy import block
 import copy
 import os
+import sys
 import copyreg
 import torch
 import torch.nn.functional as F
@@ -706,14 +707,241 @@ def cat_columns(pieces, piece_indices, json_list):
     return torch.cat(pieces, dim=-1), len(json_list) - 1
 
 
-# cuDNN falls back to a ~15x slower transposed-conv kernel once the batch reaches 65536.
+# cuDNN's transposed-conv kernel choice is erratic across shapes: some fall ~15x slower
+# once the batch reaches 65536 (chunking fixes them), chunking slows others down, and a
+# stride-1 transposed conv often runs several times faster as the equivalent forward conv.
+# So the lowering is picked per call shape by timing the candidates on the first real
+# (warmup) call. Under torch.compile the op is opaque, so the choice is made at run time.
 CONV_TRANSPOSE_MAX_BATCH = 32768
+# CF_CONVT_TUNE=0 keeps the plain chunked lowering everywhere.
+CONV_TRANSPOSE_TUNE = os.environ.get("CF_CONVT_TUNE", "1") not in ("", "0")
+# CF_CONVT_LOG=1 prints every tuning decision to stderr.
+CONV_TRANSPOSE_LOG = os.environ.get("CF_CONVT_LOG", "0") not in ("", "0")
+# An alternative must beat the chunked lowering by this factor to be chosen.
+CONV_TRANSPOSE_MIN_GAIN = 0.95
+# The dense-matrix (Toeplitz) lowering is tried only while that matrix stays small and
+# does at most this many times the conv's multiply-adds.
+TOEPLITZ_MAX_ELEMENTS = 1 << 24
+TOEPLITZ_MAX_WASTE = 16
+# Stride-1 rows are also tried tiled grid x grid into images up to this side length.
+PACK_GRIDS = (2, 4, 8)
+PACK_MAX_SIDE = 128
+_conv_transpose_choice = {}
 
 
-def conv_transpose2d(x, weight, **kwargs):
+def _pair(v):
+    return [int(e) for e in v] if isinstance(v, (list, tuple)) else [int(v), int(v)]
+
+
+def _split_batch(fn, x):
     if x.shape[0] <= CONV_TRANSPOSE_MAX_BATCH:
-        return F.conv_transpose2d(x, weight, **kwargs)
-    return torch.cat([F.conv_transpose2d(c, weight, **kwargs) for c in x.split(CONV_TRANSPOSE_MAX_BATCH)])
+        return fn(x)
+    return torch.cat([fn(c) for c in x.split(CONV_TRANSPOSE_MAX_BATCH)])
+
+
+def _packed_lowering(weight, x_spatial, padding, grid):
+    """A stride-1 transposed conv over many small rows, run on grid x grid rows tiled into
+    one image. Each row sits in a cell padded with k-1 zeros, exactly the reach of its
+    output, so cells stay independent; cuDNN is far more efficient on the larger images."""
+    cin, cout, kx, ky = weight.shape
+    h, w = x_spatial
+    cell = (h + kx - 1, w + ky - 1)
+
+    def packed(x):
+        n = x.shape[0]
+        images = -(-n // (grid * grid))
+        if images * grid * grid != n:
+            x = torch.cat([x, x.new_zeros(images * grid * grid - n, cin, h, w)])
+        img = x.new_zeros(images, cin, grid, cell[0], grid, cell[1])
+        img[:, :, :, :h, :, :w] = x.view(images, grid, grid, cin, h, w).permute(0, 3, 1, 4, 2, 5)
+        out = F.conv_transpose2d(img.view(images, cin, grid * cell[0], grid * cell[1]), weight)
+        out = out.narrow(2, 0, grid * cell[0]).narrow(3, 0, grid * cell[1])
+        out = out.unflatten(2, (grid, cell[0])).unflatten(4, (grid, cell[1])).permute(0, 2, 4, 1, 3, 5)
+        out = out[..., padding[0]:cell[0] - padding[0], padding[1]:cell[1] - padding[1]]
+        return out.reshape(images * grid * grid, cout, *out.shape[-2:])[:n]
+
+    return packed
+
+
+def _subpixel_lowering(weight, x_spatial, s, padding, output_padding):
+    """A stride-s transposed conv as one stride-1 forward conv computing all s*s output
+    phases (as extra output channels, each with a ceil(k/s)-sized sub-kernel), followed
+    by interleaving the phases into the output: same multiply-adds, forward kernels."""
+    cin, cout, kx, ky = weight.shape
+    m = [-(-kx // s), -(-ky // s)]
+    out_spatial = [(x_spatial[d] - 1) * s - 2 * padding[d] + weight.shape[2 + d] + output_padding[d]
+                   for d in range(2)]
+    # Output row Y = s*q + r - p of phase r; per phase, the first row, its q, and how many
+    # rows the phase conv reaches (rows past it, from output_padding, get no taps: zero).
+    phases = []
+    partial = False
+    for r in range(s):
+        rows = []
+        for d in range(2):
+            first = (r - padding[d]) % s
+            q = (first + padding[d] - r) // s
+            count = min(len(range(first, out_spatial[d], s)), x_spatial[d] + m[d] - 1 - q)
+            partial = partial or count < len(range(first, out_spatial[d], s))
+            rows.append((first, q, count))
+        phases.append(rows)
+    kernel = []
+
+    def subpixel(x):
+        if not kernel:
+            # Tap t = s*j' + r of phase r, flipped (j = m-1-j') for the forward conv.
+            w = F.pad(weight, (0, m[1] * s - ky, 0, m[0] * s - kx))
+            w = w.reshape(cin, cout, m[0], s, m[1], s).flip(2, 4)
+            kernel.append(w.permute(3, 5, 1, 0, 2, 4).reshape(s * s * cout, cin, m[0], m[1]).contiguous())
+        z = F.conv2d(x, kernel[0], padding=(m[0] - 1, m[1] - 1))
+        z = z.view(x.shape[0], s, s, cout, z.shape[2], z.shape[3])
+        out = (x.new_zeros if partial else x.new_empty)(x.shape[0], cout, *out_spatial)
+        for rx in range(s):
+            (fx, qx, nx) = phases[rx][0]
+            for ry in range(s):
+                (fy, qy, ny) = phases[ry][1]
+                out[:, :, fx:fx + s * nx:s, fy:fy + s * ny:s] = z[:, rx, ry, :, qx:qx + nx, qy:qy + ny]
+        return out
+
+    return subpixel
+
+
+def _phase_lowering(weight, x_spatial, s, padding, output_padding):
+    """Like the sub-pixel lowering, but one forward conv per output phase with only that
+    phase's taps (no zero-padded kernel), when k is not a multiple of s."""
+    cin, cout, kx, ky = weight.shape
+    out_spatial = [(x_spatial[d] - 1) * s - 2 * padding[d] + weight.shape[2 + d] + output_padding[d]
+                   for d in range(2)]
+    plan = []
+    for d, k in enumerate((kx, ky)):
+        per_phase = []
+        for r in range(s):
+            taps = len(range(r, k, s))
+            first = (r - padding[d]) % s
+            q = (first + padding[d] - r) // s
+            count = len(range(first, out_spatial[d], s))
+            per_phase.append((r, taps, first, q, min(count, x_spatial[d] + taps - 1 - q), count))
+        plan.append(per_phase)
+    partial = any(c < full for per_phase in plan for (_, _, _, _, c, full) in per_phase)
+
+    def phases(x):
+        out = (x.new_zeros if partial else x.new_empty)(x.shape[0], cout, *out_spatial)
+        for (rx, tx, fx, qx, nx, _) in plan[0]:
+            for (ry, ty, fy, qy, ny, _) in plan[1]:
+                if tx == 0 or ty == 0 or nx <= 0 or ny <= 0:
+                    continue
+                sub = weight[:, :, rx::s, ry::s].flip(2, 3).transpose(0, 1).contiguous()
+                z = F.conv2d(x, sub, padding=(tx - 1, ty - 1))
+                out[:, :, fx:fx + s * nx:s, fy:fy + s * ny:s] = z[:, :, qx:qx + nx, qy:qy + ny]
+        return out
+
+    return phases
+
+
+def _conv_transpose_lowerings(weight, x_spatial, stride, padding, output_padding):
+    def plain(x):
+        return F.conv_transpose2d(x, weight, stride=stride, padding=padding,
+                                  output_padding=output_padding)
+
+    lowerings = {"chunked": lambda x: _split_batch(plain, x), "plain": plain}
+    kx, ky = weight.shape[2], weight.shape[3]
+    if (stride == [1, 1] and output_padding == [0, 0]
+            and padding[0] < kx and padding[1] < ky):
+        # Stride 1: the forward conv with the kernel flipped and in/out channels swapped.
+        pad = (kx - 1 - padding[0], ky - 1 - padding[1])
+        flipped = []
+
+        def forward(x):
+            if not flipped:
+                flipped.append(weight.transpose(0, 1).flip(2, 3).contiguous())
+            return F.conv2d(x, flipped[0], padding=pad)
+
+        lowerings["forward"] = forward
+        lowerings["forward_chunked"] = lambda x: _split_batch(forward, x)
+        for grid in PACK_GRIDS:
+            if grid * (x_spatial[0] + kx - 1) <= PACK_MAX_SIDE and grid * (x_spatial[1] + ky - 1) <= PACK_MAX_SIDE:
+                lowerings[f"packed{grid}"] = _packed_lowering(weight, x_spatial, padding, grid)
+    if stride[0] == stride[1] > 1:
+        subpixel = _subpixel_lowering(weight, x_spatial, stride[0], padding, output_padding)
+        lowerings["subpixel"] = subpixel
+        lowerings["subpixel_chunked"] = lambda x: _split_batch(subpixel, x)
+        if kx % stride[0] or ky % stride[1]:
+            lowerings["phases"] = _phase_lowering(weight, x_spatial, stride[0], padding, output_padding)
+    in_size = weight.shape[0] * x_spatial[0] * x_spatial[1]
+    out_shape = [weight.shape[1]] + [(x_spatial[d] - 1) * stride[d] - 2 * padding[d]
+                                     + weight.shape[2 + d] + output_padding[d] for d in range(2)]
+    out_size = out_shape[0] * out_shape[1] * out_shape[2]
+    conv_macs = in_size * weight.shape[1] * kx * ky
+    if in_size * out_size <= TOEPLITZ_MAX_ELEMENTS and in_size * out_size <= TOEPLITZ_MAX_WASTE * conv_macs:
+        # Small rows (patches): one GEMM against the conv's dense matrix, built by pushing
+        # the identity through the conv. More FLOPs, but cuDNN runs these shapes far below
+        # GEMM throughput.
+        def toeplitz(x):
+            eye = torch.eye(in_size, device=x.device, dtype=x.dtype).reshape(in_size, -1, *x_spatial)
+            matrix = plain(eye).reshape(in_size, out_size)
+            return (x.reshape(x.shape[0], in_size) @ matrix).reshape(x.shape[0], *out_shape)
+
+        lowerings["toeplitz"] = toeplitz
+    return lowerings
+
+
+def _time_lowering(fn, x, iters=3):
+    fn(x)
+    start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+    times = []
+    for _ in range(iters):
+        start.record()
+        fn(x)
+        end.record()
+        end.synchronize()
+        times.append(start.elapsed_time(end))
+    return sorted(times)[len(times) // 2]
+
+
+def _choose_lowering(key, x, lowerings):
+    choice = _conv_transpose_choice.get(key)
+    if choice is not None:
+        return choice
+    choice = "chunked"
+    if CONV_TRANSPOSE_TUNE and x.is_cuda and len(lowerings) > 1:
+        times = {}
+        for name, fn in lowerings.items():
+            try:
+                times[name] = _time_lowering(fn, x)
+            except torch.cuda.OutOfMemoryError:
+                pass
+        if "chunked" in times:
+            best = min(times, key=times.get)
+            if times[best] < CONV_TRANSPOSE_MIN_GAIN * times["chunked"]:
+                choice = best
+        if CONV_TRANSPOSE_LOG:
+            print(f"conv_transpose2d {list(x.shape)} w{list(key[2])} s{key[5][0]} p{key[6][0]}: "
+                  + " ".join(f"{n}={t:.2f}" for n, t in times.items()) + f" -> {choice}",
+                  file=sys.stderr)
+    _conv_transpose_choice[key] = choice
+    return choice
+
+
+@torch.library.custom_op("cf::conv_transpose2d", mutates_args=())
+def _conv_transpose2d_op(x: torch.Tensor, weight: torch.Tensor, stride: list[int],
+                         padding: list[int], output_padding: list[int]) -> torch.Tensor:
+    lowerings = _conv_transpose_lowerings(weight, list(x.shape[2:]), stride, padding, output_padding)
+    key = (tuple(x.shape), tuple(x.stride()), tuple(weight.shape), x.dtype, x.device,
+           tuple(stride), tuple(padding), tuple(output_padding))
+    # The fake kernel promises a contiguous result.
+    return lowerings[_choose_lowering(key, x, lowerings)](x).contiguous()
+
+
+@_conv_transpose2d_op.register_fake
+def _(x, weight, stride, padding, output_padding):
+    size = [x.shape[0], weight.shape[1]]
+    for d in range(2):
+        size.append((x.shape[2 + d] - 1) * stride[d] - 2 * padding[d]
+                    + weight.shape[2 + d] + output_padding[d])
+    return x.new_empty(size)
+
+
+def conv_transpose2d(x, weight, stride=1, padding=0, output_padding=0):
+    return _conv_transpose2d_op(x, weight, _pair(stride), _pair(padding), _pair(output_padding))
 
 
 def patches_to_dense(pieces, batch, oc, ox, oy, ic, kx, ky, ix, iy, px, py, sx, sy):
@@ -5160,6 +5388,9 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
             return (y, y_index) if simulacrum else y
         else:
             return (z, z_index) if simulacrum else z
+    #FIX FOR: where(cond, c, c) on two equal constants broadcast c to cond's shape (a stored all-zero RepeatBlock in ReLU upper bounds) instead of returning the constant.
+    elif isinstance(y, ConstBlock) and isinstance(z, ConstBlock) and y.block == z.block:
+        return (y, y_index) if simulacrum else y
     elif isinstance(x, DenseBlock):
         if isinstance(y, type(z)):
             if not isinstance(y, (KernelBlock, PatchesBlock)):

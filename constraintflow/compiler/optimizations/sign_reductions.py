@@ -110,6 +110,11 @@ def run(block):
         return None
 
     fused = 0
+    #FIX FOR: polyzono on ResNets failed to compile: collect() pulled every single-use add-tree
+    # temporary back into one statement (228 IR levels, past CPython's 200-paren limit), undoing
+    # the MAX_INLINE_DEPTH cap that subexp_inlining had applied. Temporaries are now followed
+    # only `limit` add levels deep, lowered per statement until it fits under the cap.
+    limit = None
 
     def rewrite(expr):
         nonlocal fused
@@ -117,10 +122,14 @@ def run(block):
         if _op(root, 'add'):
             leaves = []
 
-            def collect(node):
-                value = resolve(node, single=True)
+            def collect(node, depth=0):
+                if limit is not None and depth >= limit and isinstance(node, IrVar):
+                    value = node
+                else:
+                    value = resolve(node, single=True)
                 if _op(value, 'add'):
-                    return (value, collect(value.children[0]), collect(value.children[1]))
+                    return (value, collect(value.children[0], depth + 1),
+                            collect(value.children[1], depth + 1))
                 leaves.append(node)
                 return len(leaves) - 1
 
@@ -174,14 +183,26 @@ def run(block):
         out.update_parent_child([rewrite(c) for c in expr.children])
         return out
 
+    def rewrite_capped(expr):
+        nonlocal fused, limit
+        before, limit = fused, None
+        while True:
+            value = rewrite(expr)
+            if fused == before or subexp_inlining.expr_depth(value) <= subexp_inlining.MAX_INLINE_DEPTH:
+                return value
+            fused = before
+            if limit == 0:
+                return expr   # unreachable in practice: limit 0 inlines nothing new
+            limit = subexp_inlining.MAX_INLINE_DEPTH // 2 if limit is None else limit // 2
+
     for stmt in block.children:
         if isinstance(stmt, IrAssignment):
-            value = rewrite(stmt.children[1])
+            value = rewrite_capped(stmt.children[1])
             stmt.update_parent_child([stmt.children[0], value])
             definitions[stmt.children[0].name] = value
             memo.clear()
         else:
-            stmt.update_parent_child([rewrite(c) for c in stmt.children])
+            stmt.update_parent_child([rewrite_capped(c) for c in stmt.children])
     if fused:
         while subexp_inlining.drop_dead_assignments(block.children):
             pass

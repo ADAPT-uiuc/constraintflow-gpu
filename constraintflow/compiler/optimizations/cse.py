@@ -136,8 +136,26 @@ def check_occurrence(ir, var):
         occurrs = occurrs or check_occurrence(ir.children[i], var)
     return occurrs
 
+def _loop_body_nodes(cfg):
+    nodes = set()
+    for node in cfg.nodes:
+        block = cfg.ir[node]
+        if isinstance(block, IrWhileBlock):
+            nodes.update(cfg.get_block_id(inner) for inner in block.loopBody)
+    return nodes
+
+def _clear_inside_while(node):
+    if isinstance(node, IrAst):
+        node.inside_while = False
+        for child in node.children:
+            _clear_inside_while(child)
+
 def add_assignment(assignment, occurrences, cfg, dtree):
     node = compute_ancestor(occurrences, dtree, cfg.entry_node)
+    if node not in _loop_body_nodes(cfg):
+        # Hoisted out of a traversal loop: its jit capture must not be keyed by
+        # (or reference) a loop iteration that does not exist at this point.
+        _clear_inside_while(assignment.children[1])
     ir_list = cfg.ir[node].children
     index = -1
     if node in occurrences:

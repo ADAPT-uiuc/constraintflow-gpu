@@ -153,7 +153,10 @@ def create_llist(network):
 
 def get_network_and_input_spec(network_file, batch_size, X, y, dataset, eps, train=False, no_sparsity=False, initializers=None, members=None):
     if dataset == 'tinyimagenet':
-        X = X.to(torch.float32) / 255.0
+        #FEAT: follow the run dtype instead of hardcoded fp32.
+        X = X.to(torch.float) / 255.0
+    #FEAT: images follow the run dtype (fp64 under --dtype float64).
+    X = X.to(torch.get_default_dtype())
 
     spec_weight, spec_bias = ImageDataset.get_output_spec_weight_and_bias(X, y, dataset)
     network = get_net(network_file, spec_weight, spec_bias, no_sparsity, initializers=initializers)

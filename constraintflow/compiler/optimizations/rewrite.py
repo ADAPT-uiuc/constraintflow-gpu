@@ -1,6 +1,6 @@
 from constraintflow.compiler.ir import *
 from constraintflow.compiler.optimizations import uses
-from constraintflow.lib.globals import dummy_mode, reuse_mode
+from constraintflow.lib.globals import dummy_mode, reuse_mode, center_radius
 
 
 counter = -1
@@ -113,6 +113,17 @@ def depercolate_repeat_and_add_dimension(expr):
     else:
         return expr
 
+def _bound_elem(expr):
+    # 'l'/'u' when expr is a neuron's Float bound access (through SSA vars and wrappers).
+    while True:
+        if isinstance(expr, IrVar) and expr.defs is not None:
+            expr = expr.defs.children[1]
+        elif isinstance(expr, (IrRepeat, IrAddDimension)):
+            expr = expr.children[0]
+        else:
+            break
+    return expr.elem if isinstance(expr, IrAccess) else None
+
 def rewrite_expr_ternary_to_clamp(expr):
     if isinstance(expr, int):
         return expr, []
@@ -167,6 +178,29 @@ def rewrite_expr_ternary_to_clamp(expr):
                         if in_lhs and in_rhs:
                             other_lhs = lhs.children[1-in_lhs_index]
                             other_rhs = rhs.children[1-in_rhs_index]
+                            if (center_radius.get_flag()
+                                    and {_bound_elem(other_lhs), _bound_elem(other_rhs)} == {'l', 'u'}):
+                                # Concretization against a neuron's Float bounds n[l], n[u]:
+                                # c*(X+Y)/2 + s*|c|*(X-Y)/2 with s = +1 for (c >= 0 ? c*X : c*Y)
+                                # and s = -1 for (c <= 0 ? c*X : c*Y); |c| = c+ - c- exactly.
+                                # Other ternaries (substitution steps over L/U polyhedra, whose
+                                # parts are often identical) keep the sign split, which the
+                                # sign-reduction and product-grid passes rely on.
+                                coeff = lhs.children[in_lhs_index]
+                                pos = depercolate_repeat_and_add_dimension(IrClamp(cond_lhs, 0, min_true=True))
+                                neg = depercolate_repeat_and_add_dimension(IrClamp(cond_lhs, 0, min_true=False))
+                                abs_coeff = IrBinaryOp(pos, neg, '-')
+                                # Order the pair as (upper, lower) when it is n[u]/n[l], so a lower
+                                # and an upper concretization share mid = (u+l)/2 and rad = (u-l)/2
+                                # (auto_LiRPA's arithmetic) and CSE computes each product once.
+                                hi, lo, sign = other_lhs, other_rhs, 1 if lhs_min else -1
+                                if _bound_elem(other_lhs) == 'l':
+                                    hi, lo, sign = other_rhs, other_lhs, -sign
+                                mid = IrMult(IrBinaryOp(hi, lo, '+'), IrConst(0.5, 'Float'), '*')
+                                rad = IrMult(IrBinaryOp(hi, lo, '-'), IrConst(0.5, 'Float'), '*')
+                                expr = IrBinaryOp(IrMult(coeff, mid, '*'), IrMult(abs_coeff, rad, '*'),
+                                                  '+' if sign > 0 else '-')
+                                return expr, new_assignments
                             new_lhs = IrMult(depercolate_repeat_and_add_dimension(IrClamp(cond_lhs, 0, min_true=lhs_min)), other_lhs, '*')
                             new_rhs = IrMult(depercolate_repeat_and_add_dimension(IrClamp(cond_lhs, 0, min_true=not(lhs_min))), other_rhs, '*')
                             expr = IrBinaryOp(new_lhs, new_rhs, '+')

@@ -47,6 +47,12 @@ from collections import deque
 #         _cuda_initializer_cache_key = cache_key
 #     return _cuda_initializer_cache
 
+#FEAT: weight cast for --dtype float64.
+def _default_float(t):
+    """Float weights in the run's dtype (fp32 weights, or exact fp64 copies under --dtype float64)."""
+    return t.to(torch.get_default_dtype()) if t.is_floating_point() else t
+
+
 def _initializer_tensors(net, net_name=None):
     target_device = (
         device_mode.get_device()
@@ -54,10 +60,11 @@ def _initializer_tensors(net, net_name=None):
         else "cpu"
     )
     return {
-        init_vals.name: torch.tensor(
+        #FEAT: float weights follow the run dtype.
+        init_vals.name: _default_float(torch.tensor(
             numpy_helper.to_array(init_vals),
             device=target_device,
-        )
+        ))
         for init_vals in net.graph.initializer
     }
 
