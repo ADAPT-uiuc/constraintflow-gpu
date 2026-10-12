@@ -16,7 +16,9 @@ from constraintflow.compiler.ir import (
 from constraintflow.compiler.optimizations import subexp_inlining
 
 
-def run(block):
+def run(block, render=None):
+    """`render` (expr -> source text), when given, merges reductions with identical
+    source: under SSA they compute the same value from the same definitions."""
     stmts = [s for s in block.children if not isinstance(s, IrDel)]
     definitions = {}
     for i, stmt in enumerate(stmts):
@@ -33,7 +35,7 @@ def run(block):
     for stmt in stmts:
         occupied.update(v.name for v in
                         subexp_inlining.get_vars_expr_occurrences(stmt.children))
-    buckets, counter = {}, 0
+    buckets, counter, seen = {}, 0, {}
     values = {s.children[0].name: s.children[1] for s in stmts
               if isinstance(s, IrAssignment)}
 
@@ -64,6 +66,9 @@ def run(block):
         after = max((definitions.get(v.name, -1) for v in deps), default=-1)
         if after >= pos:
             raise ValueError('reduction reads a value before its definition')
+        text = render(expr) if render is not None else None
+        if text is not None and text in seen:
+            return copy.copy(seen[text])
         while 'early_sum_' + str(counter) in occupied:
             counter += 1
         name = 'early_sum_' + str(counter)
@@ -72,6 +77,8 @@ def run(block):
         definitions[name] = after
         value = IrVar(name, expr.irMetadata)
         buckets.setdefault(after, []).append(IrAssignment(value, expr))
+        if text is not None:
+            seen[text] = value
         return copy.copy(value)
 
     rewritten = []

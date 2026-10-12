@@ -39,10 +39,11 @@ def diag_embed(x):
                      jnp.zeros((), dtype=x.dtype))
 
 
-def conv2d(x, weight, stride=1, padding=0):
-    return lax.conv_general_dilated(
+def conv2d(x, weight, bias=None, stride=1, padding=0):
+    out = lax.conv_general_dilated(
         x, weight, pair(stride), tuple((p, p) for p in pair(padding)),
         dimension_numbers=('NCHW', 'OIHW', 'NCHW'), precision=lax.Precision.HIGHEST)
+    return out if bias is None else out + bias.reshape(1, -1, 1, 1)
 
 
 def conv_transpose2d(x, weight, stride=1, padding=0, output_padding=0):

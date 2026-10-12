@@ -685,11 +685,12 @@ class IrTensorScatter(IrExpression):
         self.update_parent_child([inputIr, valueIr])
 
 class IrFConv2d(IrExpression):
-    def __init__(self, inputIr, weightIr, stride, padding):
+    def __init__(self, inputIr, weightIr, stride, padding, biasIr=None):
         super().__init__()
         self.stride = stride
         self.padding = padding
-        self.update_parent_child([inputIr, weightIr])
+        # Optional per-channel bias, applied by the convolution itself.
+        self.update_parent_child([inputIr, weightIr] + ([biasIr] if biasIr is not None else []))
 
 class IrFConvTranspose2d(IrExpression):
     def __init__(self, inputIr, weightIr, stride=None, padding=None, output_padding=None):

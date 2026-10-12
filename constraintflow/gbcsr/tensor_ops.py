@@ -866,6 +866,12 @@ def concat_stitch_2d(abs_elem, key, source, prev1, prev2, layer_index=None, coun
         start_index = torch.tensor([0, model[par].start])
         end_index = torch.tensor([batch_size, model[par].end])
         block_ids = src.get_block_id(start_index, end_index)[0]
+        #FIX FOR: zid N18 Concat crashed when a parent was the implicit zero (no stored block).
+        if not block_ids and src.dense_const == 0:
+            # The parent's value is the implicit zero (e.g. zid.cf sets Z = 0 past
+            # layer 4), so it adds no block to the concatenation either.
+            new_start_index += model[par].size
+            continue
         assert len(block_ids) == 1, 'Concat: a parent range must match exactly one existing block'
         block_id = block_ids[0]
         block = src.blocks[block_id]

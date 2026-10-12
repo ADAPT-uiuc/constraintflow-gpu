@@ -27,7 +27,8 @@ import operator
 
 # Map Python built-in types to torch dtypes; avoids float -> float64 (Python
 # float is 64-bit, but we want 32-bit throughout for performance parity).
-_TORCH_DTYPE = {float: torch.float32, bool: torch.bool, int: torch.int32}
+#FEAT: Python float maps to the run dtype (torch.float is fp64 under --dtype float64).
+_TORCH_DTYPE = {float: torch.float, bool: torch.bool, int: torch.int32}
 def _tdtype(t):
     return _TORCH_DTYPE.get(t, t)
 
@@ -1435,6 +1436,9 @@ Blocks Types: "
                 # json_list.append(json_obj)
             
             start = time.perf_counter()
+            #FIX FOR: result ConstBlocks equal to dense_const were stored as explicit blocks (original constraintflow skips them), so zero blocks piled up in stored polyexps and were later densified.
+            if (isinstance(block, ConstBlock) or block.block_type == 'C') and block.block == dense_const:
+                continue
             res_blocks.append(block)
 
             json_obj = {

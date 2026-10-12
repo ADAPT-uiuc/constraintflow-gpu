@@ -78,8 +78,9 @@ def probe(stmts, sources, param_meta, batch_size, consts, prelude=()):
                 if shape is None:                 # scalar payload, not a tensor
                     env[name] = (type_ == 'Bool') and False or 0.0
                 else:
+                    #FEAT: probe tensors follow the run dtype (torch.float is fp64 under --dtype float64).
                     env[name] = torch.empty(
-                        shape, dtype=_DTYPE.get(type_, torch.float32), device=device)
+                        shape, dtype=_DTYPE.get(type_, torch.float), device=device)
             for text, name in consts.items():
                 env[name] = eval(text, {'torch': torch})
             for text in prelude:               # view-write helpers

@@ -63,7 +63,7 @@ def run(block, render, sized, batch_size):
             return
         if not hasattr(expr, 'children'):
             return
-        if isinstance(expr, (IrFConv2d, IrTorchMatmul)):
+        if isinstance(expr, (IrFConv2d, IrTorchMatmul)) and len(expr.children) == 2:
             conv = isinstance(expr, IrFConv2d)
             w, x = (render(c) for c in expr.children)
             if conv:
@@ -110,7 +110,8 @@ def run(block, render, sized, batch_size):
         xm = [meta(x) for x in xs]
         wm = [meta(w) for w in ws]
         rank = 4 if conv else 3
-        if any(t is None or t.dim() != rank or t.dtype != torch.float32 for t in xm + wm):
+        #FEAT: pack only tensors in the run dtype, so --dtype float64 keeps this pass.
+        if any(t is None or t.dim() != rank or t.dtype != torch.float for t in xm + wm):
             continue
         if any(t.shape != xm[0].shape for t in xm) or any(t.shape != wm[0].shape for t in wm):
             continue
