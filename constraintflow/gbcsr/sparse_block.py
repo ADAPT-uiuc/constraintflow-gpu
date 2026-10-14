@@ -3059,8 +3059,34 @@ class DiagonalBlock(SparseBlock):
             equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
             res = DenseBlock(c, json_list, len(json_list) - 1)
             res_index = res.json_index
+        #FIX FOR: Diagonal @ Diagonal raised NotImplementedError (hit by polyzono's Neuron_add backsubstitution).
+        elif (isinstance(sp_block, DiagonalBlock)
+              and self.diag_index == sp_block.diag_index == len(self.total_shape) - 1
+              and len(self.total_shape) == len(sp_block.total_shape)
+              and torch.equal(self.total_shape, sp_block.total_shape)):
+            # Both are diagonal on the last two (matrix) axes with identical shapes:
+            # diag(d1) @ diag(d2) = diag(d1 * d2), one multiply of the stored diagonals.
+            start_op_time = time.perf_counter()
+            json_list.append({"method": "sparse_block_extract", "input": "json_list_" + str(lhs_index),
+                              "block_type": self.block_type, "output": len(json_list)})
+            lhs_index = len(json_list) - 1
+            json_list.append({"method": "sparse_block_extract", "input": "json_list_" + str(rhs_index),
+                              "block_type": sp_block.block_type, "output": len(json_list)})
+            rhs_index = len(json_list) - 1
+            json_list.append({"method": "torch_mul", "lhs": "json_list_" + str(lhs_index),
+                              "rhs": "json_list_" + str(rhs_index), "output": len(json_list)})
+            block = self.block * sp_block.block
+            equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
+            res = DiagonalBlock(block, self.total_shape.clone(), self.diag_index, json_list, len(json_list) - 1)
+            res_index = res.json_index
         elif isinstance(sp_block, DiagonalBlock):
-            raise NotImplementedError
+            # Any other layout (diagonal on earlier axes, differing indices or shapes): densify both
+            # and use the dense matmul, which makes no layout assumption.
+            lhs, lhs_index = self.get_dense(json_list=json_list, template_index=lhs_index, simulacrum=True)
+            lhs = DenseBlock(lhs, json_list, lhs_index)
+            rhs, rhs_index = sp_block.get_dense(json_list=json_list, template_index=rhs_index, simulacrum=True)
+            rhs = DenseBlock(rhs, json_list, rhs_index)
+            return lhs.matmul_equal_dims(rhs, json_list=json_list, lhs_index=lhs.json_index, rhs_index=rhs.json_index)
         elif isinstance(sp_block, KernelBlock):
 
             block_2, rhs_index = sp_block.convert_to_patches(json_list=json_list, template_index=rhs_index, simulacrum=True)
