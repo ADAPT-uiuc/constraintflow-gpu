@@ -821,7 +821,10 @@ def _phase_lowering(weight, x_spatial, s, padding, output_padding):
             count = len(range(first, out_spatial[d], s))
             per_phase.append((r, taps, first, q, min(count, x_spatial[d] + taps - 1 - q), count))
         plan.append(per_phase)
-    partial = any(c < full for per_phase in plan for (_, _, _, _, c, full) in per_phase)
+    #FIX FOR: a phase with no taps (kernel smaller than the stride, e.g. a ResNet 1x1 stride-2
+    # shortcut) is skipped below, so its outputs were never written into the new_empty buffer and
+    # held recycled memory (the previous image's data): unsound, run-order-dependent bounds.
+    partial = any(c < full or t == 0 for per_phase in plan for (_, t, _, _, c, full) in per_phase)
 
     def phases(x):
         out = (x.new_zeros if partial else x.new_empty)(x.shape[0], cout, *out_spatial)
