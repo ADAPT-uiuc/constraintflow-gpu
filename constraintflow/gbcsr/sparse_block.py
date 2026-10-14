@@ -723,6 +723,9 @@ CONV_TRANSPOSE_MIN_GAIN = 0.95
 # does at most this many times the conv's multiply-adds.
 TOEPLITZ_MAX_ELEMENTS = 1 << 24
 TOEPLITZ_MAX_WASTE = 16
+#FEAT: larger Toeplitz limits on the CPU.
+TOEPLITZ_MAX_ELEMENTS_CPU = 1 << 26
+TOEPLITZ_MAX_WASTE_CPU = 64
 # Stride-1 rows are also tried tiled grid x grid into images up to this side length.
 PACK_GRIDS = (2, 4, 8)
 PACK_MAX_SIDE = 128
@@ -860,6 +863,17 @@ def _conv_transpose_lowerings(weight, x_spatial, stride, padding, output_padding
 
         lowerings["forward"] = forward
         lowerings["forward_chunked"] = lambda x: _split_batch(forward, x)
+        #FEAT: forward_native lowering on the CPU (oneDNN off).
+        if not weight.is_cuda:
+            def forward_native(x):
+                enabled = torch._C._get_mkldnn_enabled()
+                torch._C._set_mkldnn_enabled(False)
+                try:
+                    return forward(x)
+                finally:
+                    torch._C._set_mkldnn_enabled(enabled)
+
+            lowerings["forward_native"] = forward_native
         for grid in PACK_GRIDS:
             if grid * (x_spatial[0] + kx - 1) <= PACK_MAX_SIDE and grid * (x_spatial[1] + ky - 1) <= PACK_MAX_SIDE:
                 lowerings[f"packed{grid}"] = _packed_lowering(weight, x_spatial, padding, grid)
@@ -867,6 +881,9 @@ def _conv_transpose_lowerings(weight, x_spatial, stride, padding, output_padding
         subpixel = _subpixel_lowering(weight, x_spatial, stride[0], padding, output_padding)
         lowerings["subpixel"] = subpixel
         lowerings["subpixel_chunked"] = lambda x: _split_batch(subpixel, x)
+        #FEAT: subpixel_cl lowering on the CPU (channels-last input).
+        if not weight.is_cuda:
+            lowerings["subpixel_cl"] = lambda x: subpixel(x.contiguous(memory_format=torch.channels_last))
         if kx % stride[0] or ky % stride[1]:
             lowerings["phases"] = _phase_lowering(weight, x_spatial, stride[0], padding, output_padding)
     in_size = weight.shape[0] * x_spatial[0] * x_spatial[1]
@@ -874,7 +891,10 @@ def _conv_transpose_lowerings(weight, x_spatial, stride, padding, output_padding
                                      + weight.shape[2 + d] + output_padding[d] for d in range(2)]
     out_size = out_shape[0] * out_shape[1] * out_shape[2]
     conv_macs = in_size * weight.shape[1] * kx * ky
-    if in_size * out_size <= TOEPLITZ_MAX_ELEMENTS and in_size * out_size <= TOEPLITZ_MAX_WASTE * conv_macs:
+    #FEAT: larger Toeplitz limits on the CPU.
+    max_elements, max_waste = ((TOEPLITZ_MAX_ELEMENTS, TOEPLITZ_MAX_WASTE) if weight.is_cuda
+                               else (TOEPLITZ_MAX_ELEMENTS_CPU, TOEPLITZ_MAX_WASTE_CPU))
+    if in_size * out_size <= max_elements and in_size * out_size <= max_waste * conv_macs:
         # Small rows (patches): one GEMM against the conv's dense matrix, built by pushing
         # the identity through the conv. More FLOPs, but cuDNN runs these shapes far below
         # GEMM throughput.
@@ -889,6 +909,14 @@ def _conv_transpose_lowerings(weight, x_spatial, stride, padding, output_padding
 
 def _time_lowering(fn, x, iters=3):
     fn(x)
+    #FEAT: time lowerings on the CPU.
+    if not x.is_cuda:
+        times = []
+        for _ in range(iters):
+            start = time.perf_counter()
+            fn(x)
+            times.append(time.perf_counter() - start)
+        return sorted(times)[len(times) // 2]
     start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
     times = []
     for _ in range(iters):
@@ -905,13 +933,17 @@ def _choose_lowering(key, x, lowerings):
     if choice is not None:
         return choice
     choice = "chunked"
-    if CONV_TRANSPOSE_TUNE and x.is_cuda and len(lowerings) > 1:
+    #FEAT: conv-transpose tuning on the CPU.
+    if CONV_TRANSPOSE_TUNE and len(lowerings) > 1:
         times = {}
         for name, fn in lowerings.items():
             try:
                 times[name] = _time_lowering(fn, x)
             except torch.cuda.OutOfMemoryError:
                 pass
+            except RuntimeError as e:
+                if x.is_cuda or "allocate" not in str(e):
+                    raise
         if "chunked" in times:
             best = min(times, key=times.get)
             if times[best] < CONV_TRANSPOSE_MIN_GAIN * times["chunked"]:
