@@ -3087,6 +3087,42 @@ class DiagonalBlock(SparseBlock):
             rhs, rhs_index = sp_block.get_dense(json_list=json_list, template_index=rhs_index, simulacrum=True)
             rhs = DenseBlock(rhs, json_list, rhs_index)
             return lhs.matmul_equal_dims(rhs, json_list=json_list, lhs_index=lhs.json_index, rhs_index=rhs.json_index)
+        #FIX FOR: Diagonal @ Patches raised "Unrecognized sparse block type" (hit by deeppoly_efficient's
+        # Neuron_add backsubstitution, whose Relu L/U are the pre-activation conv's own patches).
+        elif isinstance(sp_block, PatchesBlock):
+            batches = (int(self.total_shape[0]), int(sp_block.total_shape[0]))
+            if (len(self.total_shape) == len(sp_block.total_shape) == 3
+                    and self.diag_index == 2
+                    and int(self.total_shape[1]) == int(sp_block.total_shape[1]) == sp_block.block.shape[1]
+                    and (batches[0] == batches[1] or 1 in batches)):
+                # diag(d) @ P scales row i of P by d[i]: the KernelBlock case below without the conversion.
+                start_op_time = time.perf_counter()
+                json_list.append({"method": "sparse_block_extract", "input": "json_list_" + str(rhs_index),
+                                  "block_type": sp_block.block_type, "output": len(json_list)})
+                rhs_index = len(json_list) - 1
+                json_list.append({"method": "sparse_block_extract", "input": "json_list_" + str(lhs_index),
+                                  "block_type": self.block_type, "output": len(json_list)})
+                lhs_index = len(json_list) - 1
+                json_list.append({"method": "torch_unsqueeze", "input": "json_list_" + str(lhs_index),
+                                  "index": self.diag_index, "output": len(json_list)})
+                lhs_index = len(json_list) - 1
+                json_list.append({"method": "torch_mul", "lhs": "json_list_" + str(lhs_index),
+                                  "rhs": "json_list_" + str(rhs_index), "output": len(json_list)})
+                block = self.block.unsqueeze(self.diag_index) * sp_block.block
+                equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
+                total_shape = sp_block.total_shape.clone()
+                total_shape[0] = max(batches)
+                res = PatchesBlock(block, total_shape, sp_block.ix, sp_block.iy, sp_block.ox, sp_block.oy,
+                                   sp_block.sx, sp_block.sy, sp_block.px, sp_block.py, sp_block.kx, sp_block.ky,
+                                   sp_block.num_channels, sp_block.num_kernels, json_list, len(json_list) - 1)
+                res_index = res.json_index
+            else:
+                # Any other layout: densify both and use the dense matmul.
+                lhs, lhs_index = self.get_dense(json_list=json_list, template_index=lhs_index, simulacrum=True)
+                lhs = DenseBlock(lhs, json_list, lhs_index)
+                rhs, rhs_index = sp_block.get_dense(json_list=json_list, template_index=rhs_index, simulacrum=True)
+                rhs = DenseBlock(rhs, json_list, rhs_index)
+                return lhs.matmul_equal_dims(rhs, json_list=json_list, lhs_index=lhs.json_index, rhs_index=rhs.json_index)
         elif isinstance(sp_block, KernelBlock):
 
             block_2, rhs_index = sp_block.convert_to_patches(json_list=json_list, template_index=rhs_index, simulacrum=True)
