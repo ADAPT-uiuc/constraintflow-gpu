@@ -8,6 +8,9 @@ nearly equal magnitude; when the box is narrow (eps 4e-5 on CIFAR) their
 cancellation loses the interval width to fp32 rounding, and the error grows
 with depth. auto_LiRPA concretizes with A.(x_U+x_L)/2 -/+ |A|.(x_U-x_L)/2; the
 pair is written in that order so both tools round alike. Same matvec count.
+For patch sums, fuse the center and radius terms into one reduction. The
+same algebra applies to affine-constant vectors, with matching gather/view
+geometry, even when they are not the input box's endpoints.
 Run on functional SSA before product grids and early reductions.
 """
 import copy
@@ -15,7 +18,7 @@ import re
 from collections import Counter
 
 from constraintflow.compiler.ir import (
-    IrAssignment, IrConst, IrFConv2d, IrSimpleBinary, IrTensorClamp, IrTorchMatmul,
+    IrAssignment, IrConst, IrFConv2d, IrFUnfold, IrTorchSum, IrSimpleBinary, IrTensorClamp, IrTorchMatmul,
     IrTorchSlice, IrTorchUnsqueeze, IrTorchReshape, IrTorchView, IrTransRetBasic, IrVar,
 )
 from constraintflow.compiler.optimizations import subexp_inlining
@@ -24,6 +27,8 @@ from constraintflow.compiler.optimizations.sign_reductions import _op
 
 # Input-layer bound parameters: (role, block) with role 'l' or 'u'.
 _BOX = re.compile(r'^in_(?:(l|u)|(L|U)_const)_(\d+)$')
+_BOX_VIEWS = dict(_WRAPPERS)
+_BOX_VIEWS[IrFUnfold] = ('kernel_size', 'padding', 'stride')
 
 
 def run(block):
@@ -51,7 +56,7 @@ def run(block):
     def peel(expr, single=False):
         shells = []
         expr = resolve(expr, single)
-        while type(expr) in _WRAPPERS:
+        while type(expr) in _BOX_VIEWS:
             shells.append(expr)
             expr = resolve(expr.children[0], single)
         return expr, shells
@@ -74,6 +79,20 @@ def run(block):
     def candidate(expr):
         # matmul(view(clamp(A, 0)), column view of a box tensor)
         reduction, output = peel(expr, single=True)
+        if isinstance(reduction, IrTorchSum):
+            product = resolve(reduction.children[0], single=True)
+            if not _op(product, 'mul'):
+                return None
+            for index in (0, 1):
+                clamp, shells = peel(product.children[index])
+                vector = product.children[1-index]
+                role = box_role(vector)
+                if isinstance(clamp, IrTensorClamp) and clamp.const == 0:
+                    # The same identity also fuses affine-constant reductions.
+                    # Equal view/gather geometry is checked by compatible().
+                    role = role or ('generic_pos' if clamp.min_true else 'generic_neg', 'generic')
+                    return reduction, clamp, shells, output, role, vector
+            return None
         if not isinstance(reduction, IrTorchMatmul):
             return None
         rhs = resolve(reduction.children[1])
@@ -86,17 +105,21 @@ def run(block):
         clamp, shells = peel(reduction.children[0])
         if role is None or not isinstance(clamp, IrTensorClamp) or clamp.const != 0:
             return None
-        return reduction, clamp, shells, output, role
+        return reduction, clamp, shells, output, role, reduction.children[1]
 
     def compatible(a, b):
-        ra, ca, sa, oa, roa = a
-        rb, cb, sb, ob, rob = b
-        return (ca.min_true != cb.min_true and roa[1] == rob[1] and roa[0] != rob[0]
+        ra, ca, sa, oa, roa, va = a
+        rb, cb, sb, ob, rob, vb = b
+        _, av = peel(va)
+        _, bv = peel(vb)
+        return (type(ra) is type(rb)
+                and (not isinstance(ra, IrTorchSum) or ra.dim == rb.dim)
+                and ca.min_true != cb.min_true and roa[1] == rob[1] and roa[0] != rob[0]
                 and same(ca.children[0], cb.children[0])
-                and len(sa) == len(sb) and len(oa) == len(ob)
+                and len(sa) == len(sb) and len(oa) == len(ob) and len(av) == len(bv)
                 and all(type(x) is type(y) and all(getattr(x, k) == getattr(y, k)
-                                                   for k in _WRAPPERS[type(x)])
-                        for x, y in zip(sa + oa, sb + ob)))
+                                                   for k in _BOX_VIEWS[type(x)])
+                        for x, y in zip(sa + oa + av, sb + ob + bv)))
 
     fused = 0
 
@@ -111,8 +134,8 @@ def run(block):
     def fuse(a, b):
         # a, b: candidates; returns (center term, radius term, sign of radius term)
         pos, neg = (a, b) if a[1].min_true else (b, a)
-        reduction, clamp, shells, output, role = pos
-        x_vec, y_vec = pos[0].children[1], neg[0].children[1]
+        reduction, clamp, shells, output, role, _vector = pos
+        x_vec, y_vec = pos[5], neg[5]
         x_base, _ = peel(x_vec)
         y_base, _ = peel(y_vec)
         # A+.x + A-.y = A.(x+y)/2 + |A|.(x-y)/2; write it over (u, l) like auto_LiRPA.
@@ -122,6 +145,18 @@ def run(block):
             hi, lo, sign = y_base, x_base, 'sub'
         coeff = clamp.children[0]
         abs_coeff = IrSimpleBinary(IrTensorClamp(coeff, 0, True), IrTensorClamp(coeff, 0, False), 'sub')
+        if isinstance(reduction, IrTorchSum):
+            if role[1] == 'generic':
+                # Arbitrary constant roots can have different shapes before
+                # their views. Combine the actual gathered vectors instead.
+                center_vec, radius_vec = half(x_vec, y_vec, 'add'), half(x_vec, y_vec, 'sub')
+                sign = 'add'
+            else:
+                center_vec = replace_vector(x_vec, half(hi, lo, 'add'))
+                radius_vec = replace_vector(x_vec, half(hi, lo, 'sub'))
+            center = IrSimpleBinary(_rebuild(shells, coeff), center_vec, 'mul')
+            radius = IrSimpleBinary(_rebuild(shells, abs_coeff), radius_vec, 'mul')
+            return _rebuild(output, IrTorchSum(IrSimpleBinary(center, radius, sign), reduction.dim))
         center = copy.copy(reduction)
         center.update_parent_child([_rebuild(shells, coeff), replace_vector(x_vec, half(hi, lo, 'add'))])
         radius = copy.copy(reduction)
@@ -212,7 +247,7 @@ def fold_conv_bias(block):
     def peel(expr):
         shells = []
         expr = resolve(expr)
-        while type(expr) in _WRAPPERS:
+        while type(expr) in _BOX_VIEWS:
             shells.append(expr)
             expr = resolve(expr.children[0])
         return expr, shells

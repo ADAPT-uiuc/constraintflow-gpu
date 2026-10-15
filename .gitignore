@@ -39,3 +39,13 @@ experiments/*
 cfg/*
 local_cache/
 tiny-data.tar.gz
+
+# Local DPE optimization benchmark artifacts.
+optimization-results/
+!tests/test_patch_factor.py
+!tests/test_conv_sum.py
+!tests/test_sroa_purity.py
+!tests/test_transpose_grids.py
+!tests/test_box_patch_reductions.py
+!tests/test_shared_gathers.py
+!tests/test_traversal_clone.py

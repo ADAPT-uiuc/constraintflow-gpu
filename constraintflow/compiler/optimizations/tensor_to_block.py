@@ -1487,6 +1487,32 @@ def replace_all_occurrences_expr(expr, var_map):
         expr.children[i] = new_child
     return expr
 
+def clone_traversal_body(statements):
+    """Clone executable IR and def links without copying analysis consumers.
+
+    Use/parent edges lead back out into the enclosing CFG and are not read by
+    traversal replay. Later passes recompute liveness from the emitted stream.
+    Keeping def links in the clone still permits affine substitution matching.
+    """
+    memo, seen, pending = {}, set(), [statements]
+    while pending:
+        obj = pending.pop()
+        if id(obj) in seen:
+            continue
+        seen.add(id(obj))
+        if isinstance(obj, dict):
+            pending.extend(obj.values())
+        elif isinstance(obj, (list, tuple, set)):
+            pending.extend(obj)
+        elif isinstance(obj, (IrAst, IrMetadataElement)):
+            for key, value in vars(obj).items():
+                if key in ('uses', 'parents') and isinstance(value, list):
+                    memo[id(value)] = []
+                else:
+                    pending.append(value)
+    return copy.deepcopy(statements, memo)
+
+
 def remove_while(layer_index, num_iterations, cfg, root_node, first_while_node, second_while_node, exit_node, break_node):
     root_block = cfg.ir[root_node]
     first_while_block = cfg.ir[first_while_node]
@@ -1506,7 +1532,9 @@ def remove_while(layer_index, num_iterations, cfg, root_node, first_while_node, 
 
     ir_list = root_block.children
     for i in range(num_iterations):
-        combined_list = copy.deepcopy(first_while_block.children + second_while_block.children)
+        body = first_while_block.children + second_while_block.children
+        combined_list = (clone_traversal_body(body) if os.environ.get('CF_LIGHT_TRAVERSAL_CLONE', '1') != '0'
+                         else copy.deepcopy(body))
         if layer_parents is not None:
             selected = fuse_affine_subst.selected_layers_at(layer_index, first_while_block.while_number, i)
             is_affine = bool(selected) and all(layer_types.get(x) in affine_types for x in selected)

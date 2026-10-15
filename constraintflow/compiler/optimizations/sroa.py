@@ -724,6 +724,10 @@ class _Scalarizer:
 
         results = [self.densify(self.eval(child)) for child in ret.children[:2]]
         self.out.append(IrTransRetBasic([self.to_ir(d) for d in results]))
+        # Input aggregate mutations still require the copy/alias checks above.
+        # Payload and geometry rebindings have now vanished; only retained view
+        # writes make the emitted tensor program impure, for either backend.
+        self.functional = self.view_writes == 0
         block.update_parent_child(self.out)
         self.ir.flow_layer_bounds = bounds + [len(self.out)]
         self.ir.flow_params = self.params
