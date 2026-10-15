@@ -11,12 +11,13 @@ early reductions.
 """
 import copy
 import operator
+from types import SimpleNamespace
 
 import torch
 import torch.nn.functional as F
 
 from constraintflow.compiler.ir import (
-    IrAssignment, IrFConv2d, IrTorchCat, IrTorchMatmul, IrTorchSlice, IrTorchSqueeze,
+    IrAssignment, IrFConv2d, IrFConvTranspose2d, IrTorchCat, IrTorchMatmul, IrTorchSlice, IrTorchSqueeze,
     IrTorchTranspose, IrTorchUnsqueeze, IrTransRetBasic, IrVar,
 )
 from constraintflow.compiler.optimizations import subexp_inlining
@@ -27,7 +28,8 @@ MAX_GRID_BATCH = 32768
 
 
 def _meta_env(sized, batch_size):
-    env = {'torch': torch, 'F': F, 'operator': operator, 'batch_size': batch_size, **RUNTIME_HELPERS}
+    env = {'torch': torch, 'F': F, 'operator': operator, 'batch_size': batch_size,
+           'device_mode': SimpleNamespace(get_device=lambda: 'meta'), **RUNTIME_HELPERS}
     records = list(sized.inputs.items()) + [(r['name'], r) for r in sized.values()]
     for name, r in records:
         if name and 'shape' in r:
@@ -49,7 +51,8 @@ def run(block, render, sized, batch_size):
 
     def meta(text):
         try:
-            value = eval(text, dict(env))
+            with torch.device('meta'):
+                value = eval(text, dict(env))
         except Exception:
             return None
         return value if isinstance(value, torch.Tensor) else None
@@ -63,13 +66,14 @@ def run(block, render, sized, batch_size):
             return
         if not hasattr(expr, 'children'):
             return
-        if isinstance(expr, (IrFConv2d, IrTorchMatmul)) and len(expr.children) == 2:
-            conv = isinstance(expr, IrFConv2d)
+        if isinstance(expr, (IrFConv2d, IrFConvTranspose2d, IrTorchMatmul)) and len(expr.children) == 2:
+            conv = isinstance(expr, (IrFConv2d, IrFConvTranspose2d))
             w, x = (render(c) for c in expr.children)
             if conv:
                 x, w = w, x
-            if 'conv2d(' not in x + w and 'matmul(' not in x + w:
-                opts = (render(expr.stride), render(expr.padding)) if conv else 'mm'
+            if len(expr.children) == 2 and not any(op in x + w for op in ('conv2d(', 'conv_transpose2d(', 'matmul(')):
+                opts = (type(expr), render(expr.stride), render(expr.padding),
+                        render(expr.output_padding) if isinstance(expr, IrFConvTranspose2d) else None) if conv else 'mm'
                 convs.append((i, expr, x, w, opts))
                 return
         for c in expr.children:
@@ -98,15 +102,38 @@ def run(block, render, sized, batch_size):
     for k in range(len(convs)):
         groups.setdefault(find(k), []).append(k)
 
-    replace, inserts, counter, merged = {}, {}, 0, 0
+    # A transpose kernel can recur throughout a backward traversal. Form
+    # groups whose inputs already exist at the first use, rather than letting
+    # a later dependent input prevent batching every earlier independent pair.
+    batches = []
     for members in groups.values():
+        if not isinstance(convs[members[0]][1], IrFConvTranspose2d):
+            batches.append(members)
+            continue
+        remaining = list(members)
+        while remaining:
+            position = min(convs[k][0] for k in remaining)
+            ready = []
+            for k in remaining:
+                deps = subexp_inlining.get_vars_expr_occurrences(convs[k][1].children)
+                if all(definitions.get(v.name, -1) < position for v in deps):
+                    ready.append(k)
+            if not ready:
+                ready = [remaining[0]]
+            batches.extend(ready[i:i+2] for i in range(0, len(ready), 2))
+            used = set(ready)
+            remaining = [k for k in remaining if k not in used]
+
+    replace, inserts, counter, merged = {}, {}, 0, 0
+    for members in batches:
         xs = list(dict.fromkeys(convs[k][2] for k in members))
         ws = list(dict.fromkeys(convs[k][3] for k in members))
         pairs = {(convs[k][2], convs[k][3]) for k in members}
         if len(xs) * len(ws) < 2 or len(pairs) != len(xs) * len(ws):
             continue
         first = convs[members[0]][1]
-        conv = isinstance(first, IrFConv2d)
+        conv = isinstance(first, (IrFConv2d, IrFConvTranspose2d))
+        transpose = isinstance(first, IrFConvTranspose2d)
         xm = [meta(x) for x in xs]
         wm = [meta(w) for w in ws]
         rank = 4 if conv else 3
@@ -121,9 +148,9 @@ def run(block, render, sized, batch_size):
         out = meta(render(first))
         if out is None:
             continue
-        b, c = xm[0].shape[0], wm[0].shape[0 if conv else 1]
-        if (len(xs) * b > MAX_GRID_BATCH
-                or out.numel() * len(xs) * len(ws) * 4 > MAX_GRID_BYTES):
+        b, c = xm[0].shape[0], wm[0].shape[1 if transpose or not conv else 0]
+        if (len(xs) * b > MAX_GRID_BATCH * (4 if transpose else 1)
+                or out.numel() * len(xs) * len(ws) * out.element_size() > MAX_GRID_BYTES):
             continue
         position = min(convs[k][0] for k in members)
         exprs = {}
@@ -139,7 +166,11 @@ def run(block, render, sized, batch_size):
         name = 'grid_' + str(counter)
         counter += 1
         occupied.add(name)
-        if conv:
+        if transpose:
+            grid = IrFConvTranspose2d(IrTorchCat([copy.copy(exprs[x]) for x in xs], 0),
+                                      IrTorchCat([copy.copy(exprs[w]) for w in ws], 1),
+                                      first.stride, first.padding, first.output_padding)
+        elif conv:
             grid = IrFConv2d(IrTorchCat([copy.copy(exprs[x]) for x in xs], 0),
                              IrTorchCat([copy.copy(exprs[w]) for w in ws], 0),
                              first.stride, first.padding)

@@ -376,7 +376,29 @@ class CodeGen(irVisitor.IRVisitor):
 
     def emit_sroa_flow(self, node):
         """Emit explode_inputs() and the scalarized flow()."""
+        from constraintflow.lib.globals import center_radius
+        if center_radius.get_flag() and getattr(node, 'flow_functional', False):
+            from constraintflow.compiler.optimizations import box_concretize
+            count = box_concretize.run(node.flow_block)
+            print('[box-reductions] {} sign-split reductions fused'.format(count))
         sized = self._probe_sizes(node)
+        if sized and getattr(node, 'flow_functional', False):
+            from constraintflow.compiler.optimizations import patch_factor, conv_sum
+            count = patch_factor.run(node.flow_block, self.visit, sized,
+                                     getattr(node, 'flow_batch_size', 1))
+            print('[patch-factor] {} patch compositions factored'.format(count))
+            merged = conv_sum.run(node.flow_block) if count else 0
+            print('[conv-sum] {} shared-weight convolutions combined'.format(merged))
+            if count:
+                sized = self._probe_sizes(node)
+        gather_barriers = set()
+        if os.environ.get('CF_SHARED_GATHERS') == '1' and sized and getattr(node, 'flow_functional', False):
+            from constraintflow.compiler.optimizations import shared_gathers
+            gather_barriers = shared_gathers.run(node.flow_block, self.visit, sized,
+                                                getattr(node, 'flow_batch_size', 1))
+            print('[shared-gathers] {} image gathers materialized'.format(len(gather_barriers)))
+            if gather_barriers:
+                sized = self._probe_sizes(node)
         if product_grids.get_flag() and sized and getattr(node, 'flow_functional', False):
             count = product_grids_pass.run(node.flow_block, self.visit, sized,
                                          getattr(node, 'flow_batch_size', 1))
@@ -393,10 +415,11 @@ class CodeGen(irVisitor.IRVisitor):
             count = conv_partials.run(node.flow_block)
             print('[conv-partials] {} partial results exposed'.format(count))
             sized = self._probe_sizes(node)
-        barriers = set()
+        barriers = set(gather_barriers)
         if (inductor_mode.get_flag() or self.target == 'jax') and getattr(node, 'flow_functional', False):
-            barriers = set(pad_inputs.run(node.flow_block))
-            print('[pad-inputs] {} pad inputs materialized'.format(len(barriers)))
+            pads = set(pad_inputs.run(node.flow_block))
+            barriers.update(pads)
+            print('[pad-inputs] {} pad inputs materialized'.format(len(pads)))
             sized = self._probe_sizes(node)
         budget = self._memory_budget()
         if budget and sized:
