@@ -13,6 +13,8 @@ import time
 from constraintflow.compiler.ir import *
 from constraintflow.compiler.optimizations import subexp_inlining
 from constraintflow.compiler.optimizations import tensor_to_block
+#FEAT: per-change toggles for the DeepPoly-efficient passes
+from constraintflow.compiler.optimizations import opt_flags
 from constraintflow.lib import entry_capture
 from constraintflow.lib.globals import load_capture
 
@@ -724,10 +726,12 @@ class _Scalarizer:
 
         results = [self.densify(self.eval(child)) for child in ret.children[:2]]
         self.out.append(IrTransRetBasic([self.to_ir(d) for d in results]))
+        #FEAT: CF_SROA_FUNCTIONAL decides purity from the emitted program for torch too
         # Input aggregate mutations still require the copy/alias checks above.
         # Payload and geometry rebindings have now vanished; only retained view
         # writes make the emitted tensor program impure, for either backend.
-        self.functional = self.view_writes == 0
+        if opt_flags.enabled('CF_SROA_FUNCTIONAL'):
+            self.functional = self.view_writes == 0
         block.update_parent_child(self.out)
         self.ir.flow_layer_bounds = bounds + [len(self.out)]
         self.ir.flow_params = self.params

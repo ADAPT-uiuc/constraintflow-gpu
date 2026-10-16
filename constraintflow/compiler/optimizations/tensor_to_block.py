@@ -4,6 +4,8 @@ import torch
 
 from constraintflow.compiler.ir import *
 from constraintflow.compiler.optimizations import uses, fuse_affine_subst, subexp_inlining
+#FEAT: per-change toggles for the DeepPoly-efficient passes
+from constraintflow.compiler.optimizations import opt_flags
 from constraintflow.compiler.optimizations.subexp_inlining import get_vars_expr_occurrences
 from constraintflow.gbcsr.sparse_tensor import get_operator_func
 from constraintflow.lib.globals import load_capture, capture_exists, program_add_rule
@@ -1487,6 +1489,7 @@ def replace_all_occurrences_expr(expr, var_map):
         expr.children[i] = new_child
     return expr
 
+#FEAT: CF_LIGHT_TRAVERSAL_CLONE
 def clone_traversal_body(statements):
     """Clone executable IR and def links without copying analysis consumers.
 
@@ -1533,7 +1536,8 @@ def remove_while(layer_index, num_iterations, cfg, root_node, first_while_node, 
     ir_list = root_block.children
     for i in range(num_iterations):
         body = first_while_block.children + second_while_block.children
-        combined_list = (clone_traversal_body(body) if os.environ.get('CF_LIGHT_TRAVERSAL_CLONE', '1') != '0'
+        #FEAT: CF_LIGHT_TRAVERSAL_CLONE skips copying use/parent analysis edges
+        combined_list = (clone_traversal_body(body) if opt_flags.enabled('CF_LIGHT_TRAVERSAL_CLONE')
                          else copy.deepcopy(body))
         if layer_parents is not None:
             selected = fuse_affine_subst.selected_layers_at(layer_index, first_while_block.while_number, i)

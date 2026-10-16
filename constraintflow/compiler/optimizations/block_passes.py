@@ -25,6 +25,10 @@ def _as_cfg(block):
 
 
 def cse(block):
+    #FEAT: CF_FAST_BLOCK_CSE=1 uses one-walk hash-bucket CSE on functional SSA
+    if os.environ.get('CF_FAST_BLOCK_CSE') == '1':
+        from constraintflow.compiler.optimizations import ssa_cse
+        return ssa_cse.run(block)
     cfg = _as_cfg(block)
     dtree = representations.construct_dominator_tree(cfg)
     cse_pass.cse_cfg(cfg, dtree)

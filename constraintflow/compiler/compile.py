@@ -107,6 +107,15 @@ def compile(inputfile, output_path, target='torch'):
             tensor_to_block.splice_flow(ir, list(ir.shape.keys()))
             stats = sroa_pass.sroa(ir)
             ir.flow_functional = stats['functional']
+            if target == 'jax' and stats['view_writes'] == 0:
+                # The scalarizer's flag describes mutations in the INPUT IR.
+                # Aggregate payload/shape rebindings emit no statements; after
+                # SROA only retained tensor view writes can make it impure.
+                # Copy alias checks have already succeeded inside sroa().
+                #FEAT: CF_SROA_FUNCTIONAL
+                # CF_SROA_FUNCTIONAL applies the same rule to torch in sroa().
+                ir.flow_functional = True
+                stats['functional'] = True
             print('[sroa] {aggregates} aggregates removed, {clones_dropped} clones and '
                   '{lambdas_dropped} identity lambdas and {casts_dropped} casts dropped, {dead_dropped} dead stores removed, {statements} tensor '
                   'statements, {params} flow params '

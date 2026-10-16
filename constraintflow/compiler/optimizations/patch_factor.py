@@ -1,3 +1,4 @@
+#FEAT: new pass, enabled by CF_PATCH_FACTOR
 """Factor row-scaled convolution patches before composing them.
 
 A @ (diag(s) @ W) = (A @ diag(s)) @ W.  The captured implementation

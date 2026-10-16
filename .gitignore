@@ -49,3 +49,11 @@ optimization-results/
 !tests/test_box_patch_reductions.py
 !tests/test_shared_gathers.py
 !tests/test_traversal_clone.py
+!tests/test_ssa_cse.py
+!tests/test_conv_chunks.py
+!tests/test_sign_reduction_cache.py
+!tests/test_expression_limits.py
+!tests/test_flow_shape_modes.py
+!tests/test_view_aliases.py
+!tests/test_fused_matvec.py
+!tests/test_opt_flags.py

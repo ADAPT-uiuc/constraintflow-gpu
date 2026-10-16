@@ -1,6 +1,8 @@
 import operator
+import os
 import tempfile
 import unittest
+from unittest import mock
 from types import SimpleNamespace
 import torch
 import torch.nn.functional as F
@@ -11,6 +13,7 @@ from constraintflow.compiler.optimizations.product_grids import run
 class Shapes(dict):
     inputs={}
 
+@mock.patch.dict(os.environ, {'CF_TRANSPOSE_GRIDS': '1'})
 class TransposeGridsTest(unittest.TestCase):
     def test_full_product_grid(self):
         torch.manual_seed(9)
@@ -31,6 +34,17 @@ class TransposeGridsTest(unittest.TestCase):
                 else:actual=[eval(cg.visit(c),env) for c in s.children]
             for x,y in zip(actual,expected):torch.testing.assert_close(x,y)
 
+    @mock.patch.dict(os.environ, {'CF_TRANSPOSE_GRIDS': '0'})
+    def test_transposes_are_not_grouped_when_off(self):
+        v=lambda n:IrVar(n,[])
+        nodes=[IrFConvTranspose2d(v(x),v(w),[2,1],[1,0],[1,0]) for x in ('x','y') for w in ('w','z')]
+        block=IrBlock([IrAssignment(v('r'+str(i)),e) for i,e in enumerate(nodes)]+[IrTransRetBasic([v('r'+str(i)) for i in range(4)])])
+        sized=Shapes();sized.inputs={n:{'shape':s,'dtype':'torch.float32'} for n,s in
+                                    [('x',[2,3,4,5]),('y',[2,3,4,5]),('w',[3,2,3,2]),('z',[3,2,3,2])]}
+        with tempfile.TemporaryDirectory() as d:
+            cg=CodeGen(d);cg.file.close()
+            self.assertEqual(run(block,cg.visit,sized,2),0)
+
     def test_dependent_convolution_is_not_hoisted(self):
         v=lambda n:IrVar(n,[])
         a=IrFConvTranspose2d(v('x'),v('w'),[1,1],[1,1],[0,0])
@@ -41,5 +55,49 @@ class TransposeGridsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cg=CodeGen(d);cg.file.close()
             self.assertEqual(run(block,cg.visit,sized,1),0)
+
+@mock.patch.dict(os.environ, {'CF_GRID_PACKED_BYTES': '1'})
+class MatvecGridMemoryTest(unittest.TestCase):
+    def build(self, rows, cols):
+        v=lambda n:IrVar(n,[])
+        nodes=[IrTorchMatmul(v(w),v('x')) for w in ('w','z')]
+        block=IrBlock([IrAssignment(v('r'+str(i)),e) for i,e in enumerate(nodes)]
+                      +[IrTransRetBasic([v('r0'),v('r1')])])
+        sized=Shapes()
+        sized.inputs={n:{'shape':shape,'dtype':'torch.float32'} for n,shape in
+                      [('w',[1,rows,cols]),('z',[1,rows,cols]),('x',[1,cols,1])]}
+        return block,sized,nodes
+
+    def test_large_input_small_output_is_not_packed(self):
+        # Exact N35 failure family: tiny result, multi-GiB input matrices.
+        # Shape-only analysis must reject it without allocating real tensors.
+        block,sized,nodes=self.build(16384,65536)
+        with tempfile.TemporaryDirectory() as d:
+            cg=CodeGen(d);cg.file.close()
+            before=[cg.visit(n) for n in nodes]
+            self.assertEqual(run(block,cg.visit,sized,1),0)
+            self.assertEqual([cg.visit(s.children[1]) for s in block.children[:-1]],before)
+
+    @mock.patch.dict(os.environ, {'CF_GRID_PACKED_BYTES': '0'})
+    def test_result_only_limit_when_off(self):
+        # main's check counts only the grid result, so this shape still packs.
+        block,sized,nodes=self.build(16384,65536)
+        with tempfile.TemporaryDirectory() as d:
+            cg=CodeGen(d);cg.file.close()
+            self.assertEqual(run(block,cg.visit,sized,1),2)
+
+    def test_small_matvec_grid_still_matches(self):
+        block,sized,nodes=self.build(7,13)
+        torch.manual_seed(3)
+        env=dict(torch=torch,operator=operator,bcast_matmul=torch.matmul,
+                 w=torch.randn(1,7,13),z=torch.randn(1,7,13),x=torch.randn(1,13,1))
+        with tempfile.TemporaryDirectory() as d:
+            cg=CodeGen(d);cg.file.close()
+            expected=[eval(cg.visit(n),env) for n in nodes]
+            self.assertEqual(run(block,cg.visit,sized,1),2)
+            for stmt in block.children[:-1]:
+                env[stmt.children[0].name]=eval(cg.visit(stmt.children[1]),env)
+            actual=[eval(cg.visit(c),env) for c in block.children[-1].children]
+            for x,y in zip(actual,expected):torch.testing.assert_close(x,y)
 
 if __name__=='__main__':unittest.main()

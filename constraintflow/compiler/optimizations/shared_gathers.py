@@ -1,3 +1,4 @@
+#FEAT: new pass, enabled by CF_SHARED_GATHERS=1
 """Share repeated small unfolds of bound/slope images across large row batches.
 
 Keep each selected unfold at its first use and expose its result to the region
