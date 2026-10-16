@@ -1784,10 +1784,33 @@ _FLOW_UNBOUND = ('prev', 'curr', 'prev1', 'prev2')
 _FLOW_SCALARS = ('poly_size', 'curr_size', 'prev_size', 'input_size')
 
 
+#FEAT: CF_TREE_RENAME collects nodes without following analysis edges
+def _collect_ir_tree_nodes(obj, nodes):
+    visited, pending = set(), [obj]
+    while pending:
+        obj = pending.pop()
+        if id(obj) in visited:
+            continue
+        visited.add(id(obj))
+        if isinstance(obj, IrAst):
+            nodes[id(obj)] = obj
+        if isinstance(obj, dict):
+            pending.extend(obj.keys())
+            pending.extend(obj.values())
+        elif isinstance(obj, (list, tuple, set)):
+            pending.extend(obj)
+        elif hasattr(obj, '__dict__'):
+            pending.extend(v for k, v in vars(obj).items() if k not in opt_flags.ANALYSIS_EDGES)
+
+
 def _rename_vars(obj, rename):
     """Rewrite IrVar names and IrDel entries in place."""
     visited, nodes = set(), {}
-    _collect_ir_ast_nodes(obj, visited, nodes)
+    #FEAT: CF_TREE_RENAME
+    if opt_flags.enabled('CF_TREE_RENAME'):
+        _collect_ir_tree_nodes(obj, nodes)
+    else:
+        _collect_ir_ast_nodes(obj, visited, nodes)
     for node in nodes.values():
         if isinstance(node, IrVar):
             node.name = rename.get(node.name, node.name)

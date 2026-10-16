@@ -31,6 +31,8 @@ same code as before this work. Toggles live in
 | `CF_EXPRESSION_LIMITS` | Splits expressions deeper than 64 into temporaries. | No |
 | `CF_LAZY_TEMPORARIES` | Profiles unnamed temporaries only for memory planning. | No (compile time) |
 | `CF_SIGN_REDUCTION_MEMO` | Keeps sign-reduction structural keys across statements. | No (compile time) |
+| `CF_TREE_RENAME` | `splice_flow` renames walk the IR tree, not `uses`/`parents`/`defs` edges. | No (compile time) |
+| `CF_TREE_PURITY_SCAN` | SROA's purity scan walks the IR tree, not analysis edges. | No (compile time) |
 | `CF_SHARED_GATHERS=1` | Shares small image unfolds (about 31 GB peak on N33). | fp32 rounding |
 | `CF_FUSED_MATVEC=1` | Lowers pointwise-produced matvecs to row reductions. | fp32 rounding |
 | `CF_FAST_BLOCK_CSE=1` | One-walk hash-bucket CSE for functional SSA. | No (compile time) |

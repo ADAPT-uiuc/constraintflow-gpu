@@ -19,7 +19,14 @@ FLAGS = (
     'CF_EXPRESSION_LIMITS',     # split expressions deeper than 64 into temporaries
     'CF_LAZY_TEMPORARIES',      # profile unnamed temporaries only for memory planning
     'CF_SIGN_REDUCTION_MEMO',   # keep sign_reductions structural keys across statements
+    'CF_TREE_RENAME',           # splice_flow renames walk the IR tree, not analysis edges
+    'CF_TREE_PURITY_SCAN',      # SROA's input purity scan walks the IR tree, not analysis edges
 )
+
+# Analysis back-edges (def-use chains, parent links) can lead from one statement
+# to the rest of the program. Tree walks that skip them visit only the code
+# actually reachable through statements, children and operator attributes.
+ANALYSIS_EDGES = frozenset(('uses', 'parents', 'defs'))
 
 
 def enabled(name):
