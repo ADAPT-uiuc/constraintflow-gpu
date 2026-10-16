@@ -1,3 +1,4 @@
+#FEAT: new pass, enabled by CF_CONV_SUM
 """Share a fixed transpose convolution across a sum of compatible inputs.
 
 C(x,W) + C(y,W) = C(x+y,W). Only absorb single-use convolution results,
