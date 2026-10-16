@@ -157,6 +157,22 @@ def _walk(obj, seen, out):
             _walk(value, seen, out)
 
 
+#FEAT: CF_TREE_PURITY_SCAN, iterative and without analysis edges
+def _walk_tree(obj, out):
+    seen, pending = set(), [obj]
+    while pending:
+        obj = pending.pop()
+        if id(obj) in seen:
+            continue
+        seen.add(id(obj))
+        if isinstance(obj, IrAst):
+            out.append(obj)
+        if isinstance(obj, (list, tuple, set)):
+            pending.extend(obj)
+        elif hasattr(obj, '__dict__'):
+            pending.extend(v for k, v in vars(obj).items() if k not in opt_flags.ANALYSIS_EDGES)
+
+
 def _reads(stmt):
     """Names read by one statement, following .op as well as .children."""
     names, seen = set(), set()
@@ -672,7 +688,11 @@ class _Scalarizer:
         clock = _Progress()
         block = self.ir.flow_block
         nodes = []
-        _walk(block.children, set(), nodes)
+        #FEAT: CF_TREE_PURITY_SCAN skips analysis edges in the purity scan
+        if opt_flags.enabled('CF_TREE_PURITY_SCAN'):
+            _walk_tree(block.children, nodes)
+        else:
+            _walk(block.children, set(), nodes)
         clock.mark('walk ' + str(len(nodes)) + ' nodes')
         self.functional = not any(type(n).__name__ in _MUTATION for n in nodes)
 
