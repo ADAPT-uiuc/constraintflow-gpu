@@ -13,12 +13,15 @@ from constraintflow.compiler.optimizations import flow_split
 from constraintflow.compiler.optimizations import flow_shapes
 from constraintflow.compiler.optimizations import subexp_inlining
 from constraintflow.compiler.optimizations import early_reductions as early_reductions_pass
-from constraintflow.lib.globals import early_reductions, flow_segment_mb, memory_budget_mb, MEMORY_BUDGET_FRACTION, device_mode, cudagraphs, product_grids, inductor_layout_opt
+from constraintflow.lib.globals import early_reductions, flow_segment_mb, memory_budget_mb, MEMORY_BUDGET_FRACTION, device_mode, cudagraphs, product_grids, inductor_layout_opt, training
 from constraintflow.compiler.optimizations import conv_partials, pad_inputs, region_reuse, mem_plan, flow_offload
 from constraintflow.compiler.optimizations import product_grids as product_grids_pass
 #FEAT: per-change toggles for the DeepPoly-efficient passes
 from constraintflow.compiler.optimizations import opt_flags
 from constraintflow.gbcsr.sparse_block import RUNTIME_HELPERS
+#FEAT: parameters of the generated build() and run().
+RUN_PARAMS = ("network_file, batch_size, eps, dataset_X, dataset_y, dataset, train, print_intermediate_results, "
+              "no_sparsity, initializers=None, input_box=None")
 
 def fused_build():
     """True only on the reuse pass of a --fused-flow build, where flow() is emitted."""
@@ -103,10 +106,13 @@ class CodeGen(irVisitor.IRVisitor):
         self.write("from constraintflow.lib.abs_elem import Abs_elem_sparse")
         self.write("from constraintflow.lib.symexp import *")
         self.write("from constraintflow.lib.globals import save_capture, inductor_mode")
-        self.write("from transformers import *")
+        self.write_sibling_import('transformers')
         self.write("\n")
         # self.write("torch.cuda.reset_peak_memory_stats()")
-        self.write("def run(network_file, batch_size, eps, dataset_X, dataset_y, dataset, train, print_intermediate_results, no_sparsity, initializers=None):")
+        #FEAT: input_box=(x_L, x_U) lets a caller (certified training) supply the input box directly.
+        #FEAT: build() makes the network and abstract element and run() calls it, so the training
+        # fast path (constraintflow/lib/training.py) can build once and call flow() directly.
+        self.write("def build(" + RUN_PARAMS + "):")
         
         self.indent += 1
         self.visited = set()
@@ -556,6 +562,8 @@ class CodeGen(irVisitor.IRVisitor):
                 json.dump(metrics, f, indent=2)
         if not reuse_mode.get_flag():
             return
+        if training.get_flag():
+            open(os.path.join(self.folder, '__init__.py'), 'w').close()
         path = self.folder + '/jit_constants.py'
         with open(path, 'w') as f:
             f.write('import torch\n\n')
@@ -637,6 +645,13 @@ class CodeGen(irVisitor.IRVisitor):
         if flag:
             self.file.write('\n')
 
+    def write_sibling_import(self, module):
+        #FEAT: training builds import siblings relatively, so several programs can be loaded as packages.
+        if training.get_flag():
+            self.write('try:\n    from .' + module + ' import *\nexcept ImportError:\n    from ' + module + ' import *')
+        else:
+            self.write('from ' + module + ' import *')
+
     def write_expr(self, str, flag=True):
         self.file.write(str)
         if flag:
@@ -663,8 +678,15 @@ class CodeGen(irVisitor.IRVisitor):
         temp_dict += '}'
 
 
-        self.write("network, l, u, L, U, Z, llist = get_network_and_input_spec(network_file, batch_size, dataset_X, dataset_y, dataset, eps=eps, train=train, no_sparsity=no_sparsity, initializers=initializers, members=" + repr(tuple(node.shape.keys())) + ")")
+        self.write("network, l, u, L, U, Z, llist = get_network_and_input_spec(network_file, batch_size, dataset_X, dataset_y, dataset, eps=eps, train=train, no_sparsity=no_sparsity, initializers=initializers, input_box=input_box, members=" + repr(tuple(node.shape.keys()))
+                   + (", fold_spec=True" if training.get_flag() else "") + ")")
         self.write("abs_elem = Abs_elem_sparse(" + temp_dict + ", " + str(temp_shape) + ", network, batch_size=batch_size, no_sparsity=no_sparsity)")
+        #FEAT: end build(); run() continues with the flow lines visitIrFlow appends.
+        self.write("return network, abs_elem")
+        self.indent -= 1
+        self.write("def run(" + RUN_PARAMS + "):")
+        self.indent += 1
+        self.write("network, abs_elem = build(network_file, batch_size, eps, dataset_X, dataset_y, dataset, train, print_intermediate_results, no_sparsity, initializers=initializers, input_box=input_box)")
         
 
 
@@ -692,7 +714,7 @@ class CodeGen(irVisitor.IRVisitor):
         if reuse_mode.get_flag():
             self.write('import operator')
             self.write('import torch.nn.functional as F')
-            self.write('from jit_constants import *')
+            self.write_sibling_import('jit_constants')
             # self.write('from constraintflow.gbcsr.tensor_ops import *')
         else:
             self.write('from constraintflow.gbcsr.sparse_tensor import SparseTensor')
@@ -1610,6 +1632,9 @@ class CodeGen(irVisitor.IRVisitor):
         [lhsIr, rhsIr] = node.children
         lhs = self.visit(lhsIr)
         rhs = self.visit(rhsIr)
+        #FIX FOR: NaN gradients from divisions in torch.where arms that are not selected (sparse_block.safe_div).
+        if training.get_flag() and self.get_operator_func(node.op) == 'operator.truediv':
+            return 'safe_div(' + lhs + ', ' + rhs + ')'
         return self.get_operator_func(node.op) + '(' + lhs + ', ' + rhs + ')'
 
     def visitIrTorchWhere(self, node):
@@ -1909,6 +1934,7 @@ class CodeGen(irVisitor.IRVisitor):
         self.indent += 1
         if sroa_build():
             self.write('res = flow(*explode_inputs(abs_elem, batch_size))')
+            self.write('res = apply_spec_offset(network, res)')
             if self.target == 'torch':
                 self.write('if not inductor_mode.get_flag():')
                 self.write('    print("Peak memory usage:", torch.cuda.max_memory_allocated() / 1024**2, "MB")')
@@ -1919,6 +1945,7 @@ class CodeGen(irVisitor.IRVisitor):
             # The unrolled flow() returns the final abstract shape; densify it here.
             self.write('abs_shape = flow(abs_elem, batch_size)')
             self.write('res = get_dense_inlined(abs_shape[0]), get_dense_inlined(abs_shape[1])')
+            self.write('res = apply_spec_offset(network, res)')
             self.write('if not inductor_mode.get_flag():')
             self.write('    print("Peak memory usage:", torch.cuda.max_memory_allocated() / 1024**2, "MB")')
             self.write('return res')
@@ -1926,6 +1953,7 @@ class CodeGen(irVisitor.IRVisitor):
             return
         self.write('flow = Flow(abs_elem, ' + str(node.transformer) + '(), network, print_intermediate_results, no_sparsity)')
         self.write('res = flow.flow()')
+        self.write('res = apply_spec_offset(network, res)')
         self.write('if not inductor_mode.get_flag():')
         self.write('    print("Peak memory usage:", torch.cuda.max_memory_allocated() / 1024**2, "MB")')
         self.write('return res')
