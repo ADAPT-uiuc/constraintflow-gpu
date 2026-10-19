@@ -60,7 +60,7 @@ def export_model(model, dummy_input, cache_dir):
     return path, {i.name: params[i.name] for i in inits}
 
 
-def program_dir(cache_dir, onnx_path, method, batch_size, dataset, cudagraphs):
+def program_dir(cache_dir, onnx_path, method, batch_size, dataset, cudagraphs, jit_flags=()):
     """Cache folder named by everything the generated code depends on (not the weights)."""
     graph = onnx.load(onnx_path).graph
     structure = repr([(n.op_type, list(n.input), list(n.output), [str(a) for a in n.attribute]) for n in graph.node]
@@ -68,20 +68,21 @@ def program_dir(cache_dir, onnx_path, method, batch_size, dataset, cudagraphs):
     with open(os.path.join(CF_ROOT, 'examples', 'compiler_examples', PROGRAMS[method]), 'rb') as f:
         program = f.read()
     key = hashlib.sha256(b'|'.join([SOURCE_HASH.encode(), structure.encode(), program,
-                                    f'{batch_size}|{dataset}|{cudagraphs}'.encode()])).hexdigest()[:16]
+                                    f'{batch_size}|{dataset}|{cudagraphs}|{" ".join(jit_flags)}'.encode()])).hexdigest()[:16]
     return os.path.join(cache_dir, f'{method}_b{batch_size}_{key}')
 
 
-def compile_program(onnx_path, method, batch_size, dataset, cache_dir, cudagraphs=True, data_root='./data'):
+#FEAT: jit_flags = extra `cli jit` options (e.g. --fuse-affine-subst), part of the cache key.
+def compile_program(onnx_path, method, batch_size, dataset, cache_dir, cudagraphs=True, data_root='./data', jit_flags=()):
     """Compile into the cache unless already there; return the program folder."""
-    folder = program_dir(cache_dir, onnx_path, method, batch_size, dataset, cudagraphs)
+    folder = program_dir(cache_dir, onnx_path, method, batch_size, dataset, cudagraphs, jit_flags)
     if os.path.exists(os.path.join(folder, '__init__.py')):
         return folder
     tmp = folder + '.tmp'
     shutil.rmtree(tmp, ignore_errors=True)
     cmd = [sys.executable, '-m', 'constraintflow.cli', 'jit', os.path.join(CF_ROOT, 'examples', 'compiler_examples', PROGRAMS[method]),
            '--network', os.path.abspath(onnx_path), '--dataset', dataset, '--batch-size', str(batch_size), '--eps', '0.01',
-           '--device', 'gpu', '--output-path', os.path.abspath(tmp) + '/', '--inductor', '--training'] + (['--cudagraphs'] if cudagraphs else [])
+           '--device', 'gpu', '--output-path', os.path.abspath(tmp) + '/', '--inductor', '--training'] + (['--cudagraphs'] if cudagraphs else []) + list(jit_flags)
     #FEAT: DeepPoly programs get --fuse-affine-subst, as in the verification harness.
     if PROGRAMS[method].startswith('deeppoly'):
         cmd.append('--fuse-affine-subst')
@@ -167,7 +168,7 @@ class TrainingBounds:
 class SpecBounds(TrainingBounds):
     """compute_spec_bounds on a fixed ONNX file: its own initializers stand in for model parameters."""
 
-    def __init__(self, onnx_path, input_shape, dataset, methods, batch_sizes, cache_dir, cudagraphs=True, data_root='./data'):
+    def __init__(self, onnx_path, input_shape, dataset, methods, batch_sizes, cache_dir, cudagraphs=True, data_root='./data', jit_flags=()):
         device_mode.set_mode('gpu')
         self.dataset, self.cudagraphs, self.onnx_path = dataset, cudagraphs, onnx_path
         inits = [i for i in onnx.load(onnx_path).graph.initializer if i.data_type == onnx.TensorProto.FLOAT]
@@ -177,5 +178,5 @@ class SpecBounds(TrainingBounds):
         self.programs = {}
         for method in methods:
             for batch_size in batch_sizes:
-                folder = compile_program(onnx_path, method, batch_size, dataset, cache_dir, cudagraphs, data_root)
+                folder = compile_program(onnx_path, method, batch_size, dataset, cache_dir, cudagraphs, data_root, jit_flags)
                 self.programs[method, batch_size] = self._build(load_program(folder), dummy_input, batch_size)

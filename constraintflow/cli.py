@@ -305,6 +305,8 @@ def simulacrum_compile(
     view_aliases: Optional[bool] = typer.Option(None, "--view-aliases/--no-view-aliases", help="Inline storage-sharing views before memory planning."),
     expression_limits: Optional[bool] = typer.Option(None, "--expression-limits/--no-expression-limits", help="Split expressions deeper than 64 into temporaries."),
     fused_matvec: Optional[bool] = typer.Option(None, "--fused-matvec/--no-fused-matvec", help="Lower pointwise-produced matvecs to row reductions."),
+    #FEAT: Inductor post-grad pass merging matmuls that share a left operand.
+    shared_lhs_mm: Optional[bool] = typer.Option(None, "--shared-lhs-mm/--no-shared-lhs-mm", help="Merge mm(x, W), mm(x, b) sharing x into one mm(x, [W | b]) (Inductor post-grad pass)."),
 ):
     """
     Compile a ConstraintFlow program through the whole simulacrum+reuse pipeline
@@ -315,7 +317,7 @@ def simulacrum_compile(
                'patch_factor': patch_factor, 'conv_chunks': conv_chunks, 'conv_sum': conv_sum,
                'transpose_grids': transpose_grids, 'grid_packed_bytes': grid_packed_bytes,
                'view_aliases': view_aliases, 'expression_limits': expression_limits,
-               'fused_matvec': fused_matvec}
+               'fused_matvec': fused_matvec, 'shared_lhs_mm': shared_lhs_mm}
     opt_flags.set_enabled([n for n, v in choices.items() if (dpe_opts if v is None else v)])
     typer.echo('[opt-flags] off: ' + (', '.join(n for n in opt_flags.FLAGS if not opt_flags.enabled(n)) or 'none'))
     if target not in ('torch', 'jax'):
