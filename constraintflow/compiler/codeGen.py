@@ -697,7 +697,9 @@ class CodeGen(irVisitor.IRVisitor):
             self.write('from constraintflow.lib.polyexp import PolyExpSparse')
         if reuse_mode.get_flag():
             self.write('from constraintflow.lib.symexp import SymExpSparse')
-            self.write('from constraintflow.gbcsr.sparse_block import ' + ', '.join(RUNTIME_HELPERS))
+            #FEAT: training_bcast_matmul is imported only by training builds, so verification code is unchanged.
+            self.write('from constraintflow.gbcsr.sparse_block import ' + ', '.join(
+                h for h in RUNTIME_HELPERS if h != 'training_bcast_matmul' or training.get_flag()))
             #FEAT: pre-autograd CSE pass named in training builds' compile decorator.
             if training.get_flag():
                 self.write('from constraintflow.lib.pre_grad_cse import PRE_GRAD_CSE')
@@ -1150,6 +1152,9 @@ class CodeGen(irVisitor.IRVisitor):
 
     def visitIrTorchMatmul(self, node):
         fn = 'bcast_matmul(' if reuse_mode.get_flag() else 'torch.matmul('
+        #FEAT: training builds use the variant whose backward avoids per-sample weight gradients.
+        if reuse_mode.get_flag() and training.get_flag():
+            fn = 'training_bcast_matmul('
         return fn + self.visit(node.children[0]) + ', ' + self.visit(node.children[1]) + ')'
 
     def visitIrTorchUnsqueeze(self, node):
