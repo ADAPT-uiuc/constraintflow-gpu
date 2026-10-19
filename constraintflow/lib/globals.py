@@ -170,6 +170,9 @@ center_radius = Flag(True)
 # Compile flow() with mode="reduce-overhead" (CUDA graph replay).
 cudagraphs = Flag()
 
+#FEAT: certified-training build: importable as a package, safe divisions, margin spec folded into the last Linear.
+training = Flag()
+
 # Leave Inductor's conv layout optimization (channels-last operands) on; off by default.
 inductor_layout_opt = Flag()
 

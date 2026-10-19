@@ -943,6 +943,27 @@ def _(x, weight, stride, padding, output_padding):
     return x.new_empty(size)
 
 
+#FIX FOR: cf::conv_transpose2d had no autograd formula, so conv-net bounds could not be differentiated.
+def _conv_transpose2d_setup_context(ctx, inputs, output):
+    x, weight, stride, padding, output_padding = inputs
+    ctx.save_for_backward(x, weight)
+    ctx.conv_args = (stride, padding, output_padding)
+
+
+def _conv_transpose2d_backward(ctx, grad):
+    x, weight = ctx.saved_tensors
+    stride, padding, output_padding = ctx.conv_args
+    # Whichever lowering ran forward, the op is aten's transposed convolution.
+    grad_x, grad_weight, _ = torch.ops.aten.convolution_backward(
+        grad.contiguous(), x, weight, None, stride, padding, [1, 1], True, output_padding, 1,
+        [ctx.needs_input_grad[0], ctx.needs_input_grad[1], False])
+    return grad_x, grad_weight, None, None, None
+
+
+_conv_transpose2d_op.register_autograd(_conv_transpose2d_backward,
+                                       setup_context=_conv_transpose2d_setup_context)
+
+
 def conv_transpose2d(x, weight, stride=1, padding=0, output_padding=0):
     return _conv_transpose2d_op(x, weight, _pair(stride), _pair(padding), _pair(output_padding))
 
@@ -991,8 +1012,45 @@ def bcast_matmul(a, b):
     return torch.matmul(a, b)
 
 
+#FIX FOR: torch.where evaluates both arms, so a division in the unselected arm (ReLU slope u/(u-l) with
+# u-l == 0 or tiny) gave NaN gradients (0/0, 0 * inf). Gradients are exactly 0 where the incoming one is.
+class _SafeDiv(torch.autograd.Function):
+    @staticmethod
+    def forward(num, den):
+        return num / torch.where(den == 0, torch.ones_like(den), den)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        ctx.save_for_backward(*inputs)
+
+    @staticmethod
+    def backward(ctx, grad):
+        num, den = ctx.saved_tensors
+        den = torch.where(den == 0, torch.ones_like(den), den)
+        live = grad != 0
+        grad_over_den = torch.where(live, grad / den, torch.zeros_like(grad))
+        grad_num = grad_over_den if ctx.needs_input_grad[0] else None
+        grad_den = None
+        if ctx.needs_input_grad[1]:
+            # -grad * num / den**2, as two divisions so den**2 cannot underflow on its own.
+            grad_den = torch.where(live, -grad_over_den * (num / den), torch.zeros_like(grad_over_den))
+        if grad_num is not None and grad_num.shape != num.shape:
+            grad_num = grad_num.sum_to_size(num.shape)
+        if grad_den is not None and grad_den.shape != den.shape:
+            grad_den = grad_den.sum_to_size(den.shape)
+        return grad_num, grad_den
+
+
+def safe_div(num, den):
+    if not isinstance(den, torch.Tensor):
+        return operator.truediv(num, den)
+    if not isinstance(num, torch.Tensor):
+        num = torch.as_tensor(num, dtype=den.dtype, device=den.device)
+    return _SafeDiv.apply(num, den)
+
+
 # Called by name from generated flow code; codeGen imports and flow_shapes evaluates them.
-RUNTIME_HELPERS = {f.__name__: f for f in (col2im_columns, patches_to_dense, conv_transpose2d, bcast_matmul)}
+RUNTIME_HELPERS = {f.__name__: f for f in (col2im_columns, patches_to_dense, conv_transpose2d, bcast_matmul, safe_div)}
 
 
 def identifySparseBlockType(block):

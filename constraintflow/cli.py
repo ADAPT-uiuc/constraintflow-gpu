@@ -286,6 +286,8 @@ def simulacrum_compile(
     memory_budget_mb: float = typer.Option(-1.0, "--memory-budget-mb", help="When the flow's estimated peak tensor memory exceeds this many MB, reorder it group by group and recompute large values instead of keeping them live (mem_plan); with --flow-segment-mb, values a segment does not read are also parked in host memory between segments (flow_offload). Requires --sroa with --early-reductions. -1 (default) uses 70% of the CUDA device's memory; 0 disables."),
     #FEAT: --dtype on jit, so typer accepts it (applied from argv above).
     dtype: str = typer.Option("float32", "--dtype", help="float32, or float64 to compute every float tensor in fp64 (a precision oracle for bound mismatches; compile and run must agree). Read from argv before the imports; listed here so typer accepts it."),
+    #FEAT: certified-training build (constraintflow/lib/training.py).
+    training: bool = typer.Option(False, "--training", help="Build for certified training: importable as a package, NaN-free division gradients, margin spec folded into the last Linear."),
     #FEAT: DeepPoly-efficient optimizations, on by default (optimizations/opt_flags.py).
     dpe_opts: bool = typer.Option(True, "--dpe-opts/--no-dpe-opts", help="Default for every optimization below; --no-dpe-opts turns them all off, and --<name> then turns one back on."),
     sroa_functional: Optional[bool] = typer.Option(None, "--sroa-functional/--no-sroa-functional", help="Decide SROA purity from the emitted program for torch too, so more flows get the functional-only passes."),
@@ -344,10 +346,11 @@ def simulacrum_compile(
         typer.echo(f"Error creating folder '{output_path}': {e}")
         raise typer.Exit(code=1)
 
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    from bench import configs as bench_configs
-    onnx_path = network if os.path.isfile(network) else os.path.join(bench_configs.REPO_ROOT, network)
-    network = onnx_path
+    #FIX FOR: jit imported cf-harness's bench package even when --network is an existing file, so it failed outside the harness checkout (worktrees, certified training).
+    if not os.path.isfile(network):
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        from bench import configs as bench_configs
+        network = os.path.join(bench_configs.REPO_ROOT, network)
 
     globals.set_jit_root(jit_dir)
     globals.in_memory_captures.set_flag() if in_memory else globals.in_memory_captures.reset_flag()
@@ -372,6 +375,7 @@ def simulacrum_compile(
     else:
         clear_jit_captures()
 
+    globals.training.set_flag() if training else globals.training.reset_flag()
     # Simulacrum.
     globals.inductor_mode.reset_flag()
     globals.dummy_mode.set_flag()
@@ -428,6 +432,7 @@ def simulacrum_compile(
         globals.early_reductions.reset_flag()
         globals.fuse_sign_convs.reset_flag()
         globals.cudagraphs.reset_flag()
+        globals.training.reset_flag()
         globals.inductor_layout_opt.reset_flag()
         globals.product_grids.reset_flag()
         globals.center_radius.set_flag()   # back to the default

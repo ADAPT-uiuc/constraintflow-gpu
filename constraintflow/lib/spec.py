@@ -151,7 +151,17 @@ def create_llist(network):
 
 
 
-def get_network_and_input_spec(network_file, batch_size, X, y, dataset, eps, train=False, no_sparsity=False, initializers=None, members=None):
+#FEAT: add the folded margin bias that parse_onnx_layers(fold_spec=True) moved out of the last layer.
+def apply_spec_offset(network, res):
+    offset = getattr(network[-1], 'spec_offset', None)
+    # The simulacrum pass returns dummy shapes or meta tensors, not values.
+    if offset is None or not all(isinstance(r, torch.Tensor) and not r.is_meta for r in res):
+        return res
+    return tuple(r + offset for r in res)
+
+
+#FEAT: input_box=(x_L, x_U), already in the network's input space, replaces the clip(X +- eps) box and dataset normalization.
+def get_network_and_input_spec(network_file, batch_size, X, y, dataset, eps, train=False, no_sparsity=False, initializers=None, members=None, input_box=None, fold_spec=False):
     if dataset == 'tinyimagenet':
         #FEAT: follow the run dtype instead of hardcoded fp32.
         X = X.to(torch.float) / 255.0
@@ -159,9 +169,15 @@ def get_network_and_input_spec(network_file, batch_size, X, y, dataset, eps, tra
     X = X.to(torch.get_default_dtype())
 
     spec_weight, spec_bias = ImageDataset.get_output_spec_weight_and_bias(X, y, dataset)
-    network = get_net(network_file, spec_weight, spec_bias, no_sparsity, initializers=initializers)
-    l = ImageDataset.create_l(X, network.size, batch_size, eps, dataset, no_sparsity)
-    u = ImageDataset.create_u(X, network.size, batch_size, eps, dataset, no_sparsity)
+    network = get_net(network_file, spec_weight, spec_bias, no_sparsity, initializers=initializers, fold_spec=fold_spec)
+    if input_box is None:
+        l = ImageDataset.create_l(X, network.size, batch_size, eps, dataset, no_sparsity)
+        u = ImageDataset.create_u(X, network.size, batch_size, eps, dataset, no_sparsity)
+    else:
+        #FEAT: caller-supplied box (see input_box above).
+        x_L, x_U = (t.to(torch.get_default_dtype()).reshape(batch_size, -1) for t in input_box)
+        l = create_sparse_init(x_L, float('-inf'), batch_size, network.size, no_sparsity)
+        u = create_sparse_init(x_U, float('inf'), batch_size, network.size, no_sparsity)
     L = create_L(l, network, batch_size, no_sparsity) if members is None or 'L' in members else None
     U = create_U(u, network, batch_size, no_sparsity) if members is None or 'U' in members else None
     Z = create_Z(l, u, network, no_sparsity) if members is None or 'Z' in members else None

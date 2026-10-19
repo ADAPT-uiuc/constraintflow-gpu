@@ -210,7 +210,7 @@ def get_net_format(net_name):
         net_format = 'onnx'
     return net_format
 
-def get_net(net_name, spec_weight, spec_bias, no_sparsity, initializers=None):
+def get_net(net_name, spec_weight, spec_bias, no_sparsity, initializers=None, fold_spec=False):
     net_format = get_net_format(net_name)
     if net_format == 'onnx':
         net_onnx = onnx.load(net_name)
@@ -245,7 +245,11 @@ def get_net(net_name, spec_weight, spec_bias, no_sparsity, initializers=None):
             no_sparsity,
             model_name_to_val_dict=model_name_to_val_dict,
             values=values,
+            fold_spec=fold_spec,
         )
+        #FEAT: training fast path, see record_layer_sources.
+        if initializers is not None:
+            record_layer_sources(net, model_name_to_val_dict)
     else:
         raise ValueError("Unsupported net format!")
 
@@ -253,6 +257,48 @@ def get_net(net_name, spec_weight, spec_bias, no_sparsity, initializers=None):
 
     print('Network loaded')
     return net
+
+#FEAT: training fast path (constraintflow/lib/training.py): a parsed network is reused across
+# steps, and refresh_layers re-derives each layer's tensors from the current parameters and spec.
+def record_layer_sources(layers, values):
+    """Name the ONNX initializer each layer's weight/bias came from (by identity, before any
+    transform parse applied). A layer whose gradient-carrying tensor has no source is not refreshable."""
+    name_of = {id(t): name for name, t in values.items()}
+    for layer in layers:
+        layer.sources = {}
+        layer.refreshable = True
+        for attr in ('weight', 'bias'):
+            raw = getattr(layer, attr + '_raw', getattr(layer, attr, None))
+            if not isinstance(raw, torch.Tensor) or getattr(layer, 'is_spec_layer', False):
+                continue
+            name = name_of.get(id(raw))
+            if name is not None:
+                layer.sources[attr] = name
+            elif raw.requires_grad:
+                layer.refreshable = False
+
+
+def refresh_layers(layers, values, spec_weight, spec_bias):
+    """Recompute every layer tensor parse derived from `values` (the ONNX initializers) and the spec."""
+    for layer in layers:
+        if getattr(layer, 'is_spec_layer', False):
+            layer.weight, layer.bias = spec_weight, spec_bias
+            continue
+        src = layer.sources
+        weight = values[src['weight']] if 'weight' in src else None
+        bias = values[src['bias']] if 'bias' in src else None
+        if getattr(layer, 'folded_spec', False):
+            layer.spec_offset = (spec_weight @ bias.unsqueeze(-1)).squeeze(-1) + spec_bias
+            layer.weight = spec_weight @ weight
+            layer.bias = torch.zeros_like(spec_bias)
+            continue
+        if weight is not None:
+            layer.weight = weight
+        if bias is not None:
+            if layer.type == LayerType.Conv2D:
+                bias = bias.unsqueeze(1).repeat(1, layer.shape[2] * layer.shape[3]).flatten()
+            layer.bias = bias
+
 
 def forward_layers(net, relu_mask, transformers):
     for layer in net:
@@ -359,6 +405,7 @@ def parse_onnx_layers(
     no_sparsity,
     model_name_to_val_dict=None,
     values=None,
+    fold_spec=False,
 ):
     input_shape = [dim.dim_value for dim in net.graph.input[0].type.tensor_type.shape.dim]
     input_shape = [1 if i == 0 else i for i in input_shape]
@@ -459,6 +506,8 @@ def parse_onnx_layers(
             o_3 = math.floor((i_3 + 2*p_1 - k_3) / s_1) + 1
             o_4 = math.floor((i_4 + 2*p_2 - k_4) / s_2) + 1
             layer.shape = [o_1, o_2, o_3, o_4]
+            #FEAT: keep the per-channel bias for refresh_layers (training fast path).
+            layer.bias_raw = layer.bias
             layer.bias = (layer.bias.unsqueeze(1).repeat(1, o_3*o_4)).flatten()
 
             
@@ -595,9 +644,25 @@ def parse_onnx_layers(
         layer.end = layers.size
         shape = layer.shape
 
-    if True or layers[-1].type != LayerType.Linear:
+    #FEAT: fold the margin spec C into the last Linear (W' = C W), as auto_LiRPA's IBP does. The per-sample
+    # bias C b is added to the output by spec.apply_spec_offset, since DSL biases are shared across the batch.
+    if fold_spec and layers[-1].type == LayerType.Linear:
+        last = layers[-1]
+        last.weight_raw, last.bias_raw, last.folded_spec = last.weight, last.bias, True
+        last.spec_offset = (spec_weight @ last.bias.unsqueeze(-1)).squeeze(-1) + spec_bias
+        last.weight = spec_weight @ last.weight
+        last.bias = torch.zeros_like(spec_bias)
+        last.last_layer = True
+        last.shape = [1, spec_weight.shape[-2], 1, 1]
+        layers.size = layers.size - last.size
+        last.size = compute_size(last.shape)
+        last.start = layers.size
+        layers.size += last.size
+        last.end = layers.size
+    elif True or layers[-1].type != LayerType.Linear:
         layer = Layer(weight=spec_weight, bias=spec_bias, type=LayerType.Linear, identifier=index+1, parents=[layers[-1].identifier])
         layer.last_layer = True
+        layer.is_spec_layer = True  #FEAT: refresh_layers swaps in each batch's spec.
         layer.shape = [1, spec_weight.shape[-2], 1, 1]
         layer.size = compute_size(layer.shape)
         layer.start = layers.size 
