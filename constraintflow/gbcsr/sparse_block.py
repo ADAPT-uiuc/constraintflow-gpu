@@ -1069,12 +1069,16 @@ def bcast_matmul(a, b):
     if (a.dim() == 3 and b.dim() == 3 and b.shape[-1] == 1 and a.shape[0] > 1
             and a.stride(0) == 0 and b.shape[0] == a.shape[0]):
         return torch.matmul(b.squeeze(-1), a[0].transpose(0, 1)).unsqueeze(-1)
-    #FIX FOR: per-sample matrices times a batch-expanded one ran as a bmm whose backward built a per-sample
-    # [B, K, N] gradient of the shared matrix; one GEMM over B*M rows gives a single [K, N] gradient GEMM.
+    return torch.matmul(a, b)
+
+
+#FIX FOR: in training, per-sample matrices times a batch-expanded one ran as a bmm whose backward built a
+# per-sample [B, K, N] gradient of the shared matrix; one GEMM over B*M rows gives a single [K, N] gradient GEMM.
+def training_bcast_matmul(a, b):
     # Matrices only: for a vector b the per-sample gradient is small, and reshaping a non-contiguous a would copy it.
     if a.dim() == 3 and b.dim() == 3 and b.shape[0] > 1 and b.shape[-1] > 1 and b.stride(0) == 0 and a.stride(0) != 0:
         return torch.matmul(a.reshape(-1, a.shape[-1]), b[0]).reshape(a.shape[0], a.shape[1], b.shape[-1])
-    return torch.matmul(a, b)
+    return bcast_matmul(a, b)
 
 
 #FIX FOR: torch.where evaluates both arms, so a division in the unselected arm (ReLU slope u/(u-l) with
@@ -1115,7 +1119,7 @@ def safe_div(num, den):
 
 
 # Called by name from generated flow code; codeGen imports and flow_shapes evaluates them.
-RUNTIME_HELPERS = {f.__name__: f for f in (col2im_columns, patches_to_dense, conv_transpose2d, bcast_matmul, safe_div)}
+RUNTIME_HELPERS = {f.__name__: f for f in (col2im_columns, patches_to_dense, conv_transpose2d, bcast_matmul, training_bcast_matmul, safe_div)}
 
 
 def identifySparseBlockType(block):
