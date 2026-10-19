@@ -21,8 +21,9 @@ from constraintflow.lib.parse import refresh_layers
 from constraintflow.lib.spec import ImageDataset, apply_spec_offset
 
 CF_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(constraintflow.__file__)))
-PROGRAMS = {'IBP': 'ibp.cf', 'CROWN-IBP': 'crownibp.cf',
-            'CROWN': 'deeppoly_priority_add.cf',  # DeepPoly with the residual Add rule = auto_LiRPA's CROWN
+#FIX FOR: training back-substituted the unused spec upper bound (auto_LiRPA trains with bound_upper=False), doubling the backward.
+PROGRAMS = {'IBP': 'ibp.cf', 'CROWN-IBP': 'crownibp_lower.cf',
+            'CROWN': 'deeppoly_priority_add_lower.cf',  # DeepPoly with the residual Add rule = auto_LiRPA's CROWN
             'zid': 'zid.cf',
             'CROWN-lower': 'deeppoly_priority_add_lower.cf'}  #FEAT: CROWN with only the last layer's lower bound back-substituted
 

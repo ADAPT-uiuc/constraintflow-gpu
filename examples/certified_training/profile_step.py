@@ -1,7 +1,8 @@
-"""Profile one CROWN-IBP training step (as simple_training.py does it) on N32 for one tool.
+"""Profile one training step (as simple_training.py does it) for one tool; default CROWN-IBP on N32.
 
-    python profile_step.py {lirpa,cf} OUT_DIR   (run from a folder with data/cifar-10-batches-py)
+    python profile_step.py {lirpa,cf} OUT_DIR [NET.onnx] [IBP|CROWN-IBP|CROWN] [BATCH]
 """
+import os
 import sys
 import time
 
@@ -13,17 +14,24 @@ sys.path[:0] = [f'{H}/auto_LiRPA', f'{H}/auto_LiRPA/examples/vision']
 from simple_verification import get_pytorch_from_onnx
 
 tool, out = sys.argv[1], sys.argv[2]
+onnx = sys.argv[3] if len(sys.argv) > 3 else f'{H}/nets/cifar/convBigRELU__DiffAI.onnx'
+METHOD = sys.argv[4] if len(sys.argv) > 4 else 'CROWN-IBP'
+BS = int(sys.argv[5]) if len(sys.argv) > 5 else 256
 torch.backends.cuda.matmul.allow_tf32 = torch.backends.cudnn.allow_tf32 = False
 torch.manual_seed(0)
-BS, EPS = 256, 2 / 255
-mean = torch.tensor([0.4914, 0.4822, 0.4465]).view(1, 3, 1, 1).cuda()
-std = torch.tensor([0.2023, 0.1994, 0.2010]).view(1, 3, 1, 1).cuda()
+if 'mnist' in onnx:
+    DATA, SHAPE, EPS = 'mnist', (1, 28, 28), 0.1
+    mean, std = torch.tensor(0.1307).view(1, 1, 1, 1).cuda(), torch.tensor(0.3081).view(1, 1, 1, 1).cuda()
+else:
+    DATA, SHAPE, EPS = 'cifar', (3, 32, 32), 2 / 255
+    mean = torch.tensor([0.4914, 0.4822, 0.4465]).view(1, 3, 1, 1).cuda()
+    std = torch.tensor([0.2023, 0.1994, 0.2010]).view(1, 3, 1, 1).cuda()
 
-model = get_pytorch_from_onnx(f'{H}/nets/cifar/convBigRELU__DiffAI.onnx')
+model = get_pytorch_from_onnx(onnx)
 model[-1] = torch.nn.Identity()  # as compare_driver: lets the spec fold into the last Linear
 model = model.cuda().train()
 opt = torch.optim.Adam(model.parameters(), lr=5e-4)
-x = ((torch.rand(BS, 3, 32, 32, device='cuda') - mean) / std)
+x = ((torch.rand(BS, *SHAPE, device='cuda') - mean) / std)
 y = torch.randint(0, 10, (BS,), device='cuda')
 x_L = torch.max(x - EPS / std, (0 - mean) / std)
 x_U = torch.min(x + EPS / std, (1 - mean) / std)
@@ -33,7 +41,7 @@ c = c[y.unsqueeze(1) != torch.arange(10, device='cuda').unsqueeze(0)].view(BS, 9
 if tool == 'lirpa':
     from auto_LiRPA import BoundedModule, BoundedTensor
     from auto_LiRPA.perturbations import PerturbationLpNorm
-    bounded = BoundedModule(model, torch.zeros(2, 3, 32, 32), bound_opts={'conv_mode': 'patches'}, device='cuda')
+    bounded = BoundedModule(model, torch.zeros(2, *SHAPE), bound_opts={'conv_mode': 'patches'}, device='cuda')
 
     def begin():
         pass
@@ -41,12 +49,16 @@ if tool == 'lirpa':
     def forward():
         return bounded(BoundedTensor(x, PerturbationLpNorm(norm=float('inf'), eps=EPS, x_L=x_L, x_U=x_U)))
 
-    def bounds():  # CROWN-FAST in simple_training.py
-        bounded.compute_bounds(IBP=True, C=c, method=None)
-        return bounded.compute_bounds(IBP=False, C=c, method='backward', bound_upper=False)[0]
+    def bounds():  # CROWN-IBP = CROWN-FAST in simple_training.py
+        if METHOD == 'CROWN':
+            return bounded.compute_bounds(IBP=False, C=c, method='backward', bound_upper=False)[0]
+        lb = bounded.compute_bounds(IBP=True, C=c, method=None)[0]
+        if METHOD == 'CROWN-IBP':
+            lb = bounded.compute_bounds(IBP=False, C=c, method='backward', bound_upper=False)[0]
+        return lb
 else:
     from constraintflow.lib.training import TrainingBounds
-    cf = TrainingBounds(model, torch.zeros(2, 3, 32, 32), 'cifar', ['CROWN-IBP'], [BS], f'{out}/cf_cache')
+    cf = TrainingBounds(model, torch.zeros(2, *SHAPE), DATA, [METHOD], [BS], f'{out}/cf_cache')
 
     def begin():
         cf.begin_step()
@@ -55,7 +67,7 @@ else:
         return model(x)
 
     def bounds():
-        return cf.compute_bounds('CROWN-IBP', x_L, x_U, y)[0]
+        return cf.compute_bounds(METHOD, x_L, x_U, y)[0]
 
 
 def step(times=None):
@@ -88,7 +100,7 @@ times, n = {}, 20
 for _ in range(n):
     step(times)
 total = sum(times.values()) / n
-print(f'{tool}: {total * 1000:.1f} ms/step  ' + '  '.join(f'{k} {v / n * 1000:.1f} ms' for k, v in times.items()))
+print(f'{tool} {METHOD} {os.path.basename(onnx)} b{BS}: {total * 1000:.1f} ms/step  ' + '  '.join(f'{k} {v / n * 1000:.1f} ms' for k, v in times.items()))
 
 from torch.profiler import profile, ProfilerActivity
 with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:

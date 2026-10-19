@@ -953,11 +953,71 @@ def _conv_transpose2d_setup_context(ctx, inputs, output):
 def _conv_transpose2d_backward(ctx, grad):
     x, weight = ctx.saved_tensors
     stride, padding, output_padding = ctx.conv_args
-    # Whichever lowering ran forward, the op is aten's transposed convolution.
-    grad_x, grad_weight, _ = torch.ops.aten.convolution_backward(
-        grad.contiguous(), x, weight, None, stride, padding, [1, 1], True, output_padding, 1,
-        [ctx.needs_input_grad[0], ctx.needs_input_grad[1], False])
-    return grad_x, grad_weight, None, None, None
+    #FIX FOR: cuDNN's transposed-conv weight gradient is several times slower than a patch GEMM on
+    # back-substitution shapes (huge batch, few channels); the backward is tuned per shape like the forward.
+    grad_x, grad_weight = _conv_transpose2d_backward_op(
+        grad.contiguous(), x, weight, stride, padding, output_padding,
+        [ctx.needs_input_grad[0], ctx.needs_input_grad[1]])
+    return (grad_x if ctx.needs_input_grad[0] else None), (grad_weight if ctx.needs_input_grad[1] else None), None, None, None
+
+
+_conv_transpose_bwd_choice = {}
+
+
+def _conv_transpose_bwd_lowerings(x, weight, stride, padding, output_padding, mask):
+    def cudnn(grad):
+        gx, gw, _ = torch.ops.aten.convolution_backward(
+            grad, x, weight, None, stride, padding, [1, 1], True, output_padding, 1, mask + [False])
+        return gx, gw
+
+    def patch_gemm(grad):
+        # Rows = (sample, x position), columns = the (out channel, kernel tap) patch of grad it touches.
+        n, ci, hx, wx = x.shape
+        kx, ky = weight.shape[2:]
+        padded = F.pad(grad, (padding[1], padding[1], padding[0], padding[0])) if any(padding) else grad
+        patches = padded.unfold(2, kx, stride[0]).unfold(3, ky, stride[1])[:, :, :hx, :wx]
+        rows = patches.permute(0, 2, 3, 1, 4, 5).reshape(n * hx * wx, -1)
+        gx = gw = None
+        if mask[0]:
+            gx = (rows @ weight.reshape(ci, -1).T).reshape(n, hx * wx, ci).transpose(1, 2).reshape(x.shape)
+        if mask[1]:
+            gw = (x.reshape(n, ci, -1).transpose(1, 2).reshape(-1, ci).T @ rows).reshape(weight.shape)
+        return gx, gw
+
+    return {"cudnn": cudnn, "patch_gemm": patch_gemm}
+
+
+@torch.library.custom_op("cf::conv_transpose2d_backward", mutates_args=())
+def _conv_transpose2d_backward_op(grad: torch.Tensor, x: torch.Tensor, weight: torch.Tensor, stride: list[int],
+                                  padding: list[int], output_padding: list[int], mask: list[bool]) -> tuple[torch.Tensor, torch.Tensor]:
+    lowerings = _conv_transpose_bwd_lowerings(x, weight, stride, padding, output_padding, mask)
+    key = (tuple(grad.shape), tuple(x.shape), tuple(weight.shape), x.dtype, x.device,
+           tuple(stride), tuple(padding), tuple(output_padding), tuple(mask))
+    choice = _conv_transpose_bwd_choice.get(key)
+    if choice is None:
+        choice = "cudnn"
+        if CONV_TRANSPOSE_TUNE and x.is_cuda:
+            times = {}
+            for name, fn in lowerings.items():
+                try:
+                    times[name] = _time_lowering(fn, grad)
+                except torch.cuda.OutOfMemoryError:
+                    pass
+            best = min(times, key=times.get, default="cudnn")
+            if best != "cudnn" and times[best] < CONV_TRANSPOSE_MIN_GAIN * times.get("cudnn", float("inf")):
+                choice = best
+            if CONV_TRANSPOSE_LOG:
+                print(f"conv_transpose2d backward {list(x.shape)} w{list(weight.shape)}: "
+                      + " ".join(f"{n}={t:.2f}" for n, t in times.items()) + f" -> {choice}", file=sys.stderr)
+        _conv_transpose_bwd_choice[key] = choice
+    gx, gw = lowerings[choice](grad)
+    # custom ops cannot return None: unused gradients come back as empty placeholders.
+    return (gx.contiguous() if gx is not None else x.new_empty(0)), (gw.contiguous() if gw is not None else weight.new_empty(0))
+
+
+@_conv_transpose2d_backward_op.register_fake
+def _(grad, x, weight, stride, padding, output_padding, mask):
+    return (x.new_empty(x.shape) if mask[0] else x.new_empty(0)), (weight.new_empty(weight.shape) if mask[1] else weight.new_empty(0))
 
 
 _conv_transpose2d_op.register_autograd(_conv_transpose2d_backward,
@@ -1009,6 +1069,11 @@ def bcast_matmul(a, b):
     if (a.dim() == 3 and b.dim() == 3 and b.shape[-1] == 1 and a.shape[0] > 1
             and a.stride(0) == 0 and b.shape[0] == a.shape[0]):
         return torch.matmul(b.squeeze(-1), a[0].transpose(0, 1)).unsqueeze(-1)
+    #FIX FOR: per-sample matrices times a batch-expanded one ran as a bmm whose backward built a per-sample
+    # [B, K, N] gradient of the shared matrix; one GEMM over B*M rows gives a single [K, N] gradient GEMM.
+    # Matrices only: for a vector b the per-sample gradient is small, and reshaping a non-contiguous a would copy it.
+    if a.dim() == 3 and b.dim() == 3 and b.shape[0] > 1 and b.shape[-1] > 1 and b.stride(0) == 0 and a.stride(0) != 0:
+        return torch.matmul(a.reshape(-1, a.shape[-1]), b[0]).reshape(a.shape[0], a.shape[1], b.shape[-1])
     return torch.matmul(a, b)
 
 

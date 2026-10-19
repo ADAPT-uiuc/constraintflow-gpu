@@ -42,6 +42,12 @@ def compile_decorator(fullgraph):
         # slower kernels for these batch-heavy, few-channel convolutions.
         options['layout_optimization'] = False
     opts = ', options=' + repr(options) if options else ''
+    #FEAT: training builds CSE the Dynamo graph before AOTAutograd (see lib/pre_grad_cse.py).
+    if training.get_flag():
+        #FIX FOR: autotuning a pointwise kernel clones the buffers it writes in place; on the first backward of
+        # large CROWN programs that transient ran out of memory (N32 batch 16). Heuristic configs ran as fast.
+        options['triton.autotune_pointwise'] = False
+        opts = ', options={' + ''.join(repr(k) + ': ' + repr(v) + ', ' for k, v in options.items()) + "'pre_grad_custom_pass': PRE_GRAD_CSE}"
     return '@torch.compile(fullgraph=' + str(fullgraph) + ', backend="inductor"' + opts + ')'
 
 
@@ -692,6 +698,9 @@ class CodeGen(irVisitor.IRVisitor):
         if reuse_mode.get_flag():
             self.write('from constraintflow.lib.symexp import SymExpSparse')
             self.write('from constraintflow.gbcsr.sparse_block import ' + ', '.join(RUNTIME_HELPERS))
+            #FEAT: pre-autograd CSE pass named in training builds' compile decorator.
+            if training.get_flag():
+                self.write('from constraintflow.lib.pre_grad_cse import PRE_GRAD_CSE')
             # self.write('from constraintflow.lib.symexp import get_new_eps')
             # self.write('from constraintflow.gbcsr.op_helper import binary_to_identity_unary')
 
