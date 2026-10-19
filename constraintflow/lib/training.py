@@ -1,0 +1,148 @@
+#FEAT: certified training with compiled ConstraintFlow programs.
+"""Differentiable margin bounds for a torch model, used like auto_LiRPA's BoundedModule.
+
+Each (method, batch size) is compiled once with `cli jit --training`, cached on disk, loaded as a
+package, and built once. A step only swaps in the box, the labels' margin spec and the parameters.
+"""
+import hashlib
+import importlib
+import importlib.util
+import os
+import shutil
+import subprocess
+import sys
+
+import onnx
+import torch
+
+import constraintflow
+from constraintflow.lib.globals import device_mode
+from constraintflow.lib.parse import refresh_layers
+from constraintflow.lib.spec import ImageDataset, apply_spec_offset
+
+CF_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(constraintflow.__file__)))
+PROGRAMS = {'IBP': 'ibp.cf', 'CROWN-IBP': 'crownibp.cf'}
+
+
+def _source_hash():
+    h = hashlib.sha256()
+    package = os.path.dirname(os.path.abspath(constraintflow.__file__))
+    for root, dirs, files in os.walk(package):
+        dirs[:] = sorted(d for d in dirs if d != '__pycache__')
+        for name in sorted(f for f in files if f.endswith('.py')):
+            with open(os.path.join(root, name), 'rb') as f:
+                h.update(f.read())
+    return h.hexdigest()
+
+
+# Computed at import, so editing cf-gpu invalidates the compiled-program cache.
+SOURCE_HASH = _source_hash()
+
+
+def export_model(model, dummy_input, cache_dir):
+    """Write the model as ONNX; return its path and the parameters, keyed by ONNX initializer name."""
+    os.makedirs(cache_dir, exist_ok=True)
+    path = os.path.join(cache_dir, 'model.onnx')
+    was_training = model.training
+    model.eval()
+    torch.onnx.export(model, dummy_input[:1].to(next(model.parameters()).device), path,
+                      dynamo=False, do_constant_folding=False, opset_version=13)
+    model.train(was_training)
+    params = dict(model.named_parameters())
+    inits = [i for i in onnx.load(path).graph.initializer if i.data_type == onnx.TensorProto.FLOAT]
+    unknown = [i.name for i in inits if i.name not in params or tuple(params[i.name].shape) != tuple(i.dims)]
+    if unknown:
+        raise ValueError(f'ONNX initializers that are not model parameters: {unknown}')
+    return path, {i.name: params[i.name] for i in inits}
+
+
+def program_dir(cache_dir, onnx_path, method, batch_size, dataset, cudagraphs):
+    """Cache folder named by everything the generated code depends on (not the weights)."""
+    graph = onnx.load(onnx_path).graph
+    structure = repr([(n.op_type, list(n.input), list(n.output), [str(a) for a in n.attribute]) for n in graph.node]
+                     + [(i.name, list(i.dims), i.data_type) for i in graph.initializer])
+    with open(os.path.join(CF_ROOT, 'examples', 'compiler_examples', PROGRAMS[method]), 'rb') as f:
+        program = f.read()
+    key = hashlib.sha256(b'|'.join([SOURCE_HASH.encode(), structure.encode(), program,
+                                    f'{batch_size}|{dataset}|{cudagraphs}'.encode()])).hexdigest()[:16]
+    return os.path.join(cache_dir, f'{method}_b{batch_size}_{key}')
+
+
+def compile_program(onnx_path, method, batch_size, dataset, cache_dir, cudagraphs=True, data_root='./data'):
+    """Compile into the cache unless already there; return the program folder."""
+    folder = program_dir(cache_dir, onnx_path, method, batch_size, dataset, cudagraphs)
+    if os.path.exists(os.path.join(folder, '__init__.py')):
+        return folder
+    tmp = folder + '.tmp'
+    shutil.rmtree(tmp, ignore_errors=True)
+    cmd = [sys.executable, '-m', 'constraintflow.cli', 'jit', os.path.join(CF_ROOT, 'examples', 'compiler_examples', PROGRAMS[method]),
+           '--network', os.path.abspath(onnx_path), '--dataset', dataset, '--batch-size', str(batch_size), '--eps', '0.01',
+           '--device', 'gpu', '--output-path', os.path.abspath(tmp) + '/', '--inductor', '--training'] + (['--cudagraphs'] if cudagraphs else [])
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([CF_ROOT, os.environ.get('PYTHONPATH', '')]))
+    # cli jit traces one batch read from torchvision under its working directory.
+    res = subprocess.run(cmd, cwd=data_root, env=env, capture_output=True, text=True)
+    with open(folder + '.compile.log', 'w') as f:
+        f.write(res.stdout + res.stderr)
+    if res.returncode != 0:
+        raise RuntimeError(f'cf-gpu compile failed, see {folder}.compile.log')
+    os.replace(tmp, folder)
+    return folder
+
+
+def compile_programs(model, dummy_input, dataset, methods, batch_sizes, cache_dir, cudagraphs=True, data_root='./data'):
+    onnx_path, _ = export_model(model, dummy_input, cache_dir)
+    return {(m, b): compile_program(onnx_path, m, b, dataset, cache_dir, cudagraphs, data_root)
+            for m in methods for b in batch_sizes}
+
+
+def load_program(folder):
+    """Import a compiled folder as its own package, so several programs can be loaded at once."""
+    name = 'cf_program_' + ''.join(c if c.isalnum() else '_' for c in os.path.basename(folder))
+    spec = importlib.util.spec_from_file_location(name, os.path.join(folder, '__init__.py'),
+                                                  submodule_search_locations=[folder])
+    sys.modules[name] = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sys.modules[name])
+    return importlib.import_module(name + '.main')
+
+
+class TrainingBounds:
+    """Lower/upper bounds on the margins f_y - f_j (j != y) under an Linf box, differentiable in the
+    model's parameters. One compiled program per (method, batch size)."""
+
+    def __init__(self, model, dummy_input, dataset, methods, batch_sizes, cache_dir, cudagraphs=True, data_root='./data'):
+        device_mode.set_mode('gpu')
+        self.dataset, self.cudagraphs = dataset, cudagraphs
+        self.onnx_path, self.params = export_model(model, dummy_input, cache_dir)
+        self.programs = {}
+        for method in methods:
+            for batch_size in batch_sizes:
+                folder = compile_program(self.onnx_path, method, batch_size, dataset, cache_dir, cudagraphs, data_root)
+                self.programs[method, batch_size] = self._build(load_program(folder), dummy_input, batch_size)
+
+    def _build(self, main, dummy_input, batch_size):
+        x = torch.zeros(batch_size, *dummy_input.shape[1:], device='cuda')
+        y = torch.zeros(batch_size, dtype=torch.long, device='cuda')
+        network, abs_elem = main.build(self.onnx_path, batch_size, 0.0, x, y, self.dataset, False, False, False,
+                                       initializers=self.params, input_box=(x, x))
+        if not set(abs_elem.d) <= {'llist', 'l', 'u', 'L', 'U'} or not all(layer.refreshable for layer in network):
+            raise ValueError('this program or network is not supported for training')
+        return network, abs_elem, main.flow, main.explode_inputs
+
+    def begin_step(self):
+        """Call once per batch: outputs of the previous step's CUDA graph replays may then be reused."""
+        if self.cudagraphs:
+            torch.compiler.cudagraph_mark_step_begin()
+
+    def compute_bounds(self, method, x_L, x_U, labels):
+        batch_size = labels.size(0)
+        network, abs_elem, flow, explode_inputs = self.programs[method, batch_size]
+        spec_weight, spec_bias = ImageDataset.get_output_spec_weight_and_bias(x_L, labels, self.dataset)
+        refresh_layers(network, self.params, spec_weight, spec_bias)
+        l, u = x_L.reshape(batch_size, -1), x_U.reshape(batch_size, -1)
+        abs_elem.d['l'].blocks[0].block, abs_elem.d['u'].blocks[0].block = l, u
+        # build() gives L and U their own copies of the box.
+        if 'L' in abs_elem.d:
+            abs_elem.d['L'].const.blocks[0].block = l.clone()
+        if 'U' in abs_elem.d:
+            abs_elem.d['U'].const.blocks[0].block = u.clone()
+        return apply_spec_offset(network, flow(*explode_inputs(abs_elem, batch_size)))
