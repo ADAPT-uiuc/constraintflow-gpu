@@ -36,7 +36,7 @@ parser.add_argument("--seed", type=int, default=100, help='random seed')
 parser.add_argument("--eps", type=float, default=0.3, help='Target training epsilon')
 parser.add_argument("--norm", type=float, default='inf', help='p norm for epsilon perturbation')
 parser.add_argument("--bound_type", type=str, default="CROWN-IBP",
-                    choices=["IBP", "CROWN-IBP", "CROWN-FAST"], help='method of bound analysis')  # CF-GPU: no CROWN
+                    choices=["IBP", "CROWN-IBP", "CROWN", "CROWN-FAST", "zid"], help='method of bound analysis')  # CF-GPU: + zid
 parser.add_argument("--model", type=str, default="resnet", help='model name (mlp_3layer, cnn_4layer, cnn_6layer, cnn_7layer, resnet)')
 parser.add_argument("--num_epochs", type=int, default=100, help='number of total epochs')
 parser.add_argument("--batch_size", type=int, default=256, help='batch size')
@@ -51,6 +51,9 @@ parser.add_argument("--save_model", type=str, default='')
 parser.add_argument("--cf_cache_dir", type=str, default='cf_training_cache')  # CF-GPU: compiled programs
 
 args = parser.parse_args()
+# CF-GPU: the cf-gpu programs each bound type needs (CROWN = DeepPoly; zid has no auto_LiRPA counterpart)
+TRAINING_METHODS = {'IBP': ['IBP'], 'CROWN-IBP': ['IBP', 'CROWN-IBP'], 'CROWN-FAST': ['CROWN-IBP'],
+                    'CROWN': ['CROWN'], 'zid': ['zid']}
 
 
 def Train(model, cf, t, loader, eps_scheduler, norm, train, opt, bound_type, method='robust'):  # CF-GPU: cf
@@ -110,6 +113,8 @@ def Train(model, cf, t, loader, eps_scheduler, norm, train, opt, bound_type, met
         if batch_method == "robust":
             if bound_type == "IBP":
                 lb, ub = cf.compute_bounds('IBP', data_lb, data_ub, labels)  # CF-GPU
+            elif bound_type in ("CROWN", "zid"):
+                lb, ub = cf.compute_bounds(bound_type, data_lb, data_ub, labels)  # CF-GPU
             elif bound_type == "CROWN-IBP":
                 # lb, ub = model.compute_bounds(ptb=ptb, IBP=True, x=data, C=c, method="backward")  # pure IBP bound
                 # we use a mixed IBP and CROWN-IBP bounds, leading to better performance (Zhang et al., ICLR 2020)
@@ -195,7 +200,8 @@ def main(args):
     assert args.bound_opts is None and args.norm == np.inf
     model = model_ori.to(args.device)
     batch_sizes = {args.batch_size} | {len(d.dataset) % args.batch_size for d in (train_data, test_data)} - {0}
-    cf = TrainingBounds(model, dummy_input, args.data.lower(), ['IBP', 'CROWN-IBP'], batch_sizes, args.cf_cache_dir)
+    cf = TrainingBounds(model, dummy_input, args.data.lower(), TRAINING_METHODS[args.bound_type], batch_sizes,
+                        args.cf_cache_dir)  # CF-GPU
 
     ## Step 4 prepare optimizer, epsilon scheduler and learning rate scheduler
     opt = optim.Adam(model.parameters(), lr=args.lr)

@@ -1,6 +1,6 @@
-import os
 import unittest
 from unittest import mock
+from constraintflow.compiler.optimizations import opt_flags
 from types import SimpleNamespace
 from constraintflow.compiler.ir import (
     IrVar, IrBlock, IrAssignToBlock, IrAssignToView, IrTransRetBasic,
@@ -19,7 +19,6 @@ class SeededScalarizer(_Scalarizer):
         self.env.update(x=x, y=TensorDesc(IrVar('y', [])), b=b, s=s)
 
 
-@mock.patch.dict(os.environ, {'CF_SROA_FUNCTIONAL': '1'})
 class SroaPurityTest(unittest.TestCase):
     def test_payload_rebinding_is_functional_and_preserves_alias(self):
         v = lambda x: IrVar(x, [])
@@ -47,7 +46,7 @@ class SroaPurityTest(unittest.TestCase):
 
 
 class SroaPurityFlagOffTest(unittest.TestCase):
-    @mock.patch.dict(os.environ, {'CF_SROA_FUNCTIONAL': '0'})
+    @mock.patch.object(opt_flags, '_enabled', set(opt_flags.FLAGS) - {'sroa_functional'})
     def test_payload_rebinding_keeps_input_ir_purity_when_off(self):
         v = lambda x: IrVar(x, [])
         ir = SimpleNamespace(flow_block=IrBlock([

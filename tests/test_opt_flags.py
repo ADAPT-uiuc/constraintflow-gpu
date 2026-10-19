@@ -1,27 +1,24 @@
-import os
 import unittest
-from unittest import mock
 from constraintflow.compiler.optimizations import opt_flags
 
 
 class OptFlagsTest(unittest.TestCase):
-    @mock.patch.dict(os.environ, {}, clear=True)
-    def test_every_flag_defaults_off(self):
-        self.assertFalse(any(opt_flags.enabled(f) for f in opt_flags.FLAGS))
+    def tearDown(self):
+        opt_flags.reset()
 
-    @mock.patch.dict(os.environ, {'CF_DPE_OPTS': '1'}, clear=True)
-    def test_umbrella_enables_every_flag(self):
+    def test_every_flag_defaults_on(self):
         self.assertTrue(all(opt_flags.enabled(f) for f in opt_flags.FLAGS))
 
-    @mock.patch.dict(os.environ, {'CF_DPE_OPTS': '1', 'CF_PATCH_FACTOR': '0'}, clear=True)
-    def test_individual_flag_overrides_umbrella(self):
-        self.assertFalse(opt_flags.enabled('CF_PATCH_FACTOR'))
-        self.assertTrue(opt_flags.enabled('CF_CONV_SUM'))
+    def test_set_enabled(self):
+        opt_flags.set_enabled(['view_aliases'])
+        self.assertTrue(opt_flags.enabled('view_aliases'))
+        self.assertFalse(opt_flags.enabled('patch_factor'))
+        opt_flags.reset()
+        self.assertTrue(opt_flags.enabled('patch_factor'))
 
-    @mock.patch.dict(os.environ, {'CF_VIEW_ALIASES': '1'}, clear=True)
-    def test_individual_flag_alone(self):
-        self.assertTrue(opt_flags.enabled('CF_VIEW_ALIASES'))
-        self.assertFalse(opt_flags.enabled('CF_PATCH_FACTOR'))
+    def test_unknown_flag(self):
+        with self.assertRaises(ValueError):
+            opt_flags.set_enabled(['shared_gathers'])
 
 
 if __name__ == '__main__':

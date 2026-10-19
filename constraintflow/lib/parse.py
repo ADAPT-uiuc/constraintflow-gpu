@@ -288,6 +288,9 @@ def refresh_layers(layers, values, spec_weight, spec_bias):
         weight = values[src['weight']] if 'weight' in src else None
         bias = values[src['bias']] if 'bias' in src else None
         if getattr(layer, 'folded_spec', False):
+            #FIX FOR: a MatMul weight is a transposed copy with no ONNX source; it is constant, so fold the parsed one.
+            weight = layer.weight_raw if weight is None else weight
+            bias = layer.bias_raw if bias is None else bias
             layer.spec_offset = (spec_weight @ bias.unsqueeze(-1)).squeeze(-1) + spec_bias
             layer.weight = spec_weight @ weight
             layer.bias = torch.zeros_like(spec_bias)
@@ -407,13 +410,16 @@ def parse_onnx_layers(
     values=None,
     fold_spec=False,
 ):
-    input_shape = [dim.dim_value for dim in net.graph.input[0].type.tensor_type.shape.dim]
+    #FIX FOR: older exporters (VNN-COMP ACAS Xu) list initializers as graph inputs, so input[0] was a weight, not the data input.
+    init_names = {i.name for i in net.graph.initializer}
+    data_input = next(i for i in net.graph.input if i.name not in init_names)
+    input_shape = [dim.dim_value for dim in data_input.type.tensor_type.shape.dim]
     input_shape = [1 if i == 0 else i for i in input_shape]
     if len(input_shape)==3:
         input_shape = [1] + input_shape
     input_size = compute_size(input_shape)
     # Create the new Network object
-    layers = Network(input_name=net.graph.input[0].name, input_shape=input_shape, input_size=input_size, input_start=0, input_end=input_size, net_format='onnx', no_sparsity=no_sparsity)
+    layers = Network(input_name=data_input.name, input_shape=input_shape, input_size=input_size, input_start=0, input_end=input_size, net_format='onnx', no_sparsity=no_sparsity)
     num_layers = len(net.graph.node)
     layers.num_layers = num_layers
     if model_name_to_val_dict is None:
@@ -423,13 +429,13 @@ def parse_onnx_layers(
         values = _LazyArrays(net.graph.initializer)
     else:
         values = dict(values)
-    tensor_shapes = {net.graph.input[0].name: input_shape}
+    tensor_shapes = {data_input.name: input_shape}
     layers.size = input_size
     shape = input_shape
 
     names_hash = dict()
     index = 0
-    names_hash[net.graph.input[0].name] = index
+    names_hash[data_input.name] = index
     parents = dict()
     
     layer = Layer(type=LayerType.Input, shape=input_shape, size=input_size, start=0, end=input_size)
