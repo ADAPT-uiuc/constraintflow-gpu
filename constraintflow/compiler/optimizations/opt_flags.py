@@ -14,6 +14,7 @@ FLAGS = (
     'view_aliases',          # inline storage-sharing views before memory planning
     'expression_limits',     # split expressions deeper than 64 into temporaries
     'fused_matvec',          # lower pointwise-produced matvecs to row reductions
+    'shared_lhs_mm',         # Inductor pass: mm(x, W), mm(x, b) -> one mm(x, [W | b])
 )
 
 # Analysis back-edges (def-use chains, parent links) can lead from one statement

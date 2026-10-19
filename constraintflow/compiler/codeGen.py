@@ -41,13 +41,19 @@ def compile_decorator(fullgraph):
         # Inductor would move conv operands to channels-last, where cuDNN picks much
         # slower kernels for these batch-heavy, few-channel convolutions.
         options['layout_optimization'] = False
-    opts = ', options=' + repr(options) if options else ''
+    passes = []  # graph-pass objects, emitted as code (the generated module imports them), not repr'd literals
     #FEAT: training builds CSE the Dynamo graph before AOTAutograd (see lib/pre_grad_cse.py).
     if training.get_flag():
         #FIX FOR: autotuning a pointwise kernel clones the buffers it writes in place; on the first backward of
         # large CROWN programs that transient ran out of memory (N32 batch 16). Heuristic configs ran as fast.
         options['triton.autotune_pointwise'] = False
-        opts = ', options={' + ''.join(repr(k) + ': ' + repr(v) + ', ' for k, v in options.items()) + "'pre_grad_custom_pass': PRE_GRAD_CSE}"
+        passes.append("'pre_grad_custom_pass': PRE_GRAD_CSE")
+    #FEAT: merge matmuls sharing a left operand (optimizations/shared_lhs_mm.py).
+    if opt_flags.enabled('shared_lhs_mm'):
+        passes.append("'post_grad_custom_post_pass': SharedLhsMM()")
+    opts = ''
+    if options or passes:
+        opts = ', options={' + ', '.join([repr(k) + ': ' + repr(v) for k, v in options.items()] + passes) + '}'
     return '@torch.compile(fullgraph=' + str(fullgraph) + ', backend="inductor"' + opts + ')'
 
 
@@ -703,6 +709,8 @@ class CodeGen(irVisitor.IRVisitor):
             #FEAT: pre-autograd CSE pass named in training builds' compile decorator.
             if training.get_flag():
                 self.write('from constraintflow.lib.pre_grad_cse import PRE_GRAD_CSE')
+            if opt_flags.enabled('shared_lhs_mm'):
+                self.write('from constraintflow.compiler.optimizations.shared_lhs_mm import SharedLhsMM')
             # self.write('from constraintflow.lib.symexp import get_new_eps')
             # self.write('from constraintflow.gbcsr.op_helper import binary_to_identity_unary')
 
