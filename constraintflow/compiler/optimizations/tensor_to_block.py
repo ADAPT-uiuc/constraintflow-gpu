@@ -1489,7 +1489,7 @@ def replace_all_occurrences_expr(expr, var_map):
         expr.children[i] = new_child
     return expr
 
-#FEAT: CF_LIGHT_TRAVERSAL_CLONE
+#FEAT: light traversal clone
 def clone_traversal_body(statements):
     """Clone executable IR and def links without copying analysis consumers.
 
@@ -1536,9 +1536,7 @@ def remove_while(layer_index, num_iterations, cfg, root_node, first_while_node, 
     ir_list = root_block.children
     for i in range(num_iterations):
         body = first_while_block.children + second_while_block.children
-        #FEAT: CF_LIGHT_TRAVERSAL_CLONE skips copying use/parent analysis edges
-        combined_list = (clone_traversal_body(body) if opt_flags.enabled('CF_LIGHT_TRAVERSAL_CLONE')
-                         else copy.deepcopy(body))
+        combined_list = clone_traversal_body(body)  # skips use/parent analysis edges
         if layer_parents is not None:
             selected = fuse_affine_subst.selected_layers_at(layer_index, first_while_block.while_number, i)
             is_affine = bool(selected) and all(layer_types.get(x) in affine_types for x in selected)
@@ -1784,7 +1782,7 @@ _FLOW_UNBOUND = ('prev', 'curr', 'prev1', 'prev2')
 _FLOW_SCALARS = ('poly_size', 'curr_size', 'prev_size', 'input_size')
 
 
-#FEAT: CF_TREE_RENAME collects nodes without following analysis edges
+#FEAT: tree rename collects nodes without following analysis edges
 def _collect_ir_tree_nodes(obj, nodes):
     visited, pending = set(), [obj]
     while pending:
@@ -1805,12 +1803,8 @@ def _collect_ir_tree_nodes(obj, nodes):
 
 def _rename_vars(obj, rename):
     """Rewrite IrVar names and IrDel entries in place."""
-    visited, nodes = set(), {}
-    #FEAT: CF_TREE_RENAME
-    if opt_flags.enabled('CF_TREE_RENAME'):
-        _collect_ir_tree_nodes(obj, nodes)
-    else:
-        _collect_ir_ast_nodes(obj, visited, nodes)
+    nodes = {}
+    _collect_ir_tree_nodes(obj, nodes)
     for node in nodes.values():
         if isinstance(node, IrVar):
             node.name = rename.get(node.name, node.name)

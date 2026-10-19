@@ -14,7 +14,6 @@ from constraintflow.compiler.ir import (
 )
 from constraintflow.compiler.optimizations import subexp_inlining
 #FEAT: per-change toggles for the DeepPoly-efficient passes
-from constraintflow.compiler.optimizations import opt_flags
 from constraintflow.compiler.optimizations.sign_convs import _WRAPPERS, _rebuild
 
 
@@ -202,14 +201,9 @@ def run(block):
             value = rewrite_capped(stmt.children[1])
             stmt.update_parent_child([stmt.children[0], value])
             definitions[stmt.children[0].name] = value
-            #FEAT: CF_SIGN_REDUCTION_MEMO keeps structural keys across statements
             # In straight-line SSA, preceding definitions are finalized and
-            # cannot depend on this new definition. Their structural keys stay
-            # valid; clearing every key repeats whole-DAG walks per statement.
-            if opt_flags.enabled('CF_SIGN_REDUCTION_MEMO'):
-                memo.pop(stmt.children[0].name, None)
-            else:
-                memo.clear()
+            # cannot depend on this new definition, so their structural keys stay valid.
+            memo.pop(stmt.children[0].name, None)
         else:
             stmt.update_parent_child([rewrite_capped(c) for c in stmt.children])
     if fused:

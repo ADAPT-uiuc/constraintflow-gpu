@@ -1,4 +1,4 @@
-#FEAT: new pass, enabled by CF_FUSED_MATVEC=1
+#FEAT: new pass
 """Lower large pointwise-produced matvecs to fusible row reductions.
 
 BLAS requires a materialized matrix. Inductor can instead fuse the matrix's

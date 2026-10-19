@@ -1,4 +1,4 @@
-#FEAT: new pass, enabled by CF_EXPRESSION_LIMITS
+#FEAT: new pass (jit --no-expression-limits disables it)
 """Bound Python expression nesting by exposing ordered SSA temporaries.
 
 No operator is changed or reassociated. The pass applies to functional tensor

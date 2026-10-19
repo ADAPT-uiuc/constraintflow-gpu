@@ -1,4 +1,4 @@
-#FEAT: new pass, enabled by CF_CONV_CHUNKS
+#FEAT: new pass (jit --no-conv-chunks disables it)
 """Recombine channel chunks made unnecessary by patch composition factoring.
 
 Concatenated output-channel slices of C(x,W) are C(x,W). Accept only the

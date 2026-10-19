@@ -263,7 +263,7 @@ class CodeGen(irVisitor.IRVisitor):
         print('[region-reuse] {} unique / {} emitted regions'.format(distinct, len(bodies)))
         self._region_count = distinct
         offload = None
-        #FEAT: CF_LAZY_TEMPORARIES gives host offload a full temporaries profile
+        #FEAT: lazy temporaries gives host offload a full temporaries profile
         if sized and not getattr(sized, 'temporaries_profiled', True):
             sized = self._probe_sizes(node, record_temporaries=True)
         budget = self._memory_budget()
@@ -352,17 +352,14 @@ class CodeGen(irVisitor.IRVisitor):
         for event in sorted({self._fetched_by[n] for n in offload.fetch[k]}):
             self.write('_main.wait_event(' + event + ')')
 
-    #FEAT: record_temporaries for CF_LAZY_TEMPORARIES
+    #FEAT: record_temporaries for lazy temporaries
     def _probe_sizes(self, node, *, record_temporaries=False):
         """Fake-execute the block for real byte sizes; None when unavailable."""
         meta = getattr(node, 'flow_param_meta', None)
         if not meta:
             return None
-        #FEAT: CF_LAZY_TEMPORARIES profiles unnamed temporaries only for memory planning
-        if not opt_flags.enabled('CF_LAZY_TEMPORARIES'):
-            record_temporaries = True
-        #FEAT: CF_EXPRESSION_LIMITS splits deep expressions into temporaries
-        if getattr(node, 'flow_functional', False) and opt_flags.enabled('CF_EXPRESSION_LIMITS'):
+        #FEAT: expression_limits splits deep expressions into temporaries
+        if getattr(node, 'flow_functional', False) and opt_flags.enabled('expression_limits'):
             from constraintflow.compiler.optimizations import expression_limits
             split = expression_limits.run(node.flow_block, layers=getattr(node, 'flow_layers', None))
             if split:
@@ -374,7 +371,7 @@ class CodeGen(irVisitor.IRVisitor):
         prelude = self.view_write_helpers[helpers:]
         sized = flow_shapes.probe(stmts, sources, meta,
                                   getattr(node, 'flow_batch_size', 1), self.const_pool,
-                                  #FEAT: CF_LAZY_TEMPORARIES
+                                  #FEAT: lazy temporaries
                                   prelude, record_temporaries=record_temporaries)
         del self.view_write_helpers[helpers:]   # emission re-renders them
         self._method_has_view_write = had_write
@@ -395,37 +392,28 @@ class CodeGen(irVisitor.IRVisitor):
     def emit_sroa_flow(self, node):
         """Emit explode_inputs() and the scalarized flow()."""
         from constraintflow.lib.globals import center_radius
-        #FEAT: CF_BOX_PATCH_REDUCTIONS reruns center/radius fusion on the final flow
+        #FEAT: box_patch_reductions reruns center/radius fusion on the final flow
         if (center_radius.get_flag() and getattr(node, 'flow_functional', False)
-                and opt_flags.enabled('CF_BOX_PATCH_REDUCTIONS')):
+                and opt_flags.enabled('box_patch_reductions')):
             from constraintflow.compiler.optimizations import box_concretize
             count = box_concretize.run(node.flow_block)
             print('[box-reductions] {} sign-split reductions fused'.format(count))
         sized = self._probe_sizes(node)
-        #FEAT: CF_PATCH_FACTOR factors row-scaled patches; CF_CONV_CHUNKS and
-        # CF_CONV_SUM clean up after it and only run when it factored something
-        if sized and getattr(node, 'flow_functional', False) and opt_flags.enabled('CF_PATCH_FACTOR'):
+        #FEAT: patch_factor factors row-scaled patches; conv_chunks and conv_sum
+        # clean up after it and only run when it factored something
+        if sized and getattr(node, 'flow_functional', False) and opt_flags.enabled('patch_factor'):
             from constraintflow.compiler.optimizations import patch_factor, conv_sum, conv_chunks
             count = patch_factor.run(node.flow_block, self.visit, sized,
                                      getattr(node, 'flow_batch_size', 1))
             print('[patch-factor] {} patch compositions factored'.format(count))
-            if count and opt_flags.enabled('CF_CONV_CHUNKS'):
+            if count and opt_flags.enabled('conv_chunks'):
                 chunks = conv_chunks.run(node.flow_block, self.visit, sized,
                                          getattr(node, 'flow_batch_size', 1))
                 print('[conv-chunks] {} output-channel chunks recombined'.format(chunks))
-            if count and opt_flags.enabled('CF_CONV_SUM'):
+            if count and opt_flags.enabled('conv_sum'):
                 merged = conv_sum.run(node.flow_block)
                 print('[conv-sum] {} shared-weight convolutions combined'.format(merged))
             if count:
-                sized = self._probe_sizes(node)
-        #FEAT: CF_SHARED_GATHERS=1 shares small image unfolds across regions
-        gather_barriers = set()
-        if os.environ.get('CF_SHARED_GATHERS') == '1' and sized and getattr(node, 'flow_functional', False):
-            from constraintflow.compiler.optimizations import shared_gathers
-            gather_barriers = shared_gathers.run(node.flow_block, self.visit, sized,
-                                                getattr(node, 'flow_batch_size', 1))
-            print('[shared-gathers] {} image gathers materialized'.format(len(gather_barriers)))
-            if gather_barriers:
                 sized = self._probe_sizes(node)
         if product_grids.get_flag() and sized and getattr(node, 'flow_functional', False):
             count = product_grids_pass.run(node.flow_block, self.visit, sized,
@@ -443,30 +431,28 @@ class CodeGen(irVisitor.IRVisitor):
             count = conv_partials.run(node.flow_block)
             print('[conv-partials] {} partial results exposed'.format(count))
             sized = self._probe_sizes(node)
-        #FEAT: shared-gather boundaries are segment barriers like pad inputs
-        barriers = set(gather_barriers)
+        barriers = set()
         if (inductor_mode.get_flag() or self.target == 'jax') and getattr(node, 'flow_functional', False):
-            #FEAT: keep shared-gather barriers alongside pad inputs
             pads = set(pad_inputs.run(node.flow_block))
             barriers.update(pads)
             print('[pad-inputs] {} pad inputs materialized'.format(len(pads)))
             sized = self._probe_sizes(node)
-        #FEAT: CF_VIEW_ALIASES inlines storage-sharing views so their base can be offloaded
-        if sized and getattr(node, 'flow_functional', False) and opt_flags.enabled('CF_VIEW_ALIASES'):
+        #FEAT: view_aliases inlines storage-sharing views so their base can be offloaded
+        if sized and getattr(node, 'flow_functional', False) and opt_flags.enabled('view_aliases'):
             from constraintflow.compiler.optimizations import view_aliases
             count = view_aliases.run(node.flow_block, sized)
             print('[view-aliases] {} storage-sharing aliases inlined'.format(count))
             if count:
                 sized = self._probe_sizes(node)
-        #FEAT: CF_FUSED_MATVEC=1 lowers pointwise-produced matvecs to row reductions
-        if os.environ.get('CF_FUSED_MATVEC') == '1' and sized and getattr(node, 'flow_functional', False):
+        #FEAT: fused_matvec lowers pointwise-produced matvecs to row reductions
+        if opt_flags.enabled('fused_matvec') and sized and getattr(node, 'flow_functional', False):
             from constraintflow.compiler.optimizations import fused_matvec
             count = fused_matvec.run(node.flow_block, self.visit, sized,
                                      getattr(node, 'flow_batch_size', 1))
             print('[fused-matvec] {} pointwise matvecs lowered to row reductions'.format(count))
             if count:
                 sized = self._probe_sizes(node)
-        #FEAT: CF_LAZY_TEMPORARIES
+        #FEAT: lazy temporaries
         # Transformations only need named shapes. Planning must also account
         # for unnamed operands materialized inside each expression.
         if sized and not getattr(sized, 'temporaries_profiled', True):
@@ -476,7 +462,7 @@ class CodeGen(irVisitor.IRVisitor):
             log = mem_plan.run(node.flow_block, sized, budget)
             if log is not None:
                 print('[mem-plan] ' + log)
-                #FEAT: CF_LAZY_TEMPORARIES keeps the temporaries profile after planning
+                #FEAT: keep the temporaries profile after planning
                 sized = self._probe_sizes(node, record_temporaries=True)
         self._flow_sizes = sized or {}
         self._flow_metrics = {

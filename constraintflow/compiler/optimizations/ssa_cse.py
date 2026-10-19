@@ -1,4 +1,4 @@
-#FEAT: new pass, enabled by CF_FAST_BLOCK_CSE=1
+#FEAT: new pass
 """Hash-bucket CSE for a functional straight-line SSA block.
 
 Reuse the existing CSE equality checks, but emit common definitions at first use
