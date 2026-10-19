@@ -1,15 +1,14 @@
 import operator
-import os
 import tempfile
 import unittest
 from unittest import mock
+from constraintflow.compiler.optimizations import opt_flags
 import torch
 import torch.nn.functional as F
 from constraintflow.compiler.ir import *
 from constraintflow.compiler.codeGen import CodeGen
 from constraintflow.compiler.optimizations.box_concretize import run
 
-@mock.patch.dict(os.environ, {'CF_BOX_PATCH_REDUCTIONS': '1'})
 class BoxPatchReductionTest(unittest.TestCase):
     def test_lower_and_upper_patch_reductions(self):
         for upper,generic in ((False,False),(True,False),(False,True),(True,True)):
@@ -36,7 +35,7 @@ class BoxPatchReductionTest(unittest.TestCase):
                     else:actual=eval(cg.visit(s.children[0]),env)
                 torch.testing.assert_close(actual,expected,rtol=1e-11,atol=1e-11)
 
-    @mock.patch.dict(os.environ, {'CF_BOX_PATCH_REDUCTIONS': '0'})
+    @mock.patch.object(opt_flags, '_enabled', set(opt_flags.FLAGS) - {'box_patch_reductions'})
     def test_patch_reductions_untouched_when_off(self):
         v=lambda n:IrVar(n,[])
         def gather(name):
@@ -46,7 +45,6 @@ class BoxPatchReductionTest(unittest.TestCase):
         block=IrBlock([IrAssignment(v('r'),expr),IrTransRetBasic([v('r'),v('r')])])
         self.assertEqual(run(block),0)
 
-@mock.patch.dict(os.environ, {'CF_BOX_PATCH_REDUCTIONS': '1'})
 class BoxReductionSafetyTest(unittest.TestCase):
     def test_distinct_gather_geometry_is_not_combined(self):
         v=lambda n:IrVar(n,[])

@@ -1,7 +1,9 @@
-"""Run auto_LiRPA's or cf-gpu's simple_training.py on an ONNX MNIST network, measured the same way for both.
+"""Run auto_LiRPA's or cf-gpu's simple_training.py on an ONNX network, measured the same way for both.
 
-    python compare_driver.py --tool {lirpa,cf} --onnx NET.onnx --out DIR [--gpu_data] -- <simple_training.py args>
-    python compare_driver.py ... --bounds_ckpt CKPT -- <args>   # bounds and gradients on fixed weights
+    python compare_driver.py --tool {lirpa,cf} --onnx NET.onnx --out DIR [--gpu_data] [--normalize] -- <simple_training.py args>
+    python compare_driver.py ... --bounds_ckpt CKPT -- <args>     # bounds and gradients on fixed weights
+    python compare_driver.py ... --precision_ckpt CKPT -- <args>  # precision per method (cli.get_precision)
+    python compare_driver.py ... --probe_memory 16,32,64 -- <args>  # peak memory of one bound + backward
 
 Timed: setup (BoundedModule / TrainingBounds construction) and every Train() call.
 Not timed: cf-gpu code generation (done ahead, into its cache) and warmup.
@@ -36,8 +38,23 @@ import models  # auto_LiRPA's example model registry
 from simple_verification import get_pytorch_from_onnx  # the verification sweeps' ONNX loader
 from auto_LiRPA.eps_scheduler import FixedScheduler
 
-METHODS = ['IBP', 'CROWN-IBP']
-MNIST_SIZES = (60000, 10000)  # train, test
+#FEAT: CROWN (DeepPoly in cf-gpu) and zid (cf-gpu only) next to IBP and CROWN-IBP.
+METHODS = {'lirpa': ['IBP', 'CROWN-IBP', 'CROWN'], 'cf': ['IBP', 'CROWN-IBP', 'CROWN', 'zid']}
+#FEAT: CIFAR next to MNIST.
+SIZES = {'MNIST': (60000, 10000), 'CIFAR': (50000, 10000)}  # train, test
+SHAPES = {'MNIST': (1, 28, 28), 'CIFAR': (3, 32, 32)}
+# The verification sweeps' input normalization (simple_training.py normalizes CIFAR itself, not MNIST).
+NORMALIZATION = {'MNIST': ([0.1307], [0.3081]), 'CIFAR': ([0.4914, 0.4822, 0.4465], [0.2023, 0.1994, 0.2010])}
+
+
+def dataset(name, train):
+    make = datasets.MNIST if name == 'MNIST' else datasets.CIFAR10
+    return make('./data', train=train, download=True, transform=transforms.ToTensor())
+
+
+def normalization(name):
+    mean, std = NORMALIZATION[name]
+    return torch.tensor(mean).view(1, -1, 1, 1), torch.tensor(std).view(1, -1, 1, 1)
 
 
 class GPULoader:
@@ -48,8 +65,13 @@ class GPULoader:
         self.dataset, self.batch_size, self.shuffle = dataset, batch_size, shuffle
         self.x = (dataset.data.float() / 255).unsqueeze(1).cuda()  # divide on the CPU, like ToTensor
         self.y = dataset.targets.cuda()
+        if NORMALIZE:
+            mean, std = normalization('MNIST')
+            self.x = (self.x - mean.cuda()) / std.cuda()
 
     def __setattr__(self, name, value):  # simple_training sets mean/std as CPU tensors
+        if NORMALIZE and name in ('mean', 'std'):
+            value = torch.tensor(NORMALIZATION['MNIST'][name == 'std'])
         super().__setattr__(name, value.cuda() if name in ('mean', 'std') else value)
 
     def __len__(self):
@@ -63,16 +85,37 @@ class GPULoader:
             yield self.x[idx], self.y[idx]
 
 
+#FEAT: --normalize applies the sweeps' MNIST normalization (the ONNX loader drops the nets' own Sub/Div).
+NORMALIZE = False
+
+
+class NormalizedLoader(torch.utils.data.DataLoader):
+    """DataLoader that normalizes MNIST batches and reports the matching mean/std to simple_training."""
+
+    def __setattr__(self, name, value):
+        if name in ('mean', 'std'):
+            value = torch.tensor(NORMALIZATION['MNIST'][name == 'std'])
+        super().__setattr__(name, value)
+
+    def __iter__(self):
+        mean, std = normalization('MNIST')
+        for x, y in super().__iter__():
+            yield (x - mean) / std, y
+
+
 class FixedBatches(list):
     """Warmup loader: the same batch, three times (CUDA graphs warm up, record, then replay)."""
 
-    def __init__(self, batch_size):
-        data = datasets.MNIST('./data', train=True, download=True, transform=transforms.ToTensor())
-        x = torch.stack([data[i][0] for i in range(batch_size)])
-        y = torch.tensor([data[i][1] for i in range(batch_size)])
+    def __init__(self, batch_size, data):
+        images = dataset(data, train=True)
+        x = torch.stack([images[i][0] for i in range(batch_size)])
+        y = torch.tensor([images[i][1] for i in range(batch_size)])
+        self.mean, self.std = torch.zeros(SHAPES[data][0]), torch.ones(SHAPES[data][0])
+        if NORMALIZE or data == 'CIFAR':
+            mean, std = normalization(data)
+            x, self.mean, self.std = (x - mean) / std, mean.flatten(), std.flatten()
         super().__init__([(x, y)] * 3)
         self.dataset, self.batch_size = [None] * (3 * batch_size), batch_size
-        self.mean, self.std = torch.tensor([0.0]), torch.tensor([1.0])
 
 
 class WarmupScheduler(FixedScheduler):
@@ -90,6 +133,14 @@ class NoStepOptimizer:
 
     def step(self):
         pass
+
+
+#FIX FOR: the ONNX loader ends in Flatten after the last Linear, so auto_LiRPA could not fold the margin
+# spec into it and its IBP was ~30% looser than cf-gpu's (which folds); the Flatten is a no-op on logits.
+def no_trailing_flatten(model):
+    if isinstance(model[-1], torch.nn.Flatten):
+        model[-1] = torch.nn.Identity()
+    return model
 
 
 def load_script(tool, argv):
@@ -111,8 +162,12 @@ def synced_seconds(fn, *args, **kwargs):
     return time.perf_counter() - start
 
 
-def batch_sizes(batch_size):
-    return sorted({batch_size} | {n % batch_size for n in MNIST_SIZES} - {0})
+def batch_sizes(batch_size, data):
+    return sorted({batch_size} | {n % batch_size for n in SIZES[data]} - {0})
+
+
+def dummy_input(data):
+    return torch.zeros(2, *SHAPES[data])
 
 
 class Recorder:
@@ -120,7 +175,7 @@ class Recorder:
 
     def __init__(self, st, tool):
         self.st, self.args = st, st.args
-        self.result = {'tool': tool, 'args': vars(st.args), 'records': []}
+        self.result = {'tool': tool, 'args': vars(st.args), 'normalize': NORMALIZE, 'records': []}
         self.losses, self.meters, self.warm = [], [], False
         self.train_signature = inspect.signature(st.Train)
         self.original_train = st.Train
@@ -160,10 +215,11 @@ class Recorder:
     def warmup(self, call):
         """Run Train() on fixed batches of every batch size, train and eval, without updating weights."""
         model = call.arguments['model']
-        for batch_size in batch_sizes(self.args.batch_size):
+        for batch_size in batch_sizes(self.args.batch_size, self.args.data):
             for train in (True, False):
                 warm = self.train_signature.bind(*call.args, **call.kwargs)
-                warm.arguments.update(loader=FixedBatches(batch_size), eps_scheduler=WarmupScheduler(self.args.eps),
+                warm.arguments.update(loader=FixedBatches(batch_size, self.args.data),
+                                      eps_scheduler=WarmupScheduler(self.args.eps),
                                       train=train, opt=NoStepOptimizer(model.parameters()) if train else None)
                 with torch.set_grad_enabled(train):
                     self.original_train(*warm.args, **warm.kwargs)
@@ -192,8 +248,9 @@ def train(tool, st, out):
     if tool == 'cf':  # code generation ahead of time; setup then only loads from the cache
         from constraintflow.lib.training import compile_programs
         start = time.perf_counter()
-        compile_programs(models.Models[args.model](), torch.zeros(2, 1, 28, 28), 'mnist', METHODS,
-                         batch_sizes(args.batch_size), args.cf_cache_dir)
+        compile_programs(models.Models[args.model](), dummy_input(args.data), args.data.lower(),
+                         st.TRAINING_METHODS[args.bound_type], batch_sizes(args.batch_size, args.data),
+                         args.cf_cache_dir)
         recorder.result['compile_seconds'] = time.perf_counter() - start
     args.save_model = args.save_model or os.path.join(out, 'ckpt')
     st.main(args)
@@ -201,65 +258,171 @@ def train(tool, st, out):
         json.dump(recorder.result, f)
 
 
-def lirpa_bounds(model, x, x_L, x_U, y, args):
+# --------------------------------------------------------------------------
+# Bounds on fixed weights: --bounds_ckpt, --precision_ckpt, --probe_memory
+# --------------------------------------------------------------------------
+
+def spec_matrix(y):
+    c = torch.eye(10).type_as(y.float())[y].unsqueeze(1) - torch.eye(10, device=y.device).unsqueeze(0)
+    return c[y.unsqueeze(1) != torch.arange(10, device=y.device).unsqueeze(0)].view(len(y), 9, 10)
+
+
+def lirpa_bounder(model, method, args):
     from auto_LiRPA import BoundedModule, BoundedTensor
     from auto_LiRPA.perturbations import PerturbationLpNorm
-    c = torch.eye(10).type_as(x)[y].unsqueeze(1) - torch.eye(10).type_as(x).unsqueeze(0)
-    c = c[y.unsqueeze(1) != torch.arange(10).type_as(y).unsqueeze(0)].view(len(y), 9, 10)
-    bounded = BoundedModule(model, torch.zeros(2, 1, 28, 28), bound_opts={'conv_mode': args.conv_mode}, device='cuda')
-    ptb = PerturbationLpNorm(norm=float('inf'), eps=args.eps, x_L=x_L, x_U=x_U)
-    for method in METHODS:
-        bounded(BoundedTensor(x, ptb))
-        lb, _ = bounded.compute_bounds(IBP=True, C=c, method=None)
+    bounded = BoundedModule(model, dummy_input(args.data), bound_opts={'conv_mode': args.conv_mode}, device='cuda')
+
+    def bound(x, x_L, x_U, y):
+        c = spec_matrix(y)
+        bounded(BoundedTensor(x, PerturbationLpNorm(norm=float('inf'), eps=args.eps, x_L=x_L, x_U=x_U)))
+        if method == 'CROWN':  # this module never ran IBP, so intermediate bounds come from CROWN too
+            return bounded.compute_bounds(IBP=False, C=c, method='backward', bound_upper=False)[0]
+        lb = bounded.compute_bounds(IBP=True, C=c, method=None)[0]
         if method == 'CROWN-IBP':
-            lb, _ = bounded.compute_bounds(IBP=False, C=c, method='backward', bound_upper=False)
-        yield method, lb
+            lb = bounded.compute_bounds(IBP=False, C=c, method='backward', bound_upper=False)[0]
+        return lb
+    return bound
 
 
-def cf_bounds(model, x, x_L, x_U, y, args):
+def cf_bounder(model, method, args, sizes):
     from constraintflow.lib.training import TrainingBounds
-    cf = TrainingBounds(model, torch.zeros(2, 1, 28, 28), 'mnist', METHODS, [len(y)], args.cf_cache_dir)
-    for method in METHODS:
+    cf = TrainingBounds(model, dummy_input(args.data), args.data.lower(), [method], sizes, args.cf_cache_dir)
+
+    def bound(x, x_L, x_U, y):
         cf.begin_step()
-        yield method, cf.compute_bounds(method, x_L, x_U, y)[0]
+        return cf.compute_bounds(method, x_L, x_U, y)[0]
+    return bound
 
 
-def bounds(tool, st, net, ckpt, out):
-    """Lower bounds and d(sum lb)/dθ for both methods on the first 256 test images."""
+def bounder(tool, model, method, args, sizes):
+    return lirpa_bounder(model, method, args) if tool == 'lirpa' else cf_bounder(model, method, args, sizes)
+
+
+def load_model(net, ckpt):
     model = models.Models[net]().cuda()
-    model.load_state_dict(torch.load(ckpt)['state_dict'])
-    data = datasets.MNIST('./data', train=False, download=True, transform=transforms.ToTensor())
-    x = torch.stack([data[i][0] for i in range(256)]).cuda()
-    y = torch.tensor([data[i][1] for i in range(256)]).cuda()
-    x_L, x_U = (x - st.args.eps).clamp(min=0), (x + st.args.eps).clamp(max=1)
+    if ckpt:
+        model.load_state_dict(torch.load(ckpt)['state_dict'])
+    return model.eval()
+
+
+def test_box(args, n):
+    """The first n test images (normalized as for training) and their Linf box, as simple_training builds it."""
+    images = dataset(args.data, train=False)
+    x = torch.stack([images[i][0] for i in range(n)])
+    y = torch.tensor([images[i][1] for i in range(n)])
+    if NORMALIZE or args.data == 'CIFAR':
+        mean, std = normalization(args.data)
+    else:
+        mean, std = torch.zeros(1, SHAPES[args.data][0], 1, 1), torch.ones(1, SHAPES[args.data][0], 1, 1)
+    x = (x - mean) / std
+    x_L = torch.max(x - args.eps / std, (0 - mean) / std)
+    x_U = torch.min(x + args.eps / std, (1 - mean) / std)
+    return x.cuda(), x_L.cuda(), x_U.cuda(), y.cuda()
+
+
+def bounds(tool, st, net, ckpt, out, num_images=256):
+    """Lower bounds and d(sum lb)/dθ for every method on the first num_images test images."""
+    model = load_model(net, ckpt)
+    x, x_L, x_U, y = test_box(st.args, num_images)
     result = {}
-    for method, lb in (lirpa_bounds if tool == 'lirpa' else cf_bounds)(model, x, x_L, x_U, y, st.args):
+    for method in METHODS[tool]:
+        lb = bounder(tool, model, method, st.args, [len(y)])(x, x_L, x_U, y)
         model.zero_grad()
         lb.sum().backward()
         result[method] = (lb.detach().cpu(), {k: p.grad.cpu() for k, p in model.named_parameters()})
-    torch.save(result, os.path.join(out, f'bounds_{os.path.basename(ckpt)}_{tool}.pt'))
+    name = os.path.basename(ckpt) if ckpt else 'onnx'
+    torch.save(result, os.path.join(out, f'bounds_{name}_{tool}.pt'))
+
+
+#FEAT: --precision_ckpt
+def precision(tool, st, net, ckpt, out, num_images, eval_batch_size):
+    """cf-gpu's precision (cli.get_precision): the fraction of images whose margin lower bounds are all >= 0."""
+    assert num_images % eval_batch_size == 0, '--num_images must be a multiple of --eval_batch_size'
+    model = load_model(net, ckpt)
+    x, x_L, x_U, y = test_box(st.args, num_images)
+    chunks = [slice(i, i + eval_batch_size) for i in range(0, num_images, eval_batch_size)]
+    result = {'tool': tool, 'ckpt': ckpt, 'eps': st.args.eps, 'normalize': NORMALIZE, 'num_images': num_images,
+              'methods': {}}
+    for method in METHODS[tool]:
+        bound = bounder(tool, model, method, st.args, [eval_batch_size])
+        with torch.no_grad():
+            verified = torch.cat([(bound(x[s], x_L[s], x_U[s], y[s]) >= 0).all(1) for s in chunks])
+        result['methods'][method] = {'verified': int(verified.sum()), 'precision': verified.float().mean().item()}
+        print(method, result['methods'][method], flush=True)
+    name = os.path.splitext(os.path.basename(ckpt))[0] if ckpt else 'onnx'
+    with open(os.path.join(out, f'precision_{name}_{tool}.json'), 'w') as f:
+        json.dump(result, f, indent=2)
+
+
+#FEAT: --probe_memory
+def probe_memory(tool, st, net, sizes, out):
+    """Per method and batch size: peak GPU memory (GB) of one bound computation and its backward, the
+    seconds of one such step after a warmup step, and the epoch estimate (train size / batch size steps)."""
+    model = load_model(net, None).train()
+    x, x_L, x_U, y = test_box(st.args, max(sizes))
+    result = {}
+    for method in METHODS[tool]:
+        result[method] = {}
+        for n in sizes:
+            torch.cuda.empty_cache()
+            def step():  # zero_grad as in training: CUDA-graph outputs must not be accumulated into
+                model.zero_grad(set_to_none=True)
+                bound(x[:n], x_L[:n], x_U[:n], y[:n]).sum().backward()
+            try:
+                bound = bounder(tool, model, method, st.args, [n])
+                step(); step()  # warmup: cf-gpu compiles, then records its CUDA graph
+                torch.cuda.reset_peak_memory_stats()
+                seconds = synced_seconds(step)
+                steps = -(-SIZES[st.args.data][0] // n)
+                result[method][n] = {'peak_gb': round(torch.cuda.max_memory_allocated() / 1024 ** 3, 2),
+                                     'step_s': round(seconds, 4), 'epoch_s': round(seconds * steps, 1)}
+            except torch.cuda.OutOfMemoryError:
+                result[method][n] = 'OOM'
+            except Exception as e:  # e.g. a cf-gpu build that fails
+                result[method][n] = f'{type(e).__name__}: {str(e)[:200]}'
+            model.zero_grad(set_to_none=True)
+            print(method, n, result[method][n], flush=True)
+    with open(os.path.join(out, f'memory_{tool}.json'), 'w') as f:
+        json.dump(result, f, indent=2)
 
 
 def main():
+    global NORMALIZE
     p = argparse.ArgumentParser()
     p.add_argument('--tool', choices=['lirpa', 'cf'], required=True)
     p.add_argument('--onnx', required=True)
     p.add_argument('--out', required=True)
-    p.add_argument('--bounds_ckpt')
-    p.add_argument('--gpu_data', action='store_true', help='GPULoader instead of DataLoader, for both tools')
+    p.add_argument('--bounds_ckpt', help="checkpoint to compare bounds on; 'onnx' for the ONNX file's own weights")
+    p.add_argument('--methods', help='comma-separated subset of the bound methods (default: all the tool has)')
+    p.add_argument('--precision_ckpt', help="checkpoint to evaluate; 'onnx' for the ONNX file's own weights")
+    p.add_argument('--probe_memory', help='comma-separated batch sizes')
+    p.add_argument('--num_images', type=int, default=1000)
+    p.add_argument('--eval_batch_size', type=int, default=100)
+    p.add_argument('--gpu_data', action='store_true', help='GPULoader instead of DataLoader, for both tools (MNIST)')
+    p.add_argument('--normalize', action='store_true', help="the sweeps' MNIST normalization, for both tools")
     p.add_argument('rest', nargs=argparse.REMAINDER, help='simple_training.py args, after --')
     a = p.parse_args()
     os.makedirs(a.out, exist_ok=True)
     torch.backends.cuda.matmul.allow_tf32 = torch.backends.cudnn.allow_tf32 = False  # same precision in both
+    NORMALIZE = a.normalize
+    if a.methods:
+        METHODS[a.tool] = [m for m in a.methods.split(',') if m in METHODS[a.tool]]
 
     net = os.path.splitext(os.path.basename(a.onnx))[0]
     st = load_script(a.tool, ['--model', net] + [r for r in a.rest if r != '--'])
-    assert st.args.data == 'MNIST'
-    models.Models[net] = lambda in_ch=1, in_dim=28: get_pytorch_from_onnx(a.onnx)
+    models.Models[net] = lambda in_ch=1, in_dim=28: no_trailing_flatten(get_pytorch_from_onnx(a.onnx))
     if a.gpu_data:
         torch.utils.data.DataLoader = GPULoader
+    elif NORMALIZE and st.args.data == 'MNIST':
+        torch.utils.data.DataLoader = NormalizedLoader
     if a.bounds_ckpt:
-        bounds(a.tool, st, net, a.bounds_ckpt, a.out)
+        ckpt = None if a.bounds_ckpt == 'onnx' else a.bounds_ckpt
+        bounds(a.tool, st, net, ckpt, a.out, a.num_images if a.num_images != 1000 else 256)
+    elif a.precision_ckpt:
+        ckpt = None if a.precision_ckpt == 'onnx' else a.precision_ckpt
+        precision(a.tool, st, net, ckpt, a.out, a.num_images, a.eval_batch_size)
+    elif a.probe_memory:
+        probe_memory(a.tool, st, net, [int(n) for n in a.probe_memory.split(',')], a.out)
     else:
         train(a.tool, st, a.out)
 

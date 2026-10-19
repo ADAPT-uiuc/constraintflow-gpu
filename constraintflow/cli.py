@@ -123,6 +123,11 @@ def get_dataset(
     train: bool = False,
     device: str | torch.device | None = None,
 ):
+    #FEAT: ACAS Xu has no dataset; trace on zero inputs (the box comes from input_box at run time).
+    if dataset == "acasxu":
+        from constraintflow.lib.spec import ACAS_INPUT_SHAPE
+        return (torch.zeros(batch_size, *ACAS_INPUT_SHAPE, device=device),
+                torch.zeros(batch_size, dtype=torch.long, device=device))
     if dataset == "mnist":
         transform = transforms.ToTensor()  # keep 28x28
         data = datasets.MNIST(root=".", train=train, download=True, transform=transform)

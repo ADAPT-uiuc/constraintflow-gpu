@@ -21,7 +21,10 @@ from constraintflow.lib.parse import refresh_layers
 from constraintflow.lib.spec import ImageDataset, apply_spec_offset
 
 CF_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(constraintflow.__file__)))
-PROGRAMS = {'IBP': 'ibp.cf', 'CROWN-IBP': 'crownibp.cf'}
+PROGRAMS = {'IBP': 'ibp.cf', 'CROWN-IBP': 'crownibp.cf',
+            'CROWN': 'deeppoly_priority_add.cf',  # DeepPoly with the residual Add rule = auto_LiRPA's CROWN
+            'zid': 'zid.cf',
+            'CROWN-lower': 'deeppoly_priority_add_lower.cf'}  #FEAT: CROWN with only the last layer's lower bound back-substituted
 
 
 def _source_hash():
@@ -78,6 +81,9 @@ def compile_program(onnx_path, method, batch_size, dataset, cache_dir, cudagraph
     cmd = [sys.executable, '-m', 'constraintflow.cli', 'jit', os.path.join(CF_ROOT, 'examples', 'compiler_examples', PROGRAMS[method]),
            '--network', os.path.abspath(onnx_path), '--dataset', dataset, '--batch-size', str(batch_size), '--eps', '0.01',
            '--device', 'gpu', '--output-path', os.path.abspath(tmp) + '/', '--inductor', '--training'] + (['--cudagraphs'] if cudagraphs else [])
+    #FEAT: DeepPoly programs get --fuse-affine-subst, as in the verification harness.
+    if PROGRAMS[method].startswith('deeppoly'):
+        cmd.append('--fuse-affine-subst')
     env = dict(os.environ, PYTHONPATH=os.pathsep.join([CF_ROOT, os.environ.get('PYTHONPATH', '')]))
     # cli jit traces one batch read from torchvision under its working directory.
     res = subprocess.run(cmd, cwd=data_root, env=env, capture_output=True, text=True)
@@ -124,7 +130,7 @@ class TrainingBounds:
         y = torch.zeros(batch_size, dtype=torch.long, device='cuda')
         network, abs_elem = main.build(self.onnx_path, batch_size, 0.0, x, y, self.dataset, False, False, False,
                                        initializers=self.params, input_box=(x, x))
-        if not set(abs_elem.d) <= {'llist', 'l', 'u', 'L', 'U'} or not all(layer.refreshable for layer in network):
+        if not set(abs_elem.d) <= {'llist', 'l', 'u', 'L', 'U', 'Z'} or not all(layer.refreshable for layer in network):
             raise ValueError('this program or network is not supported for training')
         return network, abs_elem, main.flow, main.explode_inputs
 
@@ -134,9 +140,13 @@ class TrainingBounds:
             torch.compiler.cudagraph_mark_step_begin()
 
     def compute_bounds(self, method, x_L, x_U, labels):
-        batch_size = labels.size(0)
-        network, abs_elem, flow, explode_inputs = self.programs[method, batch_size]
         spec_weight, spec_bias = ImageDataset.get_output_spec_weight_and_bias(x_L, labels, self.dataset)
+        return self.compute_spec_bounds(method, x_L, x_U, spec_weight, spec_bias)
+
+    #FEAT: bounds on spec_weight @ f(x) + spec_bias for any [batch, rows, outputs] spec (input splitting).
+    def compute_spec_bounds(self, method, x_L, x_U, spec_weight, spec_bias):
+        batch_size = x_L.size(0)
+        network, abs_elem, flow, explode_inputs = self.programs[method, batch_size]
         refresh_layers(network, self.params, spec_weight, spec_bias)
         l, u = x_L.reshape(batch_size, -1), x_U.reshape(batch_size, -1)
         abs_elem.d['l'].blocks[0].block, abs_elem.d['u'].blocks[0].block = l, u
@@ -145,4 +155,26 @@ class TrainingBounds:
             abs_elem.d['L'].const.blocks[0].block = l.clone()
         if 'U' in abs_elem.d:
             abs_elem.d['U'].const.blocks[0].block = u.clone()
+        #FEAT: zonotope input (zid): center and per-input radius of the box, as spec.create_Z builds them.
+        if 'Z' in abs_elem.d:
+            abs_elem.d['Z'].mat.blocks[0].block = (u - l) / 2
+            abs_elem.d['Z'].const.blocks[0].block = (l + u) / 2
         return apply_spec_offset(network, flow(*explode_inputs(abs_elem, batch_size)))
+
+
+#FEAT: verification of a fixed ONNX network over batches of input boxes (input splitting, e.g. ACAS Xu).
+class SpecBounds(TrainingBounds):
+    """compute_spec_bounds on a fixed ONNX file: its own initializers stand in for model parameters."""
+
+    def __init__(self, onnx_path, input_shape, dataset, methods, batch_sizes, cache_dir, cudagraphs=True, data_root='./data'):
+        device_mode.set_mode('gpu')
+        self.dataset, self.cudagraphs, self.onnx_path = dataset, cudagraphs, onnx_path
+        inits = [i for i in onnx.load(onnx_path).graph.initializer if i.data_type == onnx.TensorProto.FLOAT]
+        self.params = {i.name: torch.from_numpy(onnx.numpy_helper.to_array(i).copy()).cuda() for i in inits}
+        dummy_input = torch.zeros(1, *input_shape)
+        os.makedirs(cache_dir, exist_ok=True)
+        self.programs = {}
+        for method in methods:
+            for batch_size in batch_sizes:
+                folder = compile_program(onnx_path, method, batch_size, dataset, cache_dir, cudagraphs, data_root)
+                self.programs[method, batch_size] = self._build(load_program(folder), dummy_input, batch_size)

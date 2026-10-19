@@ -7,6 +7,11 @@ from constraintflow.lib.parse import *
 from constraintflow.gbcsr.sparse_tensor import *
 
 
+#FEAT: most output atoms in one ACAS Xu property (props 7 and 8); shorter specs are zero-padded.
+ACAS_SPEC_ROWS = 6
+ACAS_INPUT_SHAPE = (1, 1, 5)
+
+
 class ImageDataset:
     mnist_mean = torch.tensor([0.1307]).reshape(-1, 1)
     mnist_std = torch.tensor([0.3081]).reshape(-1, 1)
@@ -73,7 +78,14 @@ class ImageDataset:
         return image, true_label
     
     def get_output_spec_weight_and_bias(X, y, dataset='mnist'):
-        if dataset in ['mnist', 'cifar10', 'cifar']:
+        #FEAT: ACAS Xu traces with a placeholder spec of ACAS_SPEC_ROWS rows; SpecBounds swaps in each property's.
+        if dataset == 'acasxu':
+            margins, _ = ImageDataset.get_output_spec_weight_and_bias(X, y, 'margins5')
+            weight = torch.cat([margins, -margins[:, :ACAS_SPEC_ROWS - 4]], dim=1)
+            return weight, torch.zeros(ACAS_SPEC_ROWS, device=X.device, dtype=X.dtype)
+        if dataset == 'margins5':
+            num_classes = 5
+        elif dataset in ['mnist', 'cifar10', 'cifar']:
             num_classes = 10
         elif dataset in ['tinyimagenet', 'imagenet']:
             num_classes = 200

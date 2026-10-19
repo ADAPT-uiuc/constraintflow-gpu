@@ -1,8 +1,8 @@
 import operator
-import os
 import tempfile
 import unittest
 from unittest import mock
+from constraintflow.compiler.optimizations import opt_flags
 from types import SimpleNamespace
 import torch
 import torch.nn.functional as F
@@ -13,7 +13,6 @@ from constraintflow.compiler.optimizations.product_grids import run
 class Shapes(dict):
     inputs={}
 
-@mock.patch.dict(os.environ, {'CF_TRANSPOSE_GRIDS': '1'})
 class TransposeGridsTest(unittest.TestCase):
     def test_full_product_grid(self):
         torch.manual_seed(9)
@@ -34,7 +33,7 @@ class TransposeGridsTest(unittest.TestCase):
                 else:actual=[eval(cg.visit(c),env) for c in s.children]
             for x,y in zip(actual,expected):torch.testing.assert_close(x,y)
 
-    @mock.patch.dict(os.environ, {'CF_TRANSPOSE_GRIDS': '0'})
+    @mock.patch.object(opt_flags, '_enabled', set(opt_flags.FLAGS) - {'transpose_grids'})
     def test_transposes_are_not_grouped_when_off(self):
         v=lambda n:IrVar(n,[])
         nodes=[IrFConvTranspose2d(v(x),v(w),[2,1],[1,0],[1,0]) for x in ('x','y') for w in ('w','z')]
@@ -56,7 +55,6 @@ class TransposeGridsTest(unittest.TestCase):
             cg=CodeGen(d);cg.file.close()
             self.assertEqual(run(block,cg.visit,sized,1),0)
 
-@mock.patch.dict(os.environ, {'CF_GRID_PACKED_BYTES': '1'})
 class MatvecGridMemoryTest(unittest.TestCase):
     def build(self, rows, cols):
         v=lambda n:IrVar(n,[])
@@ -78,7 +76,7 @@ class MatvecGridMemoryTest(unittest.TestCase):
             self.assertEqual(run(block,cg.visit,sized,1),0)
             self.assertEqual([cg.visit(s.children[1]) for s in block.children[:-1]],before)
 
-    @mock.patch.dict(os.environ, {'CF_GRID_PACKED_BYTES': '0'})
+    @mock.patch.object(opt_flags, '_enabled', set(opt_flags.FLAGS) - {'grid_packed_bytes'})
     def test_result_only_limit_when_off(self):
         # main's check counts only the grid result, so this shape still packs.
         block,sized,nodes=self.build(16384,65536)
