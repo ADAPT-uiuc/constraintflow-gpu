@@ -42,6 +42,7 @@ import sys
 import torch
 import typer
 import time
+from typing import Optional
 import csv
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
@@ -53,6 +54,7 @@ from constraintflow.lib.globals import *
 from constraintflow.lib.globals import dummy_mode, reuse_mode
 import constraintflow.lib.globals 
 from constraintflow.compiler.compile import compile as _compile
+from constraintflow.compiler.optimizations import opt_flags
 from constraintflow.verifier.provesound import provesound as _provesound
 from constraintflow.lib.spec import get_network_and_input_spec
 
@@ -284,12 +286,31 @@ def simulacrum_compile(
     memory_budget_mb: float = typer.Option(-1.0, "--memory-budget-mb", help="When the flow's estimated peak tensor memory exceeds this many MB, reorder it group by group and recompute large values instead of keeping them live (mem_plan); with --flow-segment-mb, values a segment does not read are also parked in host memory between segments (flow_offload). Requires --sroa with --early-reductions. -1 (default) uses 70% of the CUDA device's memory; 0 disables."),
     #FEAT: --dtype on jit, so typer accepts it (applied from argv above).
     dtype: str = typer.Option("float32", "--dtype", help="float32, or float64 to compute every float tensor in fp64 (a precision oracle for bound mismatches; compile and run must agree). Read from argv before the imports; listed here so typer accepts it."),
+    #FEAT: DeepPoly-efficient optimizations, on by default (optimizations/opt_flags.py).
+    dpe_opts: bool = typer.Option(True, "--dpe-opts/--no-dpe-opts", help="Default for every optimization below; --no-dpe-opts turns them all off, and --<name> then turns one back on."),
+    sroa_functional: Optional[bool] = typer.Option(None, "--sroa-functional/--no-sroa-functional", help="Decide SROA purity from the emitted program for torch too, so more flows get the functional-only passes."),
+    box_patch_reductions: Optional[bool] = typer.Option(None, "--box-patch-reductions/--no-box-patch-reductions", help="Center/radius fusion for patch sums and affine constants."),
+    patch_factor: Optional[bool] = typer.Option(None, "--patch-factor/--no-patch-factor", help="Factor row-scaled patches: A @ (diag(s) @ W) -> (A @ diag(s)) @ W."),
+    conv_chunks: Optional[bool] = typer.Option(None, "--conv-chunks/--no-conv-chunks", help="Recombine output-channel chunks after patch factoring."),
+    conv_sum: Optional[bool] = typer.Option(None, "--conv-sum/--no-conv-sum", help="C(x,W) + C(y,W) -> C(x+y,W) after patch factoring."),
+    transpose_grids: Optional[bool] = typer.Option(None, "--transpose-grids/--no-transpose-grids", help="Product grids over conv_transpose2d."),
+    grid_packed_bytes: Optional[bool] = typer.Option(None, "--grid-packed-bytes/--no-grid-packed-bytes", help="Count packed grid inputs against the grid memory limit."),
+    view_aliases: Optional[bool] = typer.Option(None, "--view-aliases/--no-view-aliases", help="Inline storage-sharing views before memory planning."),
+    expression_limits: Optional[bool] = typer.Option(None, "--expression-limits/--no-expression-limits", help="Split expressions deeper than 64 into temporaries."),
+    fused_matvec: Optional[bool] = typer.Option(None, "--fused-matvec/--no-fused-matvec", help="Lower pointwise-produced matvecs to row reductions."),
 ):
     """
     Compile a ConstraintFlow program through the whole simulacrum+reuse pipeline
     in one shot.
     """
     start_time = time.perf_counter()
+    choices = {'sroa_functional': sroa_functional, 'box_patch_reductions': box_patch_reductions,
+               'patch_factor': patch_factor, 'conv_chunks': conv_chunks, 'conv_sum': conv_sum,
+               'transpose_grids': transpose_grids, 'grid_packed_bytes': grid_packed_bytes,
+               'view_aliases': view_aliases, 'expression_limits': expression_limits,
+               'fused_matvec': fused_matvec}
+    opt_flags.set_enabled([n for n, v in choices.items() if (dpe_opts if v is None else v)])
+    typer.echo('[opt-flags] off: ' + (', '.join(n for n in opt_flags.FLAGS if not opt_flags.enabled(n)) or 'none'))
     if target not in ('torch', 'jax'):
         raise typer.BadParameter('--target must be torch or jax')
     if target == 'jax' and (not sroa or not fused_flow):
@@ -413,6 +434,7 @@ def simulacrum_compile(
         globals.flow_segment_mb.set_value(0.0)
         globals.memory_budget_mb.reset()
         globals.set_network_path(None)
+        opt_flags.reset()
         if in_memory:
             globals.jit_store_clear()
 

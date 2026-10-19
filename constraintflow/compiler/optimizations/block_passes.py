@@ -11,7 +11,6 @@ the only mutations it ever emits.
 
 from constraintflow.compiler import representations
 from constraintflow.compiler.ir import IrBlock
-from constraintflow.compiler.optimizations import cse as cse_pass
 from constraintflow.compiler.optimizations import copyPropagation
 from constraintflow.compiler.optimizations import uses
 from constraintflow.compiler.optimizations import dce as dce_pass
@@ -25,13 +24,8 @@ def _as_cfg(block):
 
 
 def cse(block):
-    #FEAT: CF_FAST_BLOCK_CSE=1 uses one-walk hash-bucket CSE on functional SSA
-    if os.environ.get('CF_FAST_BLOCK_CSE') == '1':
-        from constraintflow.compiler.optimizations import ssa_cse
-        return ssa_cse.run(block)
-    cfg = _as_cfg(block)
-    dtree = representations.construct_dominator_tree(cfg)
-    cse_pass.cse_cfg(cfg, dtree)
+    from constraintflow.compiler.optimizations import ssa_cse
+    return ssa_cse.run(block)  # one-walk hash-bucket CSE on functional SSA
 
 
 def copy_propagate(block):

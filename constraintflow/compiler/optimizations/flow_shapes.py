@@ -16,7 +16,6 @@ from torch.utils._pytree import tree_flatten
 
 from constraintflow.compiler.optimizations import flow_split
 #FEAT: per-change toggles for the DeepPoly-efficient passes
-from constraintflow.compiler.optimizations import opt_flags
 from constraintflow.lib.globals import device_mode
 from constraintflow.gbcsr.sparse_block import RUNTIME_HELPERS
 
@@ -28,7 +27,7 @@ class ProbeSizes(dict):
     def __init__(self):
         super().__init__()
         self.inputs = {}
-        #FEAT: CF_LAZY_TEMPORARIES records whether unnamed temporaries were profiled
+        #FEAT: lazy temporaries records whether unnamed temporaries were profiled
         self.temporaries_profiled = True
 
 
@@ -60,7 +59,7 @@ class _Recorder(TorchDispatchMode):
         return out
 
 
-#FEAT: record_temporaries=False (CF_LAZY_TEMPORARIES) skips the dispatch recorder
+#FEAT: record_temporaries=False (lazy temporaries) skips the dispatch recorder
 def probe(stmts, sources, param_meta, batch_size, consts, prelude=(), *, record_temporaries=True):
     """
     public
@@ -73,7 +72,7 @@ def probe(stmts, sources, param_meta, batch_size, consts, prelude=(), *, record_
         return None
     device = device_mode.get_device()
     out = ProbeSizes()
-    #FEAT: CF_LAZY_TEMPORARIES
+    #FEAT: lazy temporaries
     out.temporaries_profiled = record_temporaries
     i = 0
     try:
@@ -105,23 +104,21 @@ def probe(stmts, sources, param_meta, batch_size, consts, prelude=(), *, record_
                                         'shape': list(value.shape), 'dtype': str(value.dtype),
                                         'stride': list(value.stride()),
                                         'device': str(value.device)}
-            #FEAT: CF_LAZY_TEMPORARIES
+            #FEAT: lazy temporaries
             recorder = _Recorder() if record_temporaries else None
             for i, (stmt, src) in enumerate(zip(stmts, sources)):
                 if not src or src.startswith('return'):
                     break
                 if recorder is not None:
                     recorder.bytes = []
-                    #FEAT: CF_LAZY_TEMPORARIES
                     # `seen` changes only after this statement has finished.
                     # A key view avoids copying every preceding storage root.
-                    recorder.known_roots = (seen.keys() if opt_flags.enabled('CF_LAZY_TEMPORARIES')
-                                            else set(seen))
+                    recorder.known_roots = seen.keys()
                     recorder.live = {}
                     recorder.temporary_peak = 0
                     with recorder:
                         exec(src, env)
-                    #FEAT: CF_LAZY_TEMPORARIES
+                    #FEAT: lazy temporaries
                     transient = sum(recorder.bytes)
                     peak = max(recorder.bytes, default=0)
                     temporary_peak = recorder.temporary_peak
@@ -142,7 +139,7 @@ def probe(stmts, sources, param_meta, batch_size, consts, prelude=(), *, record_
                           'storage_bytes': storage.nbytes(), 'input': key in inputs,
                           'alloc': storage.nbytes() if fresh else 0,
                           'transient': transient, 'peak': peak,
-                          #FEAT: CF_LAZY_TEMPORARIES
+                          #FEAT: lazy temporaries
                           'temporary_peak': temporary_peak,
                           'shape': list(value.shape), 'dtype': str(value.dtype),
                                         'stride': list(value.stride()),
@@ -166,7 +163,7 @@ def summary(stmts, sized):
         stmts, *flow_split.root_liveness(stmts, sized)) or [0])
     transient = max((v['transient'] for v in sized.values()), default=0)
     op = max((v['peak'] for v in sized.values()), default=0)
-    #FEAT: CF_LAZY_TEMPORARIES
+    #FEAT: lazy temporaries
     if not getattr(sized, 'temporaries_profiled', True):
         return ('{} statements, {} allocating / {} views, {} named total, {} named peak live; '
                 'unnamed temporaries not profiled').format(

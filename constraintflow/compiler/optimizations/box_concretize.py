@@ -8,7 +8,7 @@ nearly equal magnitude; when the box is narrow (eps 4e-5 on CIFAR) their
 cancellation loses the interval width to fp32 rounding, and the error grows
 with depth. auto_LiRPA concretizes with A.(x_U+x_L)/2 -/+ |A|.(x_U-x_L)/2; the
 pair is written in that order so both tools round alike. Same matvec count.
-#FEAT: (CF_BOX_PATCH_REDUCTIONS)
+#FEAT: (box_patch_reductions)
 For patch sums, fuse the center and radius terms into one reduction. The
 same algebra applies to affine-constant vectors, with matching gather/view
 geometry, even when they are not the input box's endpoints.
@@ -19,7 +19,7 @@ import re
 from collections import Counter
 
 from constraintflow.compiler.ir import (
-    #FEAT: CF_BOX_PATCH_REDUCTIONS
+    #FEAT: box_patch_reductions
     IrAssignment, IrConst, IrFConv2d, IrFUnfold, IrTorchSum, IrSimpleBinary, IrTensorClamp, IrTorchMatmul,
     IrTorchSlice, IrTorchUnsqueeze, IrTorchReshape, IrTorchView, IrTransRetBasic, IrVar,
 )
@@ -31,13 +31,13 @@ from constraintflow.compiler.optimizations.sign_reductions import _op
 
 # Input-layer bound parameters: (role, block) with role 'l' or 'u'.
 _BOX = re.compile(r'^in_(?:(l|u)|(L|U)_const)_(\d+)$')
-#FEAT: CF_BOX_PATCH_REDUCTIONS also peels unfold gathers
+#FEAT: box_patch_reductions also peels unfold gathers
 _BOX_VIEWS = dict(_WRAPPERS)
 _BOX_VIEWS[IrFUnfold] = ('kernel_size', 'padding', 'stride')
 
 
 def _views():
-    return _BOX_VIEWS if opt_flags.enabled('CF_BOX_PATCH_REDUCTIONS') else _WRAPPERS
+    return _BOX_VIEWS if opt_flags.enabled('box_patch_reductions') else _WRAPPERS
 
 
 def run(block):
@@ -65,7 +65,7 @@ def run(block):
     def peel(expr, single=False):
         shells = []
         expr = resolve(expr, single)
-        #FEAT: CF_BOX_PATCH_REDUCTIONS
+        #FEAT: box_patch_reductions
         views = _views()
         while type(expr) in views:
             shells.append(expr)
@@ -90,8 +90,8 @@ def run(block):
     def candidate(expr):
         # matmul(view(clamp(A, 0)), column view of a box tensor)
         reduction, output = peel(expr, single=True)
-        #FEAT: CF_BOX_PATCH_REDUCTIONS fuses patch-sum and affine-constant reductions
-        if isinstance(reduction, IrTorchSum) and opt_flags.enabled('CF_BOX_PATCH_REDUCTIONS'):
+        #FEAT: box_patch_reductions fuses patch-sum and affine-constant reductions
+        if isinstance(reduction, IrTorchSum) and opt_flags.enabled('box_patch_reductions'):
             product = resolve(reduction.children[0], single=True)
             if not _op(product, 'mul'):
                 return None
@@ -117,18 +117,18 @@ def run(block):
         clamp, shells = peel(reduction.children[0])
         if role is None or not isinstance(clamp, IrTensorClamp) or clamp.const != 0:
             return None
-        #FEAT: candidates carry their vector for CF_BOX_PATCH_REDUCTIONS
+        #FEAT: candidates carry their vector for box_patch_reductions
         return reduction, clamp, shells, output, role, reduction.children[1]
 
     def compatible(a, b):
         ra, ca, sa, oa, roa, va = a
         rb, cb, sb, ob, rob, vb = b
-        #FEAT: CF_BOX_PATCH_REDUCTIONS also requires matching vector gather geometry
+        #FEAT: box_patch_reductions also requires matching vector gather geometry
         av = bv = []
-        if opt_flags.enabled('CF_BOX_PATCH_REDUCTIONS'):
+        if opt_flags.enabled('box_patch_reductions'):
             _, av = peel(va)
             _, bv = peel(vb)
-        #FEAT: CF_BOX_PATCH_REDUCTIONS (reduction kinds must match)
+        #FEAT: box_patch_reductions (reduction kinds must match)
         return (type(ra) is type(rb)
                 and (not isinstance(ra, IrTorchSum) or ra.dim == rb.dim)
                 and ca.min_true != cb.min_true and roa[1] == rob[1] and roa[0] != rob[0]
@@ -151,7 +151,7 @@ def run(block):
     def fuse(a, b):
         # a, b: candidates; returns (center term, radius term, sign of radius term)
         pos, neg = (a, b) if a[1].min_true else (b, a)
-        #FEAT: CF_BOX_PATCH_REDUCTIONS
+        #FEAT: box_patch_reductions
         reduction, clamp, shells, output, role, _vector = pos
         x_vec, y_vec = pos[5], neg[5]
         x_base, _ = peel(x_vec)
@@ -163,7 +163,7 @@ def run(block):
             hi, lo, sign = y_base, x_base, 'sub'
         coeff = clamp.children[0]
         abs_coeff = IrSimpleBinary(IrTensorClamp(coeff, 0, True), IrTensorClamp(coeff, 0, False), 'sub')
-        #FEAT: CF_BOX_PATCH_REDUCTIONS rebuilds a fused patch-sum reduction
+        #FEAT: box_patch_reductions rebuilds a fused patch-sum reduction
         if isinstance(reduction, IrTorchSum):
             if role[1] == 'generic':
                 # Arbitrary constant roots can have different shapes before
@@ -266,7 +266,7 @@ def fold_conv_bias(block):
     def peel(expr):
         shells = []
         expr = resolve(expr)
-        #FEAT: CF_BOX_PATCH_REDUCTIONS
+        #FEAT: box_patch_reductions
         views = _views()
         while type(expr) in views:
             shells.append(expr)

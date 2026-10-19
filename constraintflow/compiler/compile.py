@@ -112,8 +112,8 @@ def compile(inputfile, output_path, target='torch'):
                 # Aggregate payload/shape rebindings emit no statements; after
                 # SROA only retained tensor view writes can make it impure.
                 # Copy alias checks have already succeeded inside sroa().
-                #FEAT: CF_SROA_FUNCTIONAL
-                # CF_SROA_FUNCTIONAL applies the same rule to torch in sroa().
+                #FEAT: sroa_functional
+                # sroa_functional applies the same rule to torch in sroa().
                 ir.flow_functional = True
                 stats['functional'] = True
             print('[sroa] {aggregates} aggregates removed, {clones_dropped} clones and '

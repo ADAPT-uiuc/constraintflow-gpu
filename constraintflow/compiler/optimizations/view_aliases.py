@@ -1,4 +1,4 @@
-#FEAT: new pass, enabled by CF_VIEW_ALIASES
+#FEAT: new pass (jit --no-view-aliases disables it)
 """Inline storage-sharing views in functional SSA before memory planning.
 
 Keeping a base and its views as separate segment outputs makes a storage root

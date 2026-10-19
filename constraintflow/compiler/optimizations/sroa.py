@@ -142,22 +142,7 @@ def _op_name(op):
     return op if isinstance(op, str) else getattr(op, '__name__', '')
 
 
-def _walk(obj, seen, out):
-    if id(obj) in seen:
-        return
-    seen.add(id(obj))
-    if isinstance(obj, IrAst):
-        out.append(obj)
-    if isinstance(obj, (list, tuple, set)):
-        for item in obj:
-            _walk(item, seen, out)
-        return
-    if hasattr(obj, '__dict__'):
-        for value in vars(obj).values():
-            _walk(value, seen, out)
-
-
-#FEAT: CF_TREE_PURITY_SCAN, iterative and without analysis edges
+#FEAT: tree purity scan, iterative and without analysis edges
 def _walk_tree(obj, out):
     seen, pending = set(), [obj]
     while pending:
@@ -688,11 +673,7 @@ class _Scalarizer:
         clock = _Progress()
         block = self.ir.flow_block
         nodes = []
-        #FEAT: CF_TREE_PURITY_SCAN skips analysis edges in the purity scan
-        if opt_flags.enabled('CF_TREE_PURITY_SCAN'):
-            _walk_tree(block.children, nodes)
-        else:
-            _walk(block.children, set(), nodes)
+        _walk_tree(block.children, nodes)  # skips analysis edges
         clock.mark('walk ' + str(len(nodes)) + ' nodes')
         self.functional = not any(type(n).__name__ in _MUTATION for n in nodes)
 
@@ -746,11 +727,11 @@ class _Scalarizer:
 
         results = [self.densify(self.eval(child)) for child in ret.children[:2]]
         self.out.append(IrTransRetBasic([self.to_ir(d) for d in results]))
-        #FEAT: CF_SROA_FUNCTIONAL decides purity from the emitted program for torch too
+        #FEAT: sroa_functional decides purity from the emitted program for torch too
         # Input aggregate mutations still require the copy/alias checks above.
         # Payload and geometry rebindings have now vanished; only retained view
         # writes make the emitted tensor program impure, for either backend.
-        if opt_flags.enabled('CF_SROA_FUNCTIONAL'):
+        if opt_flags.enabled('sroa_functional'):
             self.functional = self.view_writes == 0
         block.update_parent_child(self.out)
         self.ir.flow_layer_bounds = bounds + [len(self.out)]
