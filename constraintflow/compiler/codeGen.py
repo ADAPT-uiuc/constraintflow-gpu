@@ -18,7 +18,7 @@ from constraintflow.compiler.optimizations import conv_partials, pad_inputs, reg
 from constraintflow.compiler.optimizations import product_grids as product_grids_pass
 #FEAT: per-change toggles for the DeepPoly-efficient passes
 from constraintflow.compiler.optimizations import opt_flags
-from constraintflow.gbcsr.sparse_block import RUNTIME_HELPERS
+from constraintflow.gbcsr.sparse_block import RUNTIME_HELPERS, TRAINING_HELPERS
 #FEAT: parameters of the generated build() and run().
 RUN_PARAMS = ("network_file, batch_size, eps, dataset_X, dataset_y, dataset, train, print_intermediate_results, "
               "no_sparsity, initializers=None, input_box=None")
@@ -703,9 +703,9 @@ class CodeGen(irVisitor.IRVisitor):
             self.write('from constraintflow.lib.polyexp import PolyExpSparse')
         if reuse_mode.get_flag():
             self.write('from constraintflow.lib.symexp import SymExpSparse')
-            #FEAT: training_bcast_matmul is imported only by training builds, so verification code is unchanged.
+            #FEAT: training helpers are imported only by training builds, so verification code is unchanged.
             self.write('from constraintflow.gbcsr.sparse_block import ' + ', '.join(
-                h for h in RUNTIME_HELPERS if h != 'training_bcast_matmul' or training.get_flag()))
+                h for h in RUNTIME_HELPERS if h not in TRAINING_HELPERS or training.get_flag()))
             #FEAT: pre-autograd CSE pass named in training builds' compile decorator.
             if training.get_flag():
                 self.write('from constraintflow.lib.pre_grad_cse import PRE_GRAD_CSE')
@@ -1274,6 +1274,9 @@ class CodeGen(irVisitor.IRVisitor):
 
     def visitIrTorchEinsum(self, node):
         operands = ', '.join(self.visit(c) for c in node.children)
+        #FEAT: training builds split the backward reduction of kernel-patch compositions (see training_einsum).
+        if reuse_mode.get_flag() and training.get_flag():
+            return 'training_einsum(' + repr(node.equation) + ', ' + operands + ')'
         return 'torch.einsum(' + repr(node.equation) + ', ' + operands + ')'
 
     def visitIrTorchCat(self, node):
