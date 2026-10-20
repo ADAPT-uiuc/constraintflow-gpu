@@ -1096,6 +1096,15 @@ def training_bcast_matmul(a, b):
     return _expanded_matvec(a, b)
 
 
+#FIX FOR: in training, composing a kernel with patches ('pckabo,mkab->pcmabo') ran as one bmm per kernel tap whose
+# weight gradient reduces ~B*patch*positions rows into a tiny matrix (one cuBLAS call took ~90 ms on zid N26);
+# expanding the kernel over the batch splits that reduction per sample (split-K), and is more accurate.
+def training_einsum(equation, a, b):
+    if equation == 'pckabo,mkab->pcmabo' and a.shape[0] > 1:
+        return torch.einsum('pckabo,pmkab->pcmabo', a, b.expand(a.shape[0], *b.shape))
+    return torch.einsum(equation, a, b)
+
+
 #FIX FOR: torch.where evaluates both arms, so a division in the unselected arm (ReLU slope u/(u-l) with
 # u-l == 0 or tiny) gave NaN gradients (0/0, 0 * inf). Gradients are exactly 0 where the incoming one is.
 class _SafeDiv(torch.autograd.Function):
@@ -1134,7 +1143,9 @@ def safe_div(num, den):
 
 
 # Called by name from generated flow code; codeGen imports and flow_shapes evaluates them.
-RUNTIME_HELPERS = {f.__name__: f for f in (col2im_columns, patches_to_dense, conv_transpose2d, bcast_matmul, training_bcast_matmul, safe_div)}
+RUNTIME_HELPERS = {f.__name__: f for f in (col2im_columns, patches_to_dense, conv_transpose2d, bcast_matmul, training_bcast_matmul, training_einsum, safe_div)}
+# Imported only by --training builds, so verification code is unchanged.
+TRAINING_HELPERS = {'training_bcast_matmul', 'training_einsum'}
 
 
 def identifySparseBlockType(block):

@@ -24,7 +24,7 @@ CF_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(constraintflow.__file_
 #FIX FOR: training back-substituted the unused spec upper bound (auto_LiRPA trains with bound_upper=False), doubling the backward.
 PROGRAMS = {'IBP': 'ibp.cf', 'CROWN-IBP': 'crownibp_lower.cf',
             'CROWN': 'deeppoly_priority_add_lower.cf',  # DeepPoly with the residual Add rule = auto_LiRPA's CROWN
-            'zid': 'zid.cf',
+            'zid': 'zid_lower.cf',  #FIX FOR: zid back-substituted the unused spec upper bound too
             'CROWN-lower': 'deeppoly_priority_add_lower.cf'}  #FEAT: CROWN with only the last layer's lower bound back-substituted
 
 

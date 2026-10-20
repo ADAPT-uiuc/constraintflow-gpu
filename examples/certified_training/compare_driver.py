@@ -9,6 +9,7 @@ Timed: setup (BoundedModule / TrainingBounds construction) and every Train() cal
 Not timed: cf-gpu code generation (done ahead, into its cache) and warmup.
 """
 import argparse
+import glob
 import importlib.util
 import inspect
 import json
@@ -31,6 +32,7 @@ LIRPA_DIR = find_lirpa_dir()
 sys.path[:0] = [LIRPA_DIR, os.path.join(LIRPA_DIR, 'examples', 'vision')]
 
 import torch
+import torch.nn.functional as F
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 
@@ -58,31 +60,59 @@ def normalization(name):
 
 
 class GPULoader:
-    """DataLoader replacement with MNIST on the GPU; same batches and default-RNG use as DataLoader."""
+    """DataLoader replacement with the dataset on the GPU; same batch order and default-RNG use as DataLoader."""
 
     def __init__(self, dataset, batch_size=1, shuffle=False, **ignored):
-        assert isinstance(dataset, datasets.MNIST) and isinstance(dataset.transform, transforms.ToTensor)
         self.dataset, self.batch_size, self.shuffle = dataset, batch_size, shuffle
-        self.x = (dataset.data.float() / 255).unsqueeze(1).cuda()  # divide on the CPU, like ToTensor
-        self.y = dataset.targets.cuda()
-        if NORMALIZE:
-            mean, std = normalization('MNIST')
-            self.x = (self.x - mean.cuda()) / std.cuda()
+        self.mnist, self.augment = isinstance(dataset, datasets.MNIST), False
+        if self.mnist:
+            assert isinstance(dataset.transform, transforms.ToTensor)
+            self.x = (dataset.data.float() / 255).unsqueeze(1).cuda()  # divide on the CPU, like ToTensor
+            self.y = dataset.targets.cuda()
+            if NORMALIZE:
+                mean, std = normalization('MNIST')
+                self.x = (self.x - mean.cuda()) / std.cuda()
+            return
+        #FEAT: CIFAR on the GPU. The test set matches the CPU pipeline; the training set's flip + 4-px crop run
+        # per sample on the GPU (same distribution, own generator seeded like the script) since workers' draws can't be replayed.
+        assert isinstance(dataset, datasets.CIFAR10)
+        steps = [type(t).__name__ for t in dataset.transform.transforms]
+        self.augment = steps == ['RandomHorizontalFlip', 'RandomCrop', 'ToTensor', 'Normalize']
+        assert self.augment or steps == ['ToTensor', 'Normalize'], steps
+        mean, std = normalization('CIFAR')
+        x = torch.from_numpy(dataset.data).permute(0, 3, 1, 2).float().div(255)  # ToTensor, on the CPU
+        self.x = (x if self.augment else x.sub(mean).div(std)).cuda()
+        self.y = torch.tensor(dataset.targets).cuda()
+        self.mean_std = mean.cuda(), std.cuda()
+        self.generator = torch.Generator(device='cuda')
+        self.generator.manual_seed(torch.initial_seed())  # simple_training seeds torch with --seed before building loaders
 
     def __setattr__(self, name, value):  # simple_training sets mean/std as CPU tensors
-        if NORMALIZE and name in ('mean', 'std'):
+        if NORMALIZE and getattr(self, 'mnist', False) and name in ('mean', 'std'):
             value = torch.tensor(NORMALIZATION['MNIST'][name == 'std'])
         super().__setattr__(name, value.cuda() if name in ('mean', 'std') else value)
 
     def __len__(self):
         return -(-len(self.y) // self.batch_size)
 
+    def _augmented(self, x):
+        """RandomHorizontalFlip, RandomCrop(32, 4) with zero padding, then Normalize; per sample."""
+        n, (h, w), g = x.shape[0], x.shape[2:], self.generator
+        flip = torch.rand(n, device=x.device, generator=g) < 0.5
+        x = F.pad(torch.where(flip.view(-1, 1, 1, 1), x.flip(3), x), (4, 4, 4, 4))
+        top = torch.randint(0, 9, (n, 1), device=x.device, generator=g) + torch.arange(h, device=x.device)
+        left = torch.randint(0, 9, (n, 1), device=x.device, generator=g) + torch.arange(w, device=x.device)
+        x = x[torch.arange(n, device=x.device).view(-1, 1, 1, 1), torch.arange(x.shape[1], device=x.device).view(1, -1, 1, 1),
+              top.view(n, 1, h, 1), left.view(n, 1, 1, w)]
+        mean, std = self.mean_std
+        return x.sub(mean).div(std)
+
     def __iter__(self):
         torch.empty((), dtype=torch.int64).random_()  # DataLoader draws this base seed every epoch
         n = len(self.y)
         order = torch.tensor(list(torch.utils.data.RandomSampler(range(n)))) if self.shuffle else torch.arange(n)
         for idx in order.cuda().split(self.batch_size):
-            yield self.x[idx], self.y[idx]
+            yield (self._augmented(self.x[idx]) if self.augment else self.x[idx]), self.y[idx]
 
 
 #FEAT: --normalize applies the sweeps' MNIST normalization (the ONNX loader drops the nets' own Sub/Div).
@@ -242,7 +272,7 @@ class Recorder:
         })
 
 
-def train(tool, st, out):
+def train(tool, st, out, ckpt_every=0):
     args = st.args
     recorder = Recorder(st, tool)
     if tool == 'cf':  # code generation ahead of time; setup then only loads from the cache
@@ -253,6 +283,16 @@ def train(tool, st, out):
                          args.cf_cache_dir)
         recorder.result['compile_seconds'] = time.perf_counter() - start
     args.save_model = args.save_model or os.path.join(out, 'ckpt')
+    #FEAT: --ckpt_every: keep a copy of every Nth epoch's checkpoint (saved by simple_training after its untimed test pass).
+    if ckpt_every:
+        os.makedirs(os.path.join(out, 'ckpts'), exist_ok=True)
+        save = torch.save
+
+        def save_and_keep(obj, path, *x, **k):
+            save(obj, path, *x, **k)
+            if path == args.save_model and obj['epoch'] % ckpt_every == 0:
+                save(obj, os.path.join(out, 'ckpts', f"epoch_{obj['epoch']:03d}.pt"))
+        torch.save = save_and_keep
     st.main(args)
     with open(os.path.join(out, 'record.json'), 'w') as f:
         json.dump(recorder.result, f)
@@ -336,22 +376,39 @@ def bounds(tool, st, net, ckpt, out, num_images=256):
 
 #FEAT: --precision_ckpt
 def precision(tool, st, net, ckpt, out, num_images, eval_batch_size):
-    """cf-gpu's precision (cli.get_precision): the fraction of images whose margin lower bounds are all >= 0."""
+    """cf-gpu's precision (cli.get_precision): the fraction of images whose margin lower bounds are all >= 0,
+    plus clean accuracy. A folder of checkpoints gives one entry per checkpoint (precision_curve_<tool>.json)."""
     assert num_images % eval_batch_size == 0, '--num_images must be a multiple of --eval_batch_size'
-    model = load_model(net, ckpt)
+    #FEAT: a folder evaluates every checkpoint in it; cf-gpu reuses its programs (weights are loaded in place).
+    ckpts = sorted(glob.glob(os.path.join(ckpt, '*.pt'))) if ckpt and os.path.isdir(ckpt) else [ckpt]
+    model = load_model(net, ckpts[0])
     x, x_L, x_U, y = test_box(st.args, num_images)
     chunks = [slice(i, i + eval_batch_size) for i in range(0, num_images, eval_batch_size)]
-    result = {'tool': tool, 'ckpt': ckpt, 'eps': st.args.eps, 'normalize': NORMALIZE, 'num_images': num_images,
-              'methods': {}}
-    for method in METHODS[tool]:
-        bound = bounder(tool, model, method, st.args, [eval_batch_size])
+    results, bounders = [], {}
+    for path in ckpts:
+        if path:
+            state = torch.load(path)
+            model.load_state_dict(state['state_dict'])
+        result = {'tool': tool, 'ckpt': path, 'epoch': state['epoch'] if path else 0, 'eps': st.args.eps,
+                  'normalize': NORMALIZE, 'num_images': num_images, 'methods': {}}
         with torch.no_grad():
-            verified = torch.cat([(bound(x[s], x_L[s], x_U[s], y[s]) >= 0).all(1) for s in chunks])
-        result['methods'][method] = {'verified': int(verified.sum()), 'precision': verified.float().mean().item()}
-        print(method, result['methods'][method], flush=True)
-    name = os.path.splitext(os.path.basename(ckpt))[0] if ckpt else 'onnx'
-    with open(os.path.join(out, f'precision_{name}_{tool}.json'), 'w') as f:
-        json.dump(result, f, indent=2)
+            result['clean'] = torch.cat([model(x[s]).argmax(1) == y[s] for s in chunks]).float().mean().item()
+        for method in METHODS[tool]:
+            if tool == 'lirpa' or method not in bounders:  # BoundedModule keeps its own copy of the weights
+                bounders[method] = bounder(tool, model, method, st.args, [eval_batch_size])
+            with torch.no_grad():
+                verified = torch.cat([(bounders[method](x[s], x_L[s], x_U[s], y[s]) >= 0).all(1) for s in chunks])
+            result['methods'][method] = {'verified': int(verified.sum()), 'precision': verified.float().mean().item()}
+        print(f"epoch {result['epoch']}: clean {result['clean']:.4f}",
+              {m: r['precision'] for m, r in result['methods'].items()}, flush=True)
+        results.append(result)
+    if len(ckpts) > 1 or (ckpt and os.path.isdir(ckpt)):
+        with open(os.path.join(out, f'precision_curve_{tool}.json'), 'w') as f:
+            json.dump(results, f, indent=2)
+    else:
+        name = os.path.splitext(os.path.basename(ckpt))[0] if ckpt else 'onnx'
+        with open(os.path.join(out, f'precision_{name}_{tool}.json'), 'w') as f:
+            json.dump(results[0], f, indent=2)
 
 
 #FEAT: --probe_memory
@@ -394,11 +451,12 @@ def main():
     p.add_argument('--out', required=True)
     p.add_argument('--bounds_ckpt', help="checkpoint to compare bounds on; 'onnx' for the ONNX file's own weights")
     p.add_argument('--methods', help='comma-separated subset of the bound methods (default: all the tool has)')
-    p.add_argument('--precision_ckpt', help="checkpoint to evaluate; 'onnx' for the ONNX file's own weights")
+    p.add_argument('--precision_ckpt', help="checkpoint (or folder of checkpoints) to evaluate; 'onnx' for the ONNX file's own weights")
+    p.add_argument('--ckpt_every', type=int, default=0, help='training: also keep every Nth epoch checkpoint in OUT/ckpts')
     p.add_argument('--probe_memory', help='comma-separated batch sizes')
     p.add_argument('--num_images', type=int, default=1000)
     p.add_argument('--eval_batch_size', type=int, default=100)
-    p.add_argument('--gpu_data', action='store_true', help='GPULoader instead of DataLoader, for both tools (MNIST)')
+    p.add_argument('--gpu_data', action='store_true', help='GPULoader instead of DataLoader, for both tools (MNIST, CIFAR)')
     p.add_argument('--normalize', action='store_true', help="the sweeps' MNIST normalization, for both tools")
     p.add_argument('rest', nargs=argparse.REMAINDER, help='simple_training.py args, after --')
     a = p.parse_args()
@@ -424,7 +482,7 @@ def main():
     elif a.probe_memory:
         probe_memory(a.tool, st, net, [int(n) for n in a.probe_memory.split(',')], a.out)
     else:
-        train(a.tool, st, a.out)
+        train(a.tool, st, a.out, a.ckpt_every)
 
 
 if __name__ == '__main__':
