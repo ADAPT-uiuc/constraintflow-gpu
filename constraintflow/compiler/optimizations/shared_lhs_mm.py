@@ -27,10 +27,12 @@ class SharedLhsMM(CustomGraphPass):
             if n.op == 'call_function' and n.target == aten.mm.default:
                 x = n.args[0]
                 groups.setdefault((_base(x), tuple(x.meta['val'].shape)), []).append(n)
-        order = {n: i for i, n in enumerate(graph.nodes)}
         for mms in groups.values():
             if len(mms) < 2:
                 continue
+            #FIX FOR: positions taken once went stale after an earlier group moved nodes up; a later group then
+            # "moved" such a node down past its users (N18 polyzono/deeppoly_add: used before defined).
+            order = {n: i for i, n in enumerate(graph.nodes)}
             first = min(mms, key=order.get)
             # Weights built after the first mm move before it, if they only depend on earlier nodes.
             late, ok = [], True

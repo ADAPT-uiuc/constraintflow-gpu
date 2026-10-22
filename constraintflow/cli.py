@@ -708,6 +708,7 @@ def _run_image_batches(run, _batch, network_file, batch_size, eps, num_images, w
     import json as _json
     #FEAT: --profile-comm profiles each timed region.
     from constraintflow.lib.comm_profile import CommProfile
+    from constraintflow.lib import cpu_memory
 
     def _write(f, record):
         f.write(_json.dumps(record) + "\n")
@@ -742,6 +743,9 @@ def _run_image_batches(run, _batch, network_file, batch_size, eps, num_images, w
                     torch.cuda.synchronize()
                     torch.cuda.reset_peak_memory_stats()
                     resident = torch.cuda.memory_allocated()
+                else:
+                    #FEAT: per-run CPU memory: resident set at the start, high-water mark during the run.
+                    resident = cpu_memory.start()
 
                 start_time = time.perf_counter()
                 with comm.region():
@@ -751,8 +755,7 @@ def _run_image_batches(run, _batch, network_file, batch_size, eps, num_images, w
                     if is_cuda:
                         torch.cuda.synchronize()
                 run_time = time.perf_counter() - start_time
-            # Per-run peaks exist only on the GPU; a CPU process's peak RSS is lifetime-wide.
-            peak = torch.cuda.max_memory_allocated() if is_cuda else None
+            peak = torch.cuda.max_memory_allocated() if is_cuda else cpu_memory.peak()
 
             _write(out, {"kind": "batch", "batch": i, "images": [lo, lo + batch_size],
                          comm.time_key: run_time, "peak_bytes": peak, "resident_bytes": resident,
