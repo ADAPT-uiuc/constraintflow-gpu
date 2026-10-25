@@ -317,6 +317,10 @@ def _value_equal(x, y):
         return len(x) == len(y) and all(_value_equal(p, q) for p, q in zip(x, y))
     if isinstance(x, dict):
         return x.keys() == y.keys() and all(_value_equal(x[k], y[k]) for k in x)
+    #FIX FOR: tensor == broadcasts, so IrTensorOnes sizes [100, 100] and [100] compared equal and CSE merged
+    # ones([batch, 100]) with ones([100]) whenever the batch size equaled a layer width (reshape crash at runtime).
+    if getattr(x, 'shape', None) != getattr(y, 'shape', None):
+        return False
     try:
         result = (x == y)
     except Exception:

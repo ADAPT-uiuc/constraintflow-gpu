@@ -1133,8 +1133,36 @@ def training_bcast_matmul(a, b):
 # expanding the kernel over the batch splits that reduction per sample (split-K), and is more accurate.
 def training_einsum(equation, a, b):
     if equation == 'pckabo,mkab->pcmabo' and a.shape[0] > 1:
-        return torch.einsum('pckabo,pmkab->pcmabo', a, b.expand(a.shape[0], *b.shape))
+        return _KernelPatchCompose.apply(a, b)
     return torch.einsum(equation, a, b)
+
+
+#FIX FOR: the per-sample split's kernel gradient was B*taps tiny GEMMs ([16,1728]@[1728,32] each, ~20 ms on zono N26);
+# one GEMM per kernel tap over all (sample, patch, position) rows lets cuBLAS split K itself (~4.5 ms, same fp64 error).
+class _KernelPatchCompose(torch.autograd.Function):
+    @staticmethod
+    def forward(a, b):
+        return torch.einsum('pckabo,pmkab->pcmabo', a, b.expand(a.shape[0], *b.shape))
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        ctx.save_for_backward(*inputs)
+
+    @staticmethod
+    def backward(ctx, grad):
+        a, b = ctx.saved_tensors
+        p, c, k, kx, ky, o = a.shape
+        m = b.shape[0]
+        # Rows (sample, patch, position) per kernel tap, shared by both gradients.
+        rows_g = grad.permute(3, 4, 0, 1, 5, 2).reshape(kx * ky, -1, m)
+        grad_a = grad_b = None
+        if ctx.needs_input_grad[1]:
+            rows_a = a.permute(3, 4, 0, 1, 5, 2).reshape(kx * ky, -1, k)
+            grad_b = torch.stack([rows_g[t].T @ rows_a[t] for t in range(kx * ky)]).view(kx, ky, m, k).permute(2, 3, 0, 1)
+        if ctx.needs_input_grad[0]:
+            kernel = b.permute(2, 3, 0, 1).reshape(kx * ky, m, k)
+            grad_a = torch.bmm(rows_g, kernel).view(kx, ky, p, c, o, k).permute(2, 3, 5, 0, 1, 4)
+        return grad_a, grad_b
 
 
 #FIX FOR: torch.where evaluates both arms, so a division in the unselected arm (ReLU slope u/(u-l) with

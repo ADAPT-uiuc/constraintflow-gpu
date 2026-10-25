@@ -26,6 +26,13 @@ PROGRAMS = {'IBP': 'ibp.cf', 'CROWN-IBP': 'crownibp_lower.cf',
             'CROWN': 'deeppoly_priority_add_lower.cf',  # DeepPoly with the residual Add rule = auto_LiRPA's CROWN
             'zid': 'zid_lower.cf',  #FIX FOR: zid back-substituted the unused spec upper bound too
             'CROWN-lower': 'deeppoly_priority_add_lower.cf'}  #FEAT: CROWN with only the last layer's lower bound back-substituted
+#FEAT: DeepZ and DeepPoly with back-substitution stopped KK layers back, spec upper bound one-step interval.
+PROGRAMS.update({'zono': 'zono_lower.cf', **{f'DP-stop{k:02d}': f'custom_stops/deeppoly_custom_stop{k:02d}_lower.cf' for k in range(19)}})
+#FEAT: the same stops with CROWN-0's (c0), CROWN-0-C's (c0c) or Fast-Lin's (fl) ReLU lower bound (paradox-of-certified-training probe).
+PROGRAMS.update({f'DP-stop{k:02d}-{v}': f'custom_stops/deeppoly_custom_stop{k:02d}_{v}_lower.cf' for k in (1, 2, 3, 18) for v in ('c0', 'c0c', 'fl')})
+#FEAT: every spec in compiler_examples/paradox/ is a training program PX-<file name> (certifier search; no code change per spec).
+_PARADOX = os.path.join(CF_ROOT, 'examples', 'compiler_examples', 'paradox')
+PROGRAMS.update({'PX-' + f[:-3]: 'paradox/' + f for f in sorted(os.listdir(_PARADOX)) if f.endswith('.cf')} if os.path.isdir(_PARADOX) else {})
 
 
 def _source_hash():
@@ -46,7 +53,8 @@ SOURCE_HASH = _source_hash()
 def export_model(model, dummy_input, cache_dir):
     """Write the model as ONNX; return its path and the parameters, keyed by ONNX initializer name."""
     os.makedirs(cache_dir, exist_ok=True)
-    path = os.path.join(cache_dir, 'model.onnx')
+    #FIX FOR: runs on different nets sharing a cache overwrote one model.onnx, so one compiled the other's net.
+    path = os.path.join(cache_dir, f'model{os.getpid()}.onnx')
     was_training = model.training
     model.eval()
     torch.onnx.export(model, dummy_input[:1].to(next(model.parameters()).device), path,
@@ -78,22 +86,27 @@ def compile_program(onnx_path, method, batch_size, dataset, cache_dir, cudagraph
     folder = program_dir(cache_dir, onnx_path, method, batch_size, dataset, cudagraphs, jit_flags)
     if os.path.exists(os.path.join(folder, '__init__.py')):
         return folder
-    tmp = folder + '.tmp'
+    #FIX FOR: concurrent runs sharing a cache compiled the same program into one .tmp folder and deleted each other's.
+    tmp = f'{folder}.tmp{os.getpid()}'
     shutil.rmtree(tmp, ignore_errors=True)
     cmd = [sys.executable, '-m', 'constraintflow.cli', 'jit', os.path.join(CF_ROOT, 'examples', 'compiler_examples', PROGRAMS[method]),
            '--network', os.path.abspath(onnx_path), '--dataset', dataset, '--batch-size', str(batch_size), '--eps', '0.01',
            '--device', 'gpu', '--output-path', os.path.abspath(tmp) + '/', '--inductor', '--training'] + (['--cudagraphs'] if cudagraphs else []) + list(jit_flags)
     #FEAT: DeepPoly programs get --fuse-affine-subst, as in the verification harness.
-    if PROGRAMS[method].startswith('deeppoly'):
+    #FIX FOR: custom_stops/deeppoly_* programs missed the flag (the test was on the path, not the file name).
+    if os.path.basename(PROGRAMS[method]).startswith('deeppoly'):
         cmd.append('--fuse-affine-subst')
     env = dict(os.environ, PYTHONPATH=os.pathsep.join([CF_ROOT, os.environ.get('PYTHONPATH', '')]))
     # cli jit traces one batch read from torchvision under its working directory.
     res = subprocess.run(cmd, cwd=data_root, env=env, capture_output=True, text=True)
-    with open(folder + '.compile.log', 'w') as f:
+    with open(f'{folder}.compile{os.getpid()}.log', 'w') as f:
         f.write(res.stdout + res.stderr)
     if res.returncode != 0:
-        raise RuntimeError(f'cf-gpu compile failed, see {folder}.compile.log')
-    os.replace(tmp, folder)
+        raise RuntimeError(f'cf-gpu compile failed, see {folder}.compile{os.getpid()}.log')
+    try:
+        os.rename(tmp, folder)
+    except OSError:  # another run finished the same program first
+        shutil.rmtree(tmp, ignore_errors=True)
     return folder
 
 
