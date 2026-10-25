@@ -1178,6 +1178,13 @@ class CodeGen(irVisitor.IRVisitor):
         return self.visit(node.children[0]) + '.view(' + self.visit(node.shape) + ')'
 
     def visitIrTorchRepeat(self, node):
+        #FIX FOR: in training, the kernel tiled over patch positions (W.view(1,K,-1).unsqueeze(-1).repeat(1,1,1,P), read
+        # permuted) was saved [K,J,P] and read transposed (uncoalesced) by the backward; an expand keeps it in [K,P,J] order.
+        u = node.children[0]
+        if (training.get_flag() and isinstance(u, IrTorchUnsqueeze) and u.index in (-1, 3)
+                and isinstance(u.children[0], (IrTorchView, IrTorchReshape)) and isinstance(u.children[0].shape, (list, tuple))
+                and len(u.children[0].shape) == 3 and isinstance(node.repeats, (list, tuple)) and len(node.repeats) == 4 and list(node.repeats[:3]) == [1, 1, 1]):
+            return self.visit(u) + '.expand([-1, -1, -1, ' + str(node.repeats[3]) + '])'
         return self.visit(node.children[0]) + '.repeat(' + self.visit(node.repeats) + ')'
 
     def visitIrTorchExpand(self, node):
