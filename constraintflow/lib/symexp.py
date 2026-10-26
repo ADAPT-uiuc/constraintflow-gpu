@@ -33,6 +33,9 @@ def get_new_eps(network, initial_shape, json_list=None, layer_index=None,
         json_obj: dict[str, Any] = {
             'method': 'torch_ones',
             'size': [num],
+            #FIX FOR: size is a neuron count, not a batch; with num == 1 (a 1-neuron layer, e.g. Cersyve) codegen
+            # took the leading 1 for the traced batch size and emitted ones(batch_size).
+            'batch_dim': False,
             'output': mat_tensor_idx,
         }
         json_list.append(json_obj)

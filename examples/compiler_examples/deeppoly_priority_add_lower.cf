@@ -31,6 +31,9 @@ transformer deeppoly{
 
     Neuron_add -> (backsubs_lower(prev_0 + prev_1, curr), backsubs_upper(prev_0 + prev_1, curr), prev_0 + prev_1, prev_0 + prev_1);
 
+    // x * y: McCormick bounds, auto_LiRPA's default for CROWN (MulHelper.interpolated_relaxation, middle=False).
+    Neuron_mult -> (backsubs_lower((prev_1[l] * prev_0) + (prev_0[l] * prev_1) - (prev_0[l] * prev_1[l]), curr), backsubs_upper((prev_1[u] * prev_0) + (prev_0[l] * prev_1) - (prev_0[l] * prev_1[u]), curr), (prev_1[l] * prev_0) + (prev_0[l] * prev_1) - (prev_0[l] * prev_1[l]), (prev_1[u] * prev_0) + (prev_0[l] * prev_1) - (prev_0[l] * prev_1[u]));
+
 }
 
 flow(forward, priority, stop, deeppoly);

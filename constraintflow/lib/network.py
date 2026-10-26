@@ -89,6 +89,8 @@ class LayerType(Enum):
     Concat = 10
     Sigmoid = 11
     Add = 12
+    #FEAT: elementwise product of two network values (Neuron_mult), e.g. the quadratic Lyapunov form in lsnc_relu.
+    Mul = 13
 
 
 # Single source of truth for which generated transformer method a given
@@ -105,5 +107,6 @@ JIT_OP_FOR_LAYER = {
     LayerType.Conv2D: 'Affine',
     LayerType.Add: 'Add',
     LayerType.Concat: 'Concat',
+    LayerType.Mul: 'Mult',
 }
 JIT_OPS = sorted(set(JIT_OP_FOR_LAYER.values()))

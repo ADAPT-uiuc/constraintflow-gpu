@@ -611,6 +611,8 @@ class Llist:
                 json_list.append({
                     'method': 'tensor_ones',
                     'repeat_dims': [self.network[i].size],
+                    #FIX FOR: a layer size, not a batch; a 1-neuron layer (e.g. Cersyve) became ones(batch_size) in codegen.
+                    'batch_dim': False,
                     'output': len(json_list),
                 })
                 json_list.append({

@@ -154,6 +154,15 @@ class Flow:
                 prev2 = Llist(self.model, [1], None, None, [layer.parents[1]])
                 curr = Llist(self.model, [1], None, None, [tmp])
                 abs_shape = self.transformer.Add(self.abs_elem, prev1, prev2, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size, layer_index = tmp)
+            #FEAT: product of two network values, dispatched like Add to the program's Neuron_mult rule.
+            elif layer.type == LayerType.Mul:
+                assert len(layer.parents) == 2, 'LayerType.Mul always has exactly 2 parents (parse.py)'
+                prev1 = Llist(self.model, [1], None, None, [layer.parents[0]])
+                prev2 = Llist(self.model, [1], None, None, [layer.parents[1]])
+                curr = Llist(self.model, [1], None, None, [tmp])
+                if not hasattr(self.transformer, 'Mult'):
+                    raise NotImplementedError('the network multiplies two values, but the program has no Neuron_mult rule')
+                abs_shape = self.transformer.Mult(self.abs_elem, prev1, prev2, curr, poly_size, curr_size, prev_size, self.input_size, self.batch_size, layer_index = tmp)
             elif layer.type == LayerType.Concat:
                 assert len(layer.parents) == 2, 'LayerType.Concat always has exactly 2 parents (parse.py)'
                 prev1 = Llist(self.model, [1], None, None, [layer.parents[0]])
