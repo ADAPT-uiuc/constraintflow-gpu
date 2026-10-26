@@ -524,6 +524,69 @@ def _lower_vector_op(node, names_hash, tensor_shapes, values, initializers, laye
     return None
 
 
+#FEAT: collapse affine regions of vector graphs (lsnc_relu: 41 Linear + 12 Add, mostly lowered cheap ops).
+def _collapse_affine(layers):
+    """Rewrite every Linear/Add value whose bounds a nonlinearity reads (or the output) as sum_s A_s s + b over its
+    nonlinear sources s, one Linear per source plus Adds; the affine layers in between go. Back-substitution
+    through affine layers is exact, so only rounding changes. Returns `layers` unchanged when not applicable."""
+    affine = (LayerType.Linear, LayerType.Add)
+    if (any(l.type not in affine + (LayerType.Input, LayerType.ReLU, LayerType.Sigmoid, LayerType.Mul) for l in layers)
+            or any(l.type == LayerType.Linear and (l.weight.dim() != 2 or l.weight.requires_grad
+                                                   or (l.bias is not None and l.bias.requires_grad)) for l in layers)):
+        return layers
+    children = {l.identifier: [] for l in layers}
+    for l in layers:
+        for p in l.parents:
+            children[p].append(l)
+    needed = lambda l: not children[l.identifier] or any(c.type not in affine for c in children[l.identifier])
+    if sum(l.type in affine for l in layers) == sum(l.type in affine and needed(l) for l in layers):
+        return layers
+    weight = next(l.weight for l in layers if l.type == LayerType.Linear)
+    dtype, device = weight.dtype, weight.device
+    rep = {}  # identifier -> ({source identifier: A [size, source size]}, b [size]), in float64
+    out = layers.similar()
+    new_id = {}
+
+    def emit(layer_type, parents, size, weight=None, bias=None):
+        layer = Layer(weight=weight, bias=bias, type=layer_type, identifier=len(out), parents=parents)
+        layer.shape, layer.size = [1, size, 1, 1], size
+        out.append(layer)
+        return layer.identifier
+
+    for l in layers:
+        old = l.identifier
+        if l.type == LayerType.Linear:
+            terms, b = rep[l.parents[0]]
+            w = l.weight.to(torch.float64)
+            bias = l.bias.to(torch.float64) if l.bias is not None else 0
+            rep[old] = ({s: w @ a for s, a in terms.items()}, w @ b + bias)
+        elif l.type == LayerType.Add:
+            (t0, b0), (t1, b1) = rep[l.parents[0]], rep[l.parents[1]]
+            terms = dict(t0)
+            for s, a in t1.items():
+                terms[s] = terms[s] + a if s in terms else a
+            rep[old] = (terms, b0 + b1)
+        else:  # a source: kept as is
+            l.identifier, l.parents = len(out), [new_id[p] for p in l.parents]
+            out.append(l)
+            new_id[old] = l.identifier
+            rep[old] = ({old: torch.eye(l.size, dtype=torch.float64, device=device)},
+                        torch.zeros(l.size, dtype=torch.float64, device=device))
+            continue
+        if not needed(l):
+            continue
+        terms, b = rep[old]
+        last = None
+        for s in sorted(terms):
+            placed = emit(LayerType.Linear, [new_id[s]], b.shape[0], terms[s].to(dtype),
+                          (b if last is None else torch.zeros_like(b)).to(dtype))
+            last = placed if last is None else emit(LayerType.Add, [last, placed], b.shape[0])
+        new_id[old] = last
+    out.num_layers = len(out) - 1
+    out.size = sum(l.size for l in out)
+    return out
+
+
 def _reshape_shape(node, source, values):
     target = values.get(node.input[1])
     if target is None or target.ndim != 1 or not np.issubdtype(target.dtype, np.integer):
@@ -816,6 +879,8 @@ def parse_onnx_layers(
         layer.end = layers.size
         shape = layer.shape
 
+    layers = _collapse_affine(layers)
+    index = len(layers) - 1
     #FEAT: fold the margin spec C into the last Linear (W' = C W), as auto_LiRPA's IBP does. The per-sample
     # bias C b is added to the output by spec.apply_spec_offset, since DSL biases are shared across the batch.
     if fold_spec and layers[-1].type == LayerType.Linear:
