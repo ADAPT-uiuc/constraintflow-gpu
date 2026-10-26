@@ -14,7 +14,7 @@ from constraintflow.compiler.optimizations import flow_shapes
 from constraintflow.compiler.optimizations import subexp_inlining
 from constraintflow.compiler.optimizations import early_reductions as early_reductions_pass
 from constraintflow.lib.globals import early_reductions, flow_segment_mb, memory_budget_mb, MEMORY_BUDGET_FRACTION, device_mode, cudagraphs, product_grids, inductor_layout_opt, training
-from constraintflow.compiler.optimizations import conv_partials, pad_inputs, region_reuse, mem_plan, flow_offload
+from constraintflow.compiler.optimizations import conv_partials, pad_inputs, region_reuse, mem_plan
 from constraintflow.compiler.optimizations import product_grids as product_grids_pass
 #FEAT: per-change toggles for the DeepPoly-efficient passes
 from constraintflow.compiler.optimizations import opt_flags
@@ -280,37 +280,13 @@ class CodeGen(irVisitor.IRVisitor):
         self.indent = 0
         print('[region-reuse] {} unique / {} emitted regions'.format(distinct, len(bodies)))
         self._region_count = distinct
-        offload = None
-        #FEAT: lazy temporaries gives host offload a full temporaries profile
-        if sized and not getattr(sized, 'temporaries_profiled', True):
-            sized = self._probe_sizes(node, record_temporaries=True)
-        budget = self._memory_budget()
-        if budget and sized:
-            offload = flow_offload.plan(node.flow_block.children, segments, sized, budget)
-            if offload:
-                print('[flow-offload] ' + offload.describe())
-                self._flow_metrics['offloaded_bytes'] = offload.moved_bytes
-            elif offload.overflow:
-                print('[flow-offload] nothing to offload; ' + offload.describe())
-        #FIX FOR: re-probing sizes above rendered statements and left a stale indent
-        self.indent = 0
         self.write('def flow(' + ', '.join(name for name, _ in params) + '):')
         self.indent += 1
         local_names = {name for name, _ in params}
         local_names.update(n for seg, _, _ in bodies for n in seg.live_out)
         last_call = {name: i for i, (_, names, _) in enumerate(bodies)
                      for name in names if name in local_names}
-        if offload:
-            # Host offload copies run on side streams; see _emit_offload.
-            # Buffers freed behind a copy event fragment fixed-size segments.
-            self.write("(getattr(torch._C, '_accelerator_setAllocatorSettings', None)"
-                       " or torch.cuda.memory._set_allocator_settings)('expandable_segments:True')")
-            self.write('_main = torch.cuda.current_stream()')
-            self.write('_d2h, _h2d = torch.cuda.Stream(), torch.cuda.Stream()')
-            self._evicted_by, self._fetched_by = {}, {}
         for seg, names, _ in bodies:
-            if offload:
-                self._emit_offload(offload, seg.index)
             call = seg.name + '(' + ', '.join(names) + ')'
             if seg is segments[-1]:
                 self.write('return ' + call)
@@ -324,51 +300,6 @@ class CodeGen(irVisitor.IRVisitor):
                     self.write('del ' + ', '.join(dead))
         self.indent -= 1
         self.write('')
-
-    def _emit_offload(self, offload, k):
-        """Driver lines moving values between device and host before call k.
-
-        Evictions run on _d2h and fetches on _h2d, overlapping the segments.
-        An eviction is issued once its value is idle; record_stream returns the
-        buffer only after the copy, and call k waits for the evictions the plan
-        counted as gone by then. A fetch is issued early and call k waits only
-        for the fetches it reads.
-        """
-        issue = offload.evict_issue[k]
-        if issue:
-            self.write('_d2h.wait_stream(_main)')
-            self.write('with torch.cuda.stream(_d2h):')
-            self.indent += 1
-            for n in issue:
-                self.write(n + '_host = ' + n + ".to('cpu', non_blocking=True)")
-            self.indent -= 1
-            self.write('_evicted_' + str(k) + ' = _d2h.record_event()')
-            for n in issue:
-                self.write(n + '.record_stream(_d2h)')
-                self._evicted_by[n] = '_evicted_' + str(k)
-            self.write('del ' + ', '.join(issue))
-        for event in sorted({self._evicted_by[n] for n in offload.evict[k]}):
-            self.write('_main.wait_event(' + event + ')')
-        names = offload.fetch_issue[k]
-        if names:
-            for n in names:
-                self.write(n + ' = torch.empty_strided(' + n + '_host.size(), ' + n
-                           + '_host.stride(), dtype=' + n + '_host.dtype, device=_main.device)')
-            # after the main-stream users of the new buffers and the evictions read
-            self.write('_h2d.wait_stream(_main)')
-            for event in sorted({self._evicted_by[n] for n in names}):
-                self.write('_h2d.wait_event(' + event + ')')
-            self.write('with torch.cuda.stream(_h2d):')
-            self.indent += 1
-            for n in names:
-                self.write(n + '.copy_(' + n + '_host, non_blocking=True)')
-            self.indent -= 1
-            self.write('_fetched_' + str(k) + ' = _h2d.record_event()')
-            self.write('del ' + ', '.join(n + '_host' for n in names))
-            for n in names:
-                self._fetched_by[n] = '_fetched_' + str(k)
-        for event in sorted({self._fetched_by[n] for n in offload.fetch[k]}):
-            self.write('_main.wait_event(' + event + ')')
 
     #FEAT: record_temporaries for lazy temporaries
     def _probe_sizes(self, node, *, record_temporaries=False):
@@ -455,7 +386,7 @@ class CodeGen(irVisitor.IRVisitor):
             barriers.update(pads)
             print('[pad-inputs] {} pad inputs materialized'.format(len(pads)))
             sized = self._probe_sizes(node)
-        #FEAT: view_aliases inlines storage-sharing views so their base can be offloaded
+        #FEAT: view_aliases inlines storage-sharing views before memory planning
         if sized and getattr(node, 'flow_functional', False) and opt_flags.enabled('view_aliases'):
             from constraintflow.compiler.optimizations import view_aliases
             count = view_aliases.run(node.flow_block, sized)

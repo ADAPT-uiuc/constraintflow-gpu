@@ -1107,6 +1107,10 @@ def _expanded_matvec(a, b):
 def bcast_matmul(a, b):
     if a.dim() == 3 and b.dim() == 3 and a.shape[0] > 1 and b.shape[0] == a.shape[0] and a.stride(0) != 0:
         #FEAT: per-sample matrices times one batch-expanded matrix or vector: one tall GEMM over the stacked rows.
+        #FEAT: a tiny inner dimension (Inductor unrolls sums up to 8 terms) is a multiply-sum that fuses with its
+        # neighbours; a memory-bound tall GEMM writes and rereads every product (lsnc_relu: K <= 8).
+        if b.stride(0) == 0 and a.shape[-1] <= 8:
+            return (a.unsqueeze(-1) * b[:1]).sum(-2)
         if b.stride(0) == 0:
             return torch.matmul(a.reshape(-1, a.shape[-1]), b[0]).view(a.shape[0], a.shape[1], b.shape[-1])
         #FEAT: per-sample matrices times per-sample vectors: a fusable multiply-sum, not B tiny GEMVs.
