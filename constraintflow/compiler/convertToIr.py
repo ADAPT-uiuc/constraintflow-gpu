@@ -672,7 +672,8 @@ class ConvertToIr(astVisitor.ASTVisitor):
         elif ast_node.op.op_name in ('Affine', 'Affine_skip'):
             self.store['curr'] = IrVar('curr', [IrMetadataElement([1, IrAst.curr_size], 'Neuron', [IrAst.batch_size, 1], False)])
             self.store['prev'] = IrVar('prev', [IrMetadataElement([1, 1, IrAst.prev_size], 'Neuron', [IrAst.batch_size, IrAst.curr_size, 1], False)])
-        elif ast_node.op.op_name == 'Neuron_add':
+        #FEAT: Neuron_mult (product of two network values) lowers like Neuron_add, to the 'Mult' op Flow.flow calls.
+        elif ast_node.op.op_name in ('Neuron_add', 'Neuron_mult'):
             # A program-defined rule for the residual Add layer. prev_0/prev_1 are the two
             # parent layers, bound to the prev1/prev2 parameters Flow.flow passes to
             # transformer.Add; when present it replaces builtin_ops' default Add.
@@ -681,7 +682,8 @@ class ConvertToIr(astVisitor.ASTVisitor):
             self.store['prev_0'] = _relu_shaped_operand('prev1')
             self.store['prev_1'] = _relu_shaped_operand('prev2')
             temp = self.visit(ast_node.ret)
-            retIr = IrOpStmt('Add', representations.create_cfg(temp), params=BINARY_OP_PARAMS)
+            op = 'Add' if ast_node.op.op_name == 'Neuron_add' else 'Mult'
+            retIr = IrOpStmt(op, representations.create_cfg(temp), params=BINARY_OP_PARAMS)
             self.store = original_store
             return retIr
         else:

@@ -128,6 +128,12 @@ def get_dataset(
         from constraintflow.lib.spec import ACAS_INPUT_SHAPE
         return (torch.zeros(batch_size, *ACAS_INPUT_SHAPE, device=device),
                 torch.zeros(batch_size, dtype=torch.long, device=device))
+    #FEAT: box specs likewise trace on zero inputs of the shape named in the dataset.
+    from constraintflow.lib.spec import parse_box_dataset
+    box = parse_box_dataset(dataset)
+    if box is not None:
+        return (torch.zeros(batch_size, *box[0], device=device),
+                torch.zeros(batch_size, dtype=torch.long, device=device))
     if dataset == "mnist":
         transform = transforms.ToTensor()  # keep 28x28
         data = datasets.MNIST(root=".", train=train, download=True, transform=transform)
@@ -288,7 +294,7 @@ def simulacrum_compile(
     cudagraphs: bool = typer.Option(False, "--cudagraphs/--no-cudagraphs", help="Compile flow() with mode='reduce-overhead' so a run replays one CUDA graph instead of launching each kernel. Cuts per-run launch overhead on small networks. Replays allocate from a private pool set up during warmup, so `run`'s per-run peak (max_memory_allocated) no longer counts flow intermediates. Requires --inductor."),
     center_radius: bool = typer.Option(True, "--center-radius/--no-center-radius", help="Concretize sign-selected bounds (c >= 0 ? c*u : c*l, and the final input-box concretization) as c*mid + |c|*rad, as auto_LiRPA does, and fold conv biases into the center conv. --no-center-radius restores original constraintflow's sign split c+*u + c-*l, which loses interval width in fp32 on narrow boxes."),
     inductor_layout_opt: bool = typer.Option(False, "--inductor-layout-opt/--no-inductor-layout-opt", help="Let Inductor move convolution operands to channels-last (its layout_optimization). Off by default: on these batch-heavy, few-channel convolutions cuDNN's channels-last kernels are several times slower. Requires --inductor."),
-    memory_budget_mb: float = typer.Option(-1.0, "--memory-budget-mb", help="When the flow's estimated peak tensor memory exceeds this many MB, reorder it group by group and recompute large values instead of keeping them live (mem_plan); with --flow-segment-mb, values a segment does not read are also parked in host memory between segments (flow_offload). Requires --sroa with --early-reductions. -1 (default) uses 70% of the CUDA device's memory; 0 disables."),
+    memory_budget_mb: float = typer.Option(-1.0, "--memory-budget-mb", help="When the flow's estimated peak tensor memory exceeds this many MB, reorder it group by group and recompute large values instead of keeping them live (mem_plan). Requires --sroa with --early-reductions. -1 (default) uses 70% of the CUDA device's memory; 0 disables."),
     #FEAT: --dtype on jit, so typer accepts it (applied from argv above).
     dtype: str = typer.Option("float32", "--dtype", help="float32, or float64 to compute every float tensor in fp64 (a precision oracle for bound mismatches; compile and run must agree). Read from argv before the imports; listed here so typer accepts it."),
     #FEAT: certified-training build (constraintflow/lib/training.py).

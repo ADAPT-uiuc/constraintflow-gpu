@@ -293,7 +293,8 @@ def refresh_layers(layers, values, spec_weight, spec_bias):
             bias = layer.bias_raw if bias is None else bias
             layer.spec_offset = (spec_weight @ bias.unsqueeze(-1)).squeeze(-1) + spec_bias
             layer.weight = spec_weight @ weight
-            layer.bias = torch.zeros_like(spec_bias)
+            #FEAT: spec_bias may be per sample [batch, rows] (one unsafe condition per input box); the compiled bias stays [rows].
+            layer.bias = spec_bias.new_zeros(spec_bias.shape[-1:])
             continue
         if weight is not None:
             layer.weight = weight
@@ -353,10 +354,13 @@ def _shape_value(node, values, shapes):
         if shape is None:
             raise ValueError(f"Shape {node.name!r} has an unresolved input")
         return np.asarray(shape[attrs.get('start', 0):attrs.get('end')], dtype=np.int64)
-    if op not in ('Gather', 'Unsqueeze', 'Squeeze', 'Concat', 'Mul', 'Add', 'Sub', 'Div', 'Cast'):
+    #FEAT: constant subgraphs fold too (lsnc_relu: P = eps*I + R^T R, and the controller run on the fixed
+    # equilibrium x*, which needs MatMul, Gemm and Relu of constants).
+    if op not in ('Gather', 'Unsqueeze', 'Squeeze', 'Concat', 'Mul', 'Add', 'Sub', 'Div', 'Cast', 'MatMul', 'Gemm', 'Relu'):
         return None
     if not all(name in values for name in node.input):
-        if op in ('Gather', 'Unsqueeze', 'Squeeze', 'Cast'):
+        #FEAT: Gather/Cast of activations go on to _lower_vector_op (which raises for anything but [1, n]).
+        if op in ('Unsqueeze', 'Squeeze'):
             raise ValueError(f"Unsupported activation operation {op} {node.name!r}")
         return None
     args = [values[name] for name in node.input]
@@ -373,7 +377,151 @@ def _shape_value(node, values, shapes):
     if op == 'Div':
         result = np.divide(*args)
         return np.trunc(result).astype(args[0].dtype) if np.issubdtype(args[0].dtype, np.integer) else result
-    return {'Mul': np.multiply, 'Add': np.add, 'Sub': np.subtract}[op](*args)
+    if op == 'Relu':
+        return np.maximum(args[0], 0)
+    if op == 'Gemm':
+        a = args[0].T if attrs.get('transA', 0) else args[0]
+        b = args[1].T if attrs.get('transB', 0) else args[1]
+        res = attrs.get('alpha', 1.0) * (a @ b)
+        return res + attrs.get('beta', 1.0) * args[2] if len(args) > 2 else res
+    return {'Mul': np.multiply, 'Add': np.add, 'Sub': np.subtract, 'MatMul': np.matmul}[op](*args)
+
+
+#FEAT: vector graphs (every activation [1, n]; e.g. lsnc_relu = controller + learned dynamics + quadratic Lyapunov
+# form). A linear op on one activation becomes a Linear layer with a constant weight (no ONNX source, so
+# refresh_layers keeps it); a product of two activations becomes a Mul layer (the program's Neuron_mult rule).
+# Only patterns the existing cases rejected or silently skipped are taken; returns the new layer index, else None.
+def _lower_vector_op(node, names_hash, tensor_shapes, values, initializers, layers, index, consumers):
+    op, ins = node.op_type, list(node.input)
+    attrs = {a.name: onnx.helper.get_attribute_value(a) for a in node.attribute}
+    tensors = [t for t in initializers.values() if isinstance(t, torch.Tensor)]
+    device = tensors[0].device if tensors else 'cpu'
+    act = lambda name: name in names_hash
+    const = lambda name: None if act(name) or not name or name not in values else np.asarray(values[name])
+    #FIX FOR: ACAS Xu's Sub(input [1, 1, 1, 5], zero offset) was taken here and raised; only vector graphs
+    # are lowered, anything else is left to the existing cases unchanged.
+    if not all(len(tensor_shapes[name]) == 2 for name in ins if act(name)):
+        return None
+
+    def width(name):
+        shape = tensor_shapes[name]
+        if len(shape) != 2 or shape[0] != 1:
+            raise ValueError(f"{op} {node.name!r}: vector ops need [1, n] activations, got {shape}")
+        return shape[1]
+
+    def emit(layer_type, parents, size, weight=None, bias=None):
+        nonlocal index
+        index += 1
+        layer = Layer(weight=weight, bias=bias, type=layer_type, identifier=index, parents=parents)
+        layer.shape, layer.size = [1, size, 1, 1], size
+        layer.start = layers.size
+        layers.size += size
+        layer.end = layers.size
+        layers.append(layer)
+        return index
+
+    def linear(src, weight, bias=None):  # weight [out, in]
+        weight = torch.tensor(np.asarray(weight, dtype=np.float64), dtype=torch.get_default_dtype(), device=device)
+        out = weight.shape[0]
+        bias = np.zeros(out) if bias is None else np.broadcast_to(np.asarray(bias, dtype=np.float64).reshape(-1), (out,))
+        bias = torch.tensor(np.array(bias), dtype=torch.get_default_dtype(), device=device)
+        return emit(LayerType.Linear, [names_hash[src]], out, weight, bias)
+
+    def done(layer_index, size):
+        names_hash[node.output[0]] = layer_index
+        tensor_shapes[node.output[0]] = [1, size]
+        return index
+
+    def diagonal(src, scale):
+        n = width(src)
+        scale = np.asarray(scale, dtype=np.float64).reshape(-1)
+        if scale.size not in (1, n):
+            raise ValueError(f"{op} {node.name!r}: constant of size {scale.size} for {n} activations")
+        return done(linear(src, np.diag(np.broadcast_to(scale, (n,)))), n)
+
+    if op == 'Cast' and act(ins[0]):
+        if attrs.get('to') != onnx.TensorProto.FLOAT:
+            raise ValueError(f"Cast {node.name!r} to {attrs.get('to')} is not supported")
+        names_hash[node.output[0]] = names_hash[ins[0]]
+        tensor_shapes[node.output[0]] = tensor_shapes[ins[0]]
+        return index
+    if op == 'Neg' and act(ins[0]):
+        return diagonal(ins[0], -1.0)
+    if op == 'MatMul' and act(ins[0]) and const(ins[1]) is not None and ins[1] not in initializers:
+        weight = const(ins[1])  # computed in the graph; the existing case takes initializer weights
+        if weight.ndim != 2:
+            raise ValueError(f"MatMul {node.name!r} needs a 2-D constant, got {weight.shape}")
+        return done(linear(ins[0], weight.T), weight.shape[1])
+    if op in ('Add', 'Sub'):
+        a, b = ins
+        if act(a) and act(b):
+            if op == 'Add':
+                return None  # the existing residual Add
+            n = width(a)
+            return done(emit(LayerType.Add, [names_hash[a], linear(b, -np.eye(n))], n), n)
+        if act(a) and const(b) is not None:
+            if op == 'Add' and b in initializers:
+                return None  # the existing case: a bias folded into the producing layer
+            n = width(a)
+            return done(linear(a, np.eye(n), const(b) if op == 'Add' else -const(b)), n)
+        if const(a) is not None and act(b):
+            n = width(b)
+            return done(linear(b, np.eye(n) if op == 'Add' else -np.eye(n), const(a)), n)
+        return None
+    if op in ('Mul', 'Div'):
+        a, b = ins
+        if act(a) and act(b):
+            if op == 'Div':
+                raise ValueError(f"Div {node.name!r} of two activations is not supported")
+            n = width(a)
+            if width(b) != n:
+                raise ValueError(f"Mul {node.name!r}: broadcasting {tensor_shapes[a]} x {tensor_shapes[b]} is not supported")
+            return done(emit(LayerType.Mul, [names_hash[a], names_hash[b]], n), n)
+        if act(a) and const(b) is not None:
+            return diagonal(a, const(b) if op == 'Mul' else 1.0 / const(b))
+        if op == 'Mul' and const(a) is not None and act(b):
+            return diagonal(b, const(a))
+        if op == 'Div' and const(a) is not None and act(b):
+            raise ValueError(f"Div {node.name!r} of a constant by an activation is not supported")
+        return None
+    if op == 'Slice' and act(ins[0]):
+        n = width(ins[0])
+        starts, ends = const(ins[1]).reshape(-1), const(ins[2]).reshape(-1)
+        axes = const(ins[3]).reshape(-1) if len(ins) > 3 and ins[3] else np.arange(len(starts))
+        steps = const(ins[4]).reshape(-1) if len(ins) > 4 and ins[4] else np.ones(len(starts), dtype=np.int64)
+        if len(starts) != 1 or int(axes[0]) not in (1, -1) or int(steps[0]) != 1:
+            raise ValueError(f"Slice {node.name!r}: only unit-step slices along the last axis are supported")
+        start, end = (int(v) + n if int(v) < 0 else min(int(v), n) for v in (starts[0], ends[0]))
+        return done(linear(ins[0], np.eye(n)[start:end]), end - start)
+    if op == 'Gather' and act(ins[0]):
+        n = width(ins[0])
+        idx = const(ins[1])
+        if idx is None or idx.ndim != 1 or attrs.get('axis', 0) not in (1, -1):
+            raise ValueError(f"Gather {node.name!r}: only a 1-D index list along the last axis is supported")
+        return done(linear(ins[0], np.eye(n)[[int(i) % n for i in idx]]), len(idx))
+    if op == 'ReduceSum' and act(ins[0]):
+        n = width(ins[0])
+        axes = attrs['axes'] if 'axes' in attrs else const(ins[1]).reshape(-1).tolist()
+        if [int(a) for a in axes] not in ([1], [-1]) or not attrs.get('keepdims', 1):
+            raise ValueError(f"ReduceSum {node.name!r}: only a sum over the last axis with keepdims is supported")
+        return done(linear(ins[0], np.ones((1, n))), 1)
+    if (op == 'Concat' and all(act(name) for name in ins)
+            and all(len(tensor_shapes[name]) == 2 for name in ins)):
+        # The Concat layer serves conv channels and fails on vectors (a Concat feeding a Relu or an Add);
+        # concat(a, b, ...) = E_a a + E_b b + ..., with E_i placing input i in its slice, is exact and uses
+        # only Linear and Add.
+        if attrs['axis'] not in (1, -1):
+            raise ValueError(f"Concat {node.name!r}: only the last axis is supported")
+        widths = [width(name) for name in ins]
+        total, offset, layer_index = sum(widths), 0, None
+        for name, w in zip(ins, widths):
+            place = np.zeros((total, w))
+            place[offset:offset + w] = np.eye(w)
+            offset += w
+            placed = linear(name, place)
+            layer_index = placed if layer_index is None else emit(LayerType.Add, [layer_index, placed], total)
+        return done(layer_index, total)
+    return None
 
 
 def _reshape_shape(node, source, values):
@@ -440,6 +588,10 @@ def parse_onnx_layers(
     
     layer = Layer(type=LayerType.Input, shape=input_shape, size=input_size, start=0, end=input_size)
     layers.append(layer)
+    consumers = {}
+    for n in net.graph.node:
+        for name in n.input:
+            consumers[name] = consumers.get(name, 0) + 1
     for cur_layer in range(num_layers):
         node = net.graph.node[cur_layer]
         operation = node.op_type
@@ -464,6 +616,11 @@ def parse_onnx_layers(
                 result_shape = [source[0], math.prod(source[1:])]
             names_hash[node.output[0]] = names_hash[nd_inps[0]]
             tensor_shapes[node.output[0]] = result_shape
+            continue
+        #FEAT: vector graphs (activations [1, n], e.g. lsnc_relu): see _lower_vector_op.
+        lowered = _lower_vector_op(node, names_hash, tensor_shapes, values, model_name_to_val_dict, layers, index, consumers)
+        if lowered is not None:
+            index = lowered
             continue
         index+=1
 
@@ -523,9 +680,18 @@ def parse_onnx_layers(
             parents[index] = [names_hash[str(net.graph.node[cur_layer].input[0])]]
             
             # Making some weird assumption that the weight is always 1th index
-            layer = Layer(weight=model_name_to_val_dict[nd_inps[1]], bias=(model_name_to_val_dict[nd_inps[2]]), type=LayerType.Linear, identifier=index, parents=parents[index])
+            #FIX FOR: Gemm attributes were ignored, so a transB=0 weight ([in, out], the ONNX default; e.g. Cersyve) was read as
+            # [out, in]. Like MatMul, the transposed copy has no ONNX source, so refresh_layers keeps it as a constant.
+            gemm_attrs = {a.name: onnx.helper.get_attribute_value(a) for a in net.graph.node[cur_layer].attribute}
+            if gemm_attrs.get('transA', 0) or gemm_attrs.get('alpha', 1.0) != 1.0 or gemm_attrs.get('beta', 1.0) != 1.0:
+                raise ValueError(f"Gemm {net.graph.node[cur_layer].name!r}: only transA=0, alpha=beta=1 are supported")
+            gemm_weight = model_name_to_val_dict[nd_inps[1]]
+            if not gemm_attrs.get('transB', 0):
+                gemm_weight = gemm_weight.T.contiguous()
+            layer = Layer(weight=gemm_weight, bias=(model_name_to_val_dict[nd_inps[2]]), type=LayerType.Linear, identifier=index, parents=parents[index])
             layers.append(layer)
-            [i_1, i_2, i_3, i_4] = shape 
+            #FIX FOR: a Gemm reading a 2-D network input ([1, n], e.g. Cersyve) failed a 4-D unpack; only the batch dim is used.
+            i_1 = shape[0]
             [w_1, w_2] = layer.weight.shape 
             o_1 = i_1 
             o_2 = w_1 
@@ -676,13 +842,17 @@ def parse_onnx_layers(
         layer.end = layers.size
         layers.append(layer)
     else:
-        layers[-1].weight = (spec_weight@layers[-1].weight)[0] 
+        layers[-1].weight = (spec_weight@layers[-1].weight)[0]
         layers[-1].bias = (spec_weight@layers[-1].bias + spec_bias)[0]
         layers[-1].shape[1] = spec_weight.shape[-2]
         layers.size = layers.size - layers[-1].size
         layers[-1].size = compute_size(layers[-1].shape)
         layers.size += layers[-1].size
         layers[-1].end = layers.size
+    #FIX FOR: num_layers counts ONNX nodes, but llist needs one slot per layer identifier: an appended spec layer
+    # (a network ending in a residual Add, e.g. Cersyve) or one node lowered to several layers (vector Concat/Sub,
+    # e.g. lsnc_relu) overflowed it.
+    layers.num_layers = max(layers.num_layers, max(layer.identifier for layer in layers))
     layers = post_process(layers)
     return layers
 

@@ -12,6 +12,15 @@ ACAS_SPEC_ROWS = 6
 ACAS_INPUT_SHAPE = (1, 1, 5)
 
 
+#FEAT: other box-input specs (VNN-LIB benchmarks): dataset 'box-<input shape, x-separated>-<outputs>-<spec rows>', e.g. 'box-4-2-2'.
+def parse_box_dataset(dataset):
+    """(input shape, number of outputs, spec rows) of a 'box-...' dataset name, else None."""
+    if not dataset.startswith('box-'):
+        return None
+    shape, outputs, rows = dataset[len('box-'):].split('-')
+    return tuple(int(d) for d in shape.split('x')), int(outputs), int(rows)
+
+
 class ImageDataset:
     mnist_mean = torch.tensor([0.1307]).reshape(-1, 1)
     mnist_std = torch.tensor([0.3081]).reshape(-1, 1)
@@ -83,6 +92,12 @@ class ImageDataset:
             margins, _ = ImageDataset.get_output_spec_weight_and_bias(X, y, 'margins5')
             weight = torch.cat([margins, -margins[:, :ACAS_SPEC_ROWS - 4]], dim=1)
             return weight, torch.zeros(ACAS_SPEC_ROWS, device=X.device, dtype=X.dtype)
+        #FEAT: box specs trace with a dense placeholder spec of the right size; SpecBounds swaps in each property's.
+        box = parse_box_dataset(dataset)
+        if box is not None:
+            _, outputs, rows = box
+            return (torch.ones(X.shape[0], rows, outputs, device=X.device, dtype=X.dtype),
+                    torch.zeros(rows, device=X.device, dtype=X.dtype))
         if dataset == 'margins5':
             num_classes = 5
         elif dataset in ['mnist', 'cifar10', 'cifar']:

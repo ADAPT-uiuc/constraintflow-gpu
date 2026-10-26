@@ -676,7 +676,8 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
             output = IrBlockSqueeze(inputIr, json_obj["index"])
 
         elif json_obj["method"] == "tensor_ones":
-            if isinstance(json_obj["repeat_dims"], list) and len(json_obj["repeat_dims"]) > 0 and json_obj["repeat_dims"][0] == 1:
+            #FIX FOR: records without a batch dim (llist's layer-size ones) were batched when repeat_dims[0] == 1.
+            if isinstance(json_obj["repeat_dims"], list) and len(json_obj["repeat_dims"]) > 0 and json_obj["repeat_dims"][0] == 1 and json_obj.get("batch_dim", True):
                 output = IrTensorOnes("[batch_size" + "".join([", " + str(json_obj["repeat_dims"][i]) for i in range(1, len(json_obj["repeat_dims"]))]) + "]")
             else:
                 output = IrTensorOnes(torch.tensor(json_obj["repeat_dims"], dtype=torch.int64))
@@ -690,7 +691,8 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 size = json_obj.get("input")
                 if isinstance(size, list) and len(size) == 1 and isinstance(size[0], list):
                     size = size[0]
-            if isinstance(size, list) and len(size) > 0 and size[0] == 1:
+            #FIX FOR: records without a batch dim (symexp's neuron-count ones) were batched when size[0] == 1.
+            if isinstance(size, list) and len(size) > 0 and size[0] == 1 and json_obj.get("batch_dim", True):
                 output = IrTensorOnes("[batch_size" + "".join([", " + str(size[i]) for i in range(1, len(size))]) + "]")
             else:
                 output = IrTensorOnes(torch.tensor(size, dtype=torch.int64))

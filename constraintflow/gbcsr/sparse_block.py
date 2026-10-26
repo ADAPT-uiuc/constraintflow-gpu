@@ -3383,7 +3383,9 @@ class DiagonalBlock(SparseBlock):
             equal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
             res = PatchesBlock(block, sp_block.total_shape, sp_block.ix, sp_block.iy, sp_block.ox, sp_block.oy, sp_block.sx, sp_block.sy, sp_block.px, sp_block.py, sp_block.kx, sp_block.ky, sp_block.num_channels, sp_block.num_kernels, json_list, len(json_list) - 1)
             res_index = res.json_index
-        elif isinstance(sp_block, RepeatBlock) and (sp_block.repeat_dims==1).all():
+        #FIX FOR: Diagonal @ RepeatBlock with real repeats (residual Add after fully connected layers, e.g. Cersyve)
+        # raised "Unrecognized sparse block type"; densify the repeat as for repeat_dims == 1.
+        elif isinstance(sp_block, RepeatBlock):
             sp_block, rhs_index = sp_block.get_dense(json_list=json_list, template_index=rhs_index, simulacrum=True)
             sp_block = DenseBlock(sp_block, json_list, rhs_index)
             rhs_index = sp_block.json_index
@@ -3458,7 +3460,9 @@ class DiagonalBlock(SparseBlock):
             unequal_matmul_profilier.update_actual_op_time(time.perf_counter() - start_op_time)
             res = DenseBlock(res, json_list, len(json_list) - 1)
             res_index = res.json_index
-        elif isinstance(sp_block, RepeatBlock) and (sp_block.repeat_dims==1).all():
+        #FIX FOR: Diagonal @ RepeatBlock with real repeats (a residual Add after fully connected layers, e.g. Cersyve)
+        # hit the unimplemented base case; densify the repeat as for repeat_dims == 1.
+        elif isinstance(sp_block, RepeatBlock):
             sp_block, rhs_index = sp_block.get_dense(json_list=json_list, template_index=rhs_index, simulacrum=True)
             sp_block = DenseBlock(sp_block, json_list, rhs_index)
             rhs_index = sp_block.json_index
@@ -5867,6 +5871,15 @@ def sp_where_block(x: SparseBlock, y: SparseBlock, z: SparseBlock, dummy: bool=F
                         x_squeezed, x_squeezed_index = x.squeeze(y.diag_index, json_list=json_list, template_index=x_index, simulacrum=True)
                     elif x.repeat_dims[y.diag_index-1] > 1 and x.only_one_repeat:
                         x_squeezed, x_squeezed_index = x.squeeze(y.diag_index-1, json_list=json_list, template_index=x_index, simulacrum=True)
+                    else:
+                        #FIX FOR: a Repeat condition not repeated along the diagonal (ReLU after a fully connected
+                        # residual Add, e.g. Cersyve) left x_squeezed unset; use the dense fallback below.
+                        block_1, block_1_index = y.get_dense(json_list=json_list, template_index=y_index, simulacrum=True)
+                        block_2, block_2_index = z.get_dense(json_list=json_list, template_index=z_index, simulacrum=True)
+                        x_dense, x_dense_index = x.get_dense(json_list=json_list, template_index=x_index, simulacrum=True)
+                        w, w_index = where_block(x_dense, block_1, block_2, json_list=json_list, cond_index=x_dense_index, lhs_index=block_1_index, rhs_index=block_2_index)
+                        res = DenseBlock(w, json_list, w_index)
+                        return (res, res.json_index) if simulacrum else res
                     json_list.append({
                         "method": "extract_sparse_block",
                         "input": "json_list_" + str(x_squeezed_index),
