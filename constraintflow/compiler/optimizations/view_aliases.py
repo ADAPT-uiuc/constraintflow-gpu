@@ -1,9 +1,9 @@
 #FEAT: new pass (jit --no-view-aliases disables it)
 """Inline storage-sharing views in functional SSA before memory planning.
 
-Keeping a base and its views as separate segment outputs makes a storage root
-ineligible for host offload. Recreate the cheap views at each reader instead,
-so only the owner crosses segment boundaries. No tensor arithmetic changes.
+Keeping a base and its views as separate segment outputs keeps both live across
+segment boundaries. Recreate the cheap views at each reader instead, so only
+the owner crosses them. No tensor arithmetic changes.
 """
 import copy
 from constraintflow.compiler.ir import (
