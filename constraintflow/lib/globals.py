@@ -152,7 +152,7 @@ early_reductions = Flag()
 flow_segment_mb = Mode(0.0)
 
 # MB the reuse build may keep live at once. Over it, mem_plan reorders and
-# recomputes the flow and flow_offload parks idle values in host memory.
+# reorders and recomputes the flow.
 # 0 disables, -1 = auto (MEMORY_BUDGET_FRACTION of the CUDA device's memory at
 # compile time; the real peak runs a few GB above the estimate).
 memory_budget_mb = Mode(-1.0)

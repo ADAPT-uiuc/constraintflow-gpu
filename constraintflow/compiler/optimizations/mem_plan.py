@@ -24,8 +24,8 @@ Rewrites, all value-preserving (no arithmetic is reassociated):
 
 Remat trades compute for memory, so it runs only while the estimated peak is
 over budget, a batch of the largest values live at over-budget points per
-round, keeping the best schedule seen. What still does not fit is left to
-flow_offload.
+round, keeping the best schedule seen. What still does not fit runs over
+budget.
 
 Requires functional SSA (after early reductions); sizes come from a
 flow_shapes probe of the same block.

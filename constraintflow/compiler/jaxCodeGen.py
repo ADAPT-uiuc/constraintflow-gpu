@@ -285,8 +285,7 @@ def emit_flow(cg, node, sized, barriers):
     with open(os.path.join(cg.folder, 'jax_flow.py'), 'w') as f:
         f.write(source)
     cg._region_count = distinct
-    cg._flow_metrics['host_offload'] = False
-    print(f'[jax] {distinct} compiled regions; CUDA stream host offload is not used')
+    print(f'[jax] {distinct} compiled regions')
     cg._emit_explode_inputs(params)
     cg.write('from jax_flow import flow as jax_flow')
     cg.write('from constraintflow.lib.jax_bridge import run_flow')
