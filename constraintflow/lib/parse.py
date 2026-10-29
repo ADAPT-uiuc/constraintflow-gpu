@@ -13,6 +13,8 @@ from constraintflow.lib.globals import device_mode
 # UNFAIR LOADING
 # from constraintflow.lib.globals import direct_onnx_load
 from constraintflow.lib.network import Layer, LayerType, Network
+#FEAT: inference BatchNormalization is folded into its Conv at load time.
+from constraintflow.lib.onnx_preprocess import expand_maxpool, fold_batch_norm
 
 from collections import deque
 
@@ -631,10 +633,14 @@ def parse_onnx_layers(
     input_size = compute_size(input_shape)
     # Create the new Network object
     layers = Network(input_name=data_input.name, input_shape=input_shape, input_size=input_size, input_start=0, input_end=input_size, net_format='onnx', no_sparsity=no_sparsity)
-    num_layers = len(net.graph.node)
-    layers.num_layers = num_layers
     if model_name_to_val_dict is None:
         model_name_to_val_dict = _initializer_tensors(net)
+    #FEAT: fold BN before the layer walk (the identity fallback below used to drop it silently).
+    net, model_name_to_val_dict = fold_batch_norm(net, model_name_to_val_dict)
+    #FEAT: 2x2/stride-2 MaxPool as Conv/Relu/Add, Dropout as Identity (VNN-COMP vggnet16).
+    net, model_name_to_val_dict = expand_maxpool(net, model_name_to_val_dict)
+    num_layers = len(net.graph.node)
+    layers.num_layers = num_layers
 
     if values is None:
         values = _LazyArrays(net.graph.initializer)
