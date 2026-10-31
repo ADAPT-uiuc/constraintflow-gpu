@@ -1,0 +1,28 @@
+{
+  "arguments": {
+    "kernel": "experiments/results/stable_relu_batched/N32_dense",
+    "network": "nets/cifar/convBigRELU__DiffAI.onnx",
+    "boxes": "experiments/results/stable_relu_batched/N32_boxes.npz",
+    "dataset": "cifar",
+    "output": "/home/db50/cf-harness/experiments/results/stable_relu_batched/N32_cf.jsonl",
+    "source_output": "/home/db50/cf-harness/experiments/results/stable_relu_batched/N32_selected.py",
+    "chunk_size": 128,
+    "num_images": 30,
+    "batch_size": 10,
+    "eager": false,
+    "compare": true,
+    "reuse_source": false
+  },
+  "compile_cache_env": {
+    "TORCHINDUCTOR_CACHE_DIR": "/home/db50/cf-harness/experiments/results/stable_relu_batched/cache_N32",
+    "TRITON_CACHE_DIR": "/home/db50/cf-harness/experiments/results/stable_relu_batched/triton_N32"
+  },
+  "torch": "2.10.0+cu128",
+  "cuda": "12.8",
+  "gpu": "NVIDIA A100 80GB PCIe",
+  "tf32": false,
+  "kernel_sha256": "20f2b22b06d30366f87cd4f95619b3a663679be01f6a4b43007255e9f6e0f962",
+  "selected_source_sha256": "9327d3fe5f40a7b6e4b4cc113cfa7d4b22e85ff19ab8de7aeca5458d08cc1b84",
+  "network_sha256": "6f129571165e62750e3be7e378fcf64c052280fcdb1f626b64d9d16b3a763309",
+  "boxes_sha256": "c1689e3d846dbe39634c3761b2efcb66c275d0e1cb87ce59416c7d278092bf7b"
+}

@@ -33,6 +33,7 @@ def main():
     p.add_argument('--source-output', required=True)
     p.add_argument('--chunk-size', type=int, default=128)
     p.add_argument('--num-images', type=int, default=10)
+    p.add_argument('--batch-size', type=int, default=1)
     p.add_argument('--eager', action='store_true')
     p.add_argument('--compare', action='store_true')
     p.add_argument('--reuse-source', action='store_true')
@@ -44,15 +45,17 @@ def main():
     import main as program
     import transformers
     z = np.load(a.boxes)
+    if a.batch_size < 1 or a.num_images % a.batch_size or len(z['labels']) < a.num_images + a.batch_size:
+        raise ValueError('need full timed batches and one additional warmup batch')
     shape = tuple(d.dim_value for d in onnx.load(a.network).graph.input[0].type.tensor_type.shape.dim)[1:]
 
     def build(i):
-        l = torch.tensor(z['down'][i:i+1], device='cuda')
-        u = torch.tensor(z['up'][i:i+1], device='cuda')
-        y = torch.tensor(z['labels'][i:i+1], device='cuda')
-        x = ((l + u) / 2).reshape(1, *shape)
-        network, abs_elem = program.build(a.network, 1, 0, x, y, a.dataset, False, False, False, input_box=(l, u))
-        return network, program.explode_inputs(abs_elem, 1)
+        l = torch.tensor(z['down'][i:i+a.batch_size], device='cuda')
+        u = torch.tensor(z['up'][i:i+a.batch_size], device='cuda')
+        y = torch.tensor(z['labels'][i:i+a.batch_size], device='cuda')
+        x = ((l + u) / 2).reshape(a.batch_size, *shape)
+        network, abs_elem = program.build(a.network, a.batch_size, 0, x, y, a.dataset, False, False, False, input_box=(l, u))
+        return network, program.explode_inputs(abs_elem, a.batch_size)
 
     network, inputs = build(0)
     source = Path(a.kernel, 'transformers.py').read_text()
@@ -78,7 +81,7 @@ def main():
                     boxes_sha256=hashlib.sha256(Path(a.boxes).read_bytes()).hexdigest())
     Path(a.output + '.metadata.json').write_text(json.dumps(metadata, indent=2) + '\n')
     with open(a.output, 'w') as f, torch.no_grad():
-        for i in [a.num_images, *range(a.num_images)]:
+        for i in [a.num_images, *range(0, a.num_images, a.batch_size)]:
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats()
             start = time.perf_counter()
@@ -98,17 +101,18 @@ def main():
             if i != a.num_images:
                 assert new_graphs == 0, f'image {i} compiled {new_graphs} graphs after warmup'
             record = dict(new_graphs=new_graphs, kind='warmup' if i == a.num_images else 'batch', index=i,
-                          time_s=end-start, bound_s=end-bound_start,
+                          images=[i, i+a.batch_size], time_s=end-start, bound_s=end-bound_start,
                           peak_bytes=torch.cuda.max_memory_allocated(),
                           lower=bounds[0].tolist(), upper=bounds[1].tolist(),
-                          verified=bool((bounds[0] >= 0).all()))
+                          verified=bool((bounds[0] >= 0).all()),
+                          verified_per_image=(bounds[0] >= 0).flatten(1).all(1).tolist())
             if dense is not None:
                 reference = apply_spec_offset(network, dense['flow'](*inputs))
                 torch.cuda.synchronize()
                 record['max_abs_difference'] = [float((x-y).abs().max()) for x,y in zip(bounds, reference)]
                 for got, expected in zip(bounds, reference):
                     torch.testing.assert_close(got, expected, atol=1e-3, rtol=1e-3)
-                assert record['verified'] == bool((reference[0] >= 0).all())
+                assert record['verified_per_image'] == (reference[0] >= 0).flatten(1).all(1).tolist()
             f.write(json.dumps(record) + '\n')
             f.flush()
             print({k:v for k,v in record.items() if k not in ('lower','upper')}, flush=True)

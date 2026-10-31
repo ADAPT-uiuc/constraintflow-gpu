@@ -61,7 +61,8 @@ Raw per-image times and bounds are in `results/N42*.jsonl` and `results/N36*.jso
 Metadata records input/model/source hashes. Baseline logs and reproduction scripts
 are alongside them. See [README.md](README.md) for invocation commands.
 
-This option supports batch one and the standard DeepPoly-add specifications.
+These original measurements used batch one and the standard DeepPoly-add specifications.
+Batched support and its validation are documented below.
 The coordinator is eager; numerical kernels are compiled with fullgraph=True.
 Whole-flow CUDA graph capture and training are not supported. Other configurations
 in the original impact report have not been benchmarked with this change.
@@ -147,3 +148,69 @@ verification. This does not extend the optimization to gradient-based training
 or arbitrary certifiers. Raw results, metadata, comparison checks, initial OOM,
 interrupted warmup, and successful run logs are saved as `results/VGG16_*`.
 See [README.md](README.md#vgg16-spec0) for reproduction commands.
+
+## Batched support: N32 batch ten and N42 batch one
+
+The pass now accepts fixed positive batch sizes. It selects the union of rows
+unstable in any example, evaluates fixed padded chunks across the batch, and
+preserves each example's own stable interval bounds. Convolution reshapes handle
+both `[batch, rows, ...]` and folded `[batch * rows, ...]` layouts. The final
+specification remains per-example. CLI setup uses the requested batch size.
+The numerical kernels remain fullgraph compiled; the coordinator remains eager.
+
+### N32 vs sparse auto-LiRPA
+
+N32 is CIFAR `convBigRELU__DiffAI`, epsilon 0.5/255, batch size ten.
+Images 30–39 warm up both tools; images 0–29 form three timed batches.
+Runs were sequential on the A100, FP32, TF32 off. Dataset files, normalized boxes,
+and labels were checked for exact equality. Times include model loading, input
+transfer and bounding. cf-gpu consumes precomputed normalized boxes; auto-LiRPA
+also builds those boxes inside its timer, as in the existing harness protocol.
+
+| Tool | Median per batch of ten | Median amortized per image | Verified |
+|---|---:|---:|---:|
+| cf-gpu stable ReLU | 0.058253 s | 0.005825 s | 16/30 |
+| auto-LiRPA sparse | 0.374239 s | 0.037424 s | 16/30 |
+
+The setup-inclusive speedup is **6.42×**. Individual cf-gpu batches
+were 0.058890, 0.058253, 0.041034 seconds; auto-LiRPA batches were
+0.402523, 0.374239, 0.357442 seconds. This is a three-batch datapoint,
+not a broad batch-size scaling study.
+
+All lower and upper output bounds across 30 images agree between tools within
+atol=rtol=0.001; the maximum absolute difference was **0.00000286**.
+All four cf-gpu batches, including warmup, also passed dense cf-gpu comparisons
+and preserved per-image decisions; maximum absolute dense difference was
+0.00059271. Every timed batch compiled zero new
+Dynamo graphs. N32 warmup registered 12 graphs and took
+37.55 seconds, with caches partially populated by development
+attempts; it is not a cold compilation measurement. Warmup has no timeout.
+
+### N42 batch-one regression
+
+N42 retains the same ten images and image-10 warmup. This run used fresh Inductor
+and Triton cache directories. Warmup took 153.82 seconds and
+registered 20 graphs, including kernels skipped by normal
+all-stable calls. All ten timed images compiled zero new graphs.
+
+| Metric | Previous complete-warmup run | After batch support |
+|---|---:|---:|
+| Median including loading | 0.092444 s | 0.093951 s |
+| Verified | 2/10 | 2/10 |
+
+The median changed by 1.63% in this run. Image 2 took
+0.092606 seconds with no late compilation. All ten timed images plus
+warmup passed dense-bound checks and retained verification decisions. Maximum
+absolute difference from the previous optimized run was 0.00001526; maximum
+absolute difference from freshly evaluated dense bounds was
+0.00179577 (the relative tolerance applies).
+
+Regression coverage includes batch-one and batched CLI generation, batched
+convolution geometry, dense equivalence with all rows selected, per-example
+invariance when other batch members change, union selection, retained stability
+proofs, and compiled graph reuse across changing batch masks. An interval proof
+can be tighter than a dense DeepPoly bound for a stable neuron, so universal
+bitwise equivalence with dense intermediate bounds is neither required nor
+claimed. Raw results, metadata, logs and summary are in `results/batched_*`.
+
+Final validation passed all 13 stable-ReLU tests and all three adjacent compiler-option tests.

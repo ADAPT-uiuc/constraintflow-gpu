@@ -1,0 +1,18 @@
+{
+  "batch_size": 10,
+  "images": [
+    0,
+    30
+  ],
+  "warmup_images": [
+    30,
+    40
+  ],
+  "epsilon": 0.00196078431372549,
+  "sparse": true,
+  "tf32": false,
+  "input_arrays_match_exactly": true,
+  "dataset_sha256": "f53d8d457504f7cff4ea9e021afcf0e0ad8e24a91f3fc42091b8adef61157831",
+  "network_sha256": "6f129571165e62750e3be7e378fcf64c052280fcdb1f626b64d9d16b3a763309",
+  "lirpa_runner_sha256": "008056e8adee7e80271f47b8ef8c5fdea8595250ec1fe02c1fc973cd29fda269"
+}

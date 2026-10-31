@@ -48,6 +48,24 @@ class StableReLUTest(unittest.TestCase):
         exec(compile(ast.fix_missing_locations(ast.Module([fn], [])), '<test>', 'exec'), env)
         torch.testing.assert_close(env['flow'](), torch.full((3,), 3.))
 
+    def test_batch_union_selects_neurons_unstable_in_any_example(self):
+        lower = torch.tensor([[1., -1., 1., 1.], [1., 1., -2., 1.], [1., 1., 1., 1.]])
+        upper = torch.full_like(lower, 3.)
+        calls = []
+        offsets = torch.arange(3.)[:, None] * 10
+        def kernel(idx):
+            calls.append(idx.tolist())
+            return offsets + idx[None], offsets + idx[None] + 1
+        got = refine_stable(lower, upper, kernel, (), 3)
+        self.assertEqual(calls, [[1, 2, 2]])
+        torch.testing.assert_close(got[0], torch.tensor([[1., 1., 1., 1.], [1., 1., 12., 1.], [1., 1., 1., 1.]]))
+        torch.testing.assert_close(got[0][:, [0, 3]], lower[:, [0, 3]])
+        calls.clear()
+        refine_stable(torch.ones_like(lower), upper, kernel, (), 3)
+        self.assertFalse(calls)
+        warmup_stable_relu(refine_stable, torch.ones_like(lower), upper, kernel, (), 3)
+        self.assertEqual(calls, [[0, 1, 2]])
+
     def test_selection_boundaries_padding_and_changing_masks(self):
         calls = []
         def kernel(indices):
@@ -96,7 +114,8 @@ class StableReLUTest(unittest.TestCase):
 
     def test_selected_patch_geometry_matches_dense(self):
         torch.manual_seed(9)
-        for dims in [(1, 3, 4, 5, 2, 3, 2, 7, 8, 1, 2, 2, 1),
+        for dims in [(3, 3, 4, 5, 2, 3, 2, 7, 8, 1, 2, 2, 1),
+                     (1, 3, 4, 5, 2, 3, 2, 7, 8, 1, 2, 2, 1),
                      (1, 2, 3, 3, 2, 5, 5, 4, 4, 2, 2, 1, 1)]:
             b, oc, ox, oy, ic, kx, ky, *_ = dims
             pieces = torch.randn(b, oc * ox * oy, ic * kx * ky, dtype=torch.float64)
@@ -168,19 +187,31 @@ b = operator.le(upper, operator.mul(ones, 0.0))
         self.assertEqual(relu_pairs(body), [('lower', 'upper')])
 
     def test_jit_cli_and_numerical_equivalence_across_boxes(self):
+        torch.manual_seed(3)
+        model = torch.nn.Sequential(torch.nn.Linear(4, 8), torch.nn.ReLU(),
+                                    torch.nn.Linear(8, 6), torch.nn.ReLU(), torch.nn.Linear(6, 2)).eval()
+        self._check_batched_jit(model, (4,), batch_size=1)
+        self._check_batched_jit(model, (4,), batch_size=3)
+
+    def test_batched_convolution_jit_matches_dense(self):
+        torch.manual_seed(4)
+        model = torch.nn.Sequential(torch.nn.Conv2d(1, 2, 3, padding=1), torch.nn.ReLU(),
+                                    torch.nn.Conv2d(2, 2, 3, padding=1), torch.nn.ReLU(),
+                                    torch.nn.Flatten(), torch.nn.Linear(40, 2)).eval()
+        self._check_batched_jit(model, (1, 4, 5))
+
+    def _check_batched_jit(self, model, input_shape, batch_size=3):
+        dataset = 'box-' + 'x'.join(map(str, input_shape)) + '-2-2'
         root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp:
-            torch.manual_seed(3)
-            model = torch.nn.Sequential(torch.nn.Linear(4, 8), torch.nn.ReLU(),
-                                        torch.nn.Linear(8, 6), torch.nn.ReLU(), torch.nn.Linear(6, 2)).eval()
             onnx = str(Path(tmp, 'model.onnx'))
-            torch.onnx.export(model, torch.zeros(1, 4), onnx, dynamo=False)
+            torch.onnx.export(model, torch.zeros(1, *input_shape), onnx, dynamo=False)
             folder = str(Path(tmp, 'program'))
             env = dict(os.environ, PYTHONPATH=str(root))
             result = subprocess.run([sys.executable, '-m', 'constraintflow.cli', 'jit',
                 str(root / 'examples/compiler_examples/deeppoly_priority_add.cf'),
-                '--network', onnx, '--dataset', 'box-4-2-2', '--device', 'cpu',
-                '--stable-relu', '--stable-relu-chunk', '4', '--fuse-affine-subst',
+                '--network', onnx, '--dataset', dataset, '--device', 'cpu',
+                '--batch-size', str(batch_size), '--stable-relu', '--stable-relu-chunk', '4', '--fuse-affine-subst',
                 '--output-path', folder], env=env, cwd=tmp, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             check = """
@@ -193,16 +224,38 @@ from constraintflow.lib.globals import device_mode
 device_mode.set_mode('cpu')
 env = dict(vars(transformers))
 exec(Path(sys.argv[1], 'transformers_dense.py').read_text(), env)
+def refine_all(lower, upper, kernel, args, chunk):
+    pieces = [kernel(torch.arange(i, min(i+chunk, lower.shape[1])), *args)
+              for i in range(0, lower.shape[1], chunk)]
+    return tuple(torch.cat([part[j] for part in pieces], dim=1) for j in (0, 1))
+ordinary_refine = transformers.refine_stable
+batch = int(sys.argv[5])
 for width in (0., 0.01, 0.5, 10.):
-    x = torch.tensor([[.2, -.3, .4, .7]])
-    net, ae = main.build(sys.argv[2], 1, 0, x, torch.zeros(1, dtype=torch.long),
-                        'box-4-2-2', False, False, False, input_box=(x-width, x+width))
+    shape = tuple(map(int, sys.argv[3].split(',')))
+    import math
+    x = torch.linspace(-2., 3., batch * math.prod(shape)).reshape(batch, *shape)
+    net, ae = main.build(sys.argv[2], batch, 0, x, torch.zeros(batch, dtype=torch.long),
+                        sys.argv[4], False, False, False, input_box=(x-width, x+width))
     net[-1].weight = torch.eye(2).unsqueeze(0)
-    args = main.explode_inputs(ae, 1)
+    args = main.explode_inputs(ae, batch)
+    # Compare all chunked rows with dense arithmetic, independent of whether
+    # interval propagation proves a tighter stability sign than dense DeepPoly.
+    transformers.refine_stable = refine_all
     for got, expected in zip(main.flow(*args), env['flow'](*args)):
         torch.testing.assert_close(got, expected, atol=1e-5, rtol=1e-5)
+    transformers.refine_stable = ordinary_refine
+    original = main.flow(*args)
+    # Changing other examples must not change this example's stability proof.
+    for row in range(batch):
+        same_x = x[row:row+1].expand_as(x).clone()
+        same_net, same_ae = main.build(sys.argv[2], batch, 0, same_x, torch.zeros(batch, dtype=torch.long),
+                          sys.argv[4], False, False, False, input_box=(same_x-width, same_x+width))
+        same_net[-1].weight = torch.eye(2).unsqueeze(0)
+        same = main.flow(*main.explode_inputs(same_ae, batch))
+        for a, b in zip(original, same):
+            torch.testing.assert_close(a[row], b[0], atol=1e-5, rtol=1e-5)
 """
-            result = subprocess.run([sys.executable, '-c', check, folder, onnx],
+            result = subprocess.run([sys.executable, '-c', check, folder, onnx, ','.join(map(str, input_shape)), dataset, str(batch_size)],
                                     env=env, cwd=tmp, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -216,17 +269,18 @@ for width in (0., 0.01, 0.5, 10.):
                     upper @ w.clamp(min=0).T + lower @ w.clamp(max=0).T)
         compiled = torch.compile(body, fullgraph=True, dynamic=False, backend=counter)
         weight = torch.randn(11, 7, device='cuda')
-        args = weight, -torch.ones(1, 7, device='cuda'), torch.ones(1, 7, device='cuda')
+        args = weight, -torch.ones(3, 7, device='cuda'), torch.ones(3, 7, device='cuda')
         # Reproduce N42: warmup is all-stable, a later image first needs this
         # kernel. Also ensure it compiles even if no subsequent image needs it.
-        stable = torch.ones(1, 11, device='cuda')
+        stable = torch.ones(3, 11, device='cuda')
         warmed = warmup_stable_relu(refine_stable, stable, stable, compiled, args, 4)
         self.assertEqual(counter.frame_count, 1)
         for actual in warmed:
             torch.testing.assert_close(actual, stable)
         for unstable in (0, 1, 7, 11, 0, 3):
-            lower = torch.ones(1, 11, device='cuda')
-            lower[:, :unstable] = -1
+            lower = torch.ones(3, 11, device='cuda')
+            lower[0, :unstable] = -1
+            lower[1, -unstable:] = -1 if unstable else 1
             upper = torch.ones_like(lower)
             got = refine_stable(lower, upper, compiled, args, 4)
             expected = refine_stable(lower, upper, body, args, 4)
