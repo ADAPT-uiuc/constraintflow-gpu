@@ -10,7 +10,7 @@ from contextvars import ContextVar
 
 import torch
 
-from constraintflow.compiler.optimizations.row_chunks import _Probe, _ChunkBody, _names, _add_dels
+from constraintflow.compiler.optimizations.row_chunks import _Probe, _ChunkBody, _names, _add_dels, _elementwise, _rewrite_row_literals
 from constraintflow.lib.network import LayerType
 
 
@@ -119,7 +119,40 @@ class _SelectedRows(_ChunkBody):
             node.func.id = 'selected_patches_to_dense'
             node.args.insert(1, ast.Name('_idx', ast.Load()))
             return node
-        return super().visit_Call(node)
+        if not self._is_row(node):
+            return node
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr in ('reshape', 'view', 'expand') and self._is_row(func.value):
+            _rewrite_row_literals(node, self.n_rows)
+            node.func.value = self.visit(func.value)
+            return node
+        if isinstance(func, ast.Attribute) and self._is_row(func.value):
+            node.func.value = self.visit(func.value)
+            node.args = [self.visit(a) for a in node.args]
+            return node
+        return self.generic_visit_row(node)
+
+    # This traversal is specific to the canonical DeepPoly source checked by
+    # rewrite(). Keep its batch-aware row mapping independent of the general
+    # row-chunk pass's stricter leading-row-only traversal rules.
+    def generic_visit_row(self, node):
+        """A node that touches row variables: fix its column-side operands, then recurse."""
+        elementwise = isinstance(node, ast.BinOp) or _elementwise(node)
+        try:
+            ndim = len(self.probe.shape(node)) if elementwise else None
+        except Exception:
+            ndim = None
+        for field, value in ast.iter_fields(node):
+            items = value if isinstance(value, list) else [value]
+            new = []
+            for item in items:
+                if isinstance(item, ast.expr) and (not isinstance(item, (ast.Constant, ast.List, ast.Tuple))) and (not self._is_row(item)) and (ndim is not None) and (not isinstance(item, ast.Attribute)):
+                    item = self._row_operand(item, ndim)
+                elif isinstance(item, ast.AST):
+                    item = self.visit(item)
+                new.append(item)
+            setattr(node, field, new if isinstance(value, list) else new[0])
+        return node
 
     def _row_operand(self, node, result_ndim):
         # Generated convolution weights repeat each channel over spatial positions.
