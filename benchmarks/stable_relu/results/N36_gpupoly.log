@@ -1,0 +1,34 @@
+GPUPoly 0.13.0S (built Oct 29 2026 04:12:22) - Copyright (C) 2020 Department of Computer Science, ETH Zurich.
+This program comes with ABSOLUTELY NO WARRANTY. This is free software, and you are welcome to redistribute it and to modify it under the terms of the GNU LGPLv3.
+
+Warmup run 1/1: 29.407511 s
+=== batch 0 start ===
+Run 1/10: 31.735798 s (load 0.159434 s), Peak memory: 1958739968 bytes, Resident memory: 10485760 bytes
+=== batch 0 end ===
+=== batch 1 start ===
+Run 2/10: 27.303727 s (load 0.148984 s), Peak memory: 1958739968 bytes, Resident memory: 10485760 bytes
+=== batch 1 end ===
+=== batch 2 start ===
+Run 3/10: 29.760023 s (load 0.151142 s), Peak memory: 1958739968 bytes, Resident memory: 10485760 bytes
+=== batch 2 end ===
+=== batch 3 start ===
+Run 4/10: 28.502940 s (load 0.118693 s), Peak memory: 1958739968 bytes, Resident memory: 10485760 bytes
+=== batch 3 end ===
+=== batch 4 start ===
+Run 5/10: 32.173441 s (load 0.145528 s), Peak memory: 1958739968 bytes, Resident memory: 10485760 bytes
+=== batch 4 end ===
+=== batch 5 start ===
+Run 6/10: 55.447029 s (load 0.129643 s), Peak memory: 1958739968 bytes, Resident memory: 10485760 bytes
+=== batch 5 end ===
+=== batch 6 start ===
+Run 7/10: 28.850972 s (load 0.120905 s), Peak memory: 1958739968 bytes, Resident memory: 10485760 bytes
+=== batch 6 end ===
+=== batch 7 start ===
+Run 8/10: 31.441123 s (load 0.134064 s), Peak memory: 1958739968 bytes, Resident memory: 10485760 bytes
+=== batch 7 end ===
+=== batch 8 start ===
+Run 9/10: 30.825245 s (load 0.129543 s), Peak memory: 1958739968 bytes, Resident memory: 10485760 bytes
+=== batch 8 end ===
+=== batch 9 start ===
+Run 10/10: 57.293329 s (load 0.111793 s), Peak memory: 1958739968 bytes, Resident memory: 10485760 bytes
+=== batch 9 end ===
