@@ -13,6 +13,41 @@ from constraintflow.gbcsr.sparse_block import patches_to_dense
 
 
 class StableReLUTest(unittest.TestCase):
+    def test_expanded_and_repeated_weights_gather_before_materialization(self):
+        from constraintflow.compiler.optimizations.stable_relu import _SelectedRows
+        from constraintflow.compiler.optimizations.row_chunks import _Probe
+        weights = torch.randn(1, 3, 5)
+        indices = torch.tensor([11, 0, 5, 5])
+        for method, shape in [('repeat', '[1, 1, 1, 4]'), ('expand', '[-1, -1, -1, 4]')]:
+            expression = f'weights.unsqueeze(-1).{method}({shape}).permute(0, 1, 3, 2).reshape([1, 12, -1])'
+            probe = _Probe({}, ['weights'], [weights])
+            transform = _SelectedRows(probe, 12, set(), set())
+            selected = transform._row_operand(ast.parse(expression, mode='eval').body, 3)
+            self.assertFalse(transform.hoisted, 'must not hoist dense expanded weights')
+            actual = eval(compile(ast.Expression(ast.fix_missing_locations(selected)), '<test>', 'eval'),
+                          {'weights': weights, '_idx': indices})
+            expected = eval(expression, {'weights': weights}).index_select(1, indices)
+            torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+
+    def test_driver_releases_tuple_outputs_at_last_use(self):
+        import weakref
+        from constraintflow.compiler.optimizations.stable_relu import _release_driver_tensors
+        refs = []
+        def make():
+            x = torch.ones(3)
+            refs.append(weakref.ref(x))
+            return x, torch.ones(3)
+        def consume(x, y):
+            return x + y, y
+        def check(x, y):
+            self.assertIsNone(refs[0](), 'coordinator retained a dead region output')
+            return x + y
+        fn = ast.parse('def flow():\n a, b = make()\n c, d = consume(a, b)\n return check(c, d)').body[0]
+        fn.body = _release_driver_tensors(fn.body)
+        env = dict(make=make, consume=consume, check=check)
+        exec(compile(ast.fix_missing_locations(ast.Module([fn], [])), '<test>', 'exec'), env)
+        torch.testing.assert_close(env['flow'](), torch.full((3,), 3.))
+
     def test_selection_boundaries_padding_and_changing_masks(self):
         calls = []
         def kernel(indices):

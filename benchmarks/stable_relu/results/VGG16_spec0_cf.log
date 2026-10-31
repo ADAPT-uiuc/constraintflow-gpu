@@ -1,0 +1,8 @@
+Network loaded
+{"event": "loaded", "load_s": 4.389875555410981}
+{"event": "warmup_start"}
+/home/db50/cf-harness/constraintflow-gpu/cfg/lib/python3.12/site-packages/torch/_inductor/compile_fx.py:321: UserWarning: TensorFloat32 tensor cores for float32 matrix multiplication available but not enabled. Consider setting `torch.set_float32_matmul_precision('high')` for better performance.
+  warnings.warn(
+{"event": "warmup_end", "load_s": 4.389875555410981, "verify_s": 196.77765683084726, "total_s": 201.16753238625824, "lower": [7.179458141326904], "peak_bytes": 8760952832, "peak_absolute_bytes": 9466636288, "new_graphs": 50, "status": "verified"}
+{"event": "timed_start"}
+{"event": "timed_end", "load_s": 4.389875555410981, "verify_s": 76.12792587466538, "total_s": 80.51780143007636, "lower": [7.179458141326904], "peak_bytes": 8761989120, "peak_absolute_bytes": 9469061120, "new_graphs": 0, "status": "verified"}

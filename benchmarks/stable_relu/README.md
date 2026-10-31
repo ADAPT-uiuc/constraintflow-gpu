@@ -99,3 +99,35 @@ python -m unittest discover -s tests -p test_stable_relu.py -v
 ```
 
 See [results.md](results.md) for measurements and limitations.
+
+## VGG16 spec0
+
+`vnncomp_benchmark.py` applies the pass to the harness's cached, unchunked
+lower-bound DeepPoly program. It uses the original VNN-COMP box and output margin,
+with MaxPool already expanded by the shared parser. This is verification through
+`SpecBounds`; it does not enable gradient-based training.
+
+From the harness root:
+
+```bash
+export PYTHONPATH="$PWD/wt/stable-relu"
+export TORCHINDUCTOR_COMPILE_THREADS=1 CF_DISABLE_TF32=1 NVIDIA_TF32_OVERRIDE=0
+constraintflow-gpu/cfg/bin/python -u wt/stable-relu/benchmarks/stable_relu/vnncomp_benchmark.py \
+  --harness "$PWD" \
+  --kernel experiments/results/vnncomp/agent_full/vggnet16_2026/compile/cf_d151d6abb8c2286e \
+  --network nets/vggnet16_2026/onnx/vgg16-7.onnx \
+  --spec experiments/results/vnncomp/agent_full/vggnet16_2026/specs/spec0_Kerry_blue_terrier.npz \
+  --output "$PWD/experiments/results/vnncomp/stable_relu_spec0/cf"
+
+constraintflow-gpu/cfg/bin/python experiments/compare_vnncomp.py \
+  --prefix stable_relu_spec0_lirpa --tools lirpa --specs spec0 \
+  --lirpa-sparse --lirpa-crown-batch 512
+```
+
+Run the tools sequentially. `--prepare-only` emits transformed source without
+running bounds; `--reuse-source` runs that source without repeating transformation.
+The runner records warmup separately, asserts zero new Dynamo graphs during the
+timed call, and charges model loading plus verification to the reported total.
+Peak memory uses the harness's additional-allocation convention; absolute peak
+allocation is also recorded. Warmup has no timeout. Timed verification has a 1200-second limit,
+subtracting model loading from that allowance.
