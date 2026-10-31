@@ -5,6 +5,9 @@ batch size 1. Image 10 is the warmup; medians below cover images 0–9.
 Baselines were rerun with auto_LiRPA `--sparse` and GPUPoly's default skipping.
 Runs were sequential, without GPU contention.
 
+The table below records the original measurements; the N42 warmup defect and
+its corrected cold-cache validation are documented below.
+
 | Configuration | cf-gpu with skipping, including setup | Sparse auto_LiRPA | Speedup | cf-gpu bounding only | GPUPoly bounding only | Speedup |
 |---|---:|---:|---:|---:|---:|---:|
 | N42, TinyImageNet ResNet medium, eps 1/255 | 0.0930 s | 0.9489 s | 10.20× | 0.0694 s | 0.3037 s | 4.38× |
@@ -12,7 +15,12 @@ Runs were sequential, without GPU contention.
 
 cf-gpu's setup-inclusive time includes input transfer and ONNX/network loading.
 GPUPoly reports bounding separately from loading, so its speedup uses `bound_s`.
-Compilation is excluded from these steady-state measurements. Cold warmups took
+**Warmup correction:** the original N42 run below did not fully warm all kernels.
+Image 2 took 11.8894 seconds because its row kernel first ran on that image. Its
+mean was 1.2730 seconds; the 0.0930-second median hid this event. The original raw
+records are retained. These original N42 figures must not be read as evidence
+that compilation was excluded from every timed image. See the cold-cache
+warmup-fix validation below. Cold warmups took
 84.77 seconds for N42 and 369.99 seconds for N36; this is not a cold-start speedup.
 
 The saved dense cf-gpu medians were 2.0006 s (N42) and 8.3691 s (N36), giving
@@ -57,3 +65,40 @@ This option supports batch one and the standard DeepPoly-add specifications.
 The coordinator is eager; numerical kernels are compiled with fullgraph=True.
 Whole-flow CUDA graph capture and training are not supported. Other configurations
 in the original impact report have not been benchmarked with this change.
+
+## Cold-cache validation of the warmup fix
+
+The original `refine_stable` skipped calling the compiled row kernel when its
+selection was empty. Fixed shapes prevented shape recompilation but did not
+prevent a previously unused function's first compilation. N42 warmup image 10
+left several kernels untouched; image 2 first needed one of them.
+
+`warmup_stable_relu` now executes a discarded fixed-size dummy chunk for empty
+selections. It uses valid indices, the normal kernel arguments and device, and
+does not replace any bounds. Both CLI warmup protocols and the benchmark use it.
+Normal timed calls continue to skip all-stable layers.
+
+A new N42 run used fresh empty Inductor and Triton cache directories, one warmup
+on image 10, and images 0–9 for timing. Warmup compiled 20 graphs (ten pre-regions,
+nine row kernels, and the final region), including row kernels whose selections
+remain empty on all tested images. No timed image compiled a new Dynamo graph.
+
+| Metric | Original N42 | With complete warmup |
+|---|---:|---:|
+| Image 2, including setup | 11.8894 s | 0.0925 s |
+| Mean, including setup | 1.2730 s | 0.0928 s |
+| Median, including setup | 0.0930 s | 0.0924 s |
+| Maximum timed image | 11.8894 s | 0.1026 s |
+
+The complete cold warmup took 152.06 seconds. This moves compilation into warmup;
+it does not eliminate compilation cost. All ten timed images plus the warmup
+passed the same dense-bound checks and preserved verification decisions. Maximum
+absolute timed-image bound difference was 0.0017910 (relative tolerance applies).
+Raw results and fresh-cache paths are recorded in
+`results/N42_warmup_fixed.jsonl` and its `.metadata.json` companion.
+
+Nine regression tests pass, including both CLI warmup protocols, unchanged bounds
+from discarded dummy chunks, cleanup after warmup exceptions, and a compiled
+kernel warmed on an all-stable input then reused across changing masks without
+additional graph compilation. Custom API callers must use the explicit warmup
+helper; the CLI requires `--warmup` of at least one for this preparation.
