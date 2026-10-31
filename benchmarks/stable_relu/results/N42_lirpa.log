@@ -1,0 +1,42 @@
+/home/db50/cf-harness/auto_LiRPA/lrpa311/lib/python3.11/site-packages/torch/jit/_script.py:1480: DeprecationWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+  warnings.warn(
+bound_opts: {'sparse_intermediate_bounds': True, 'sparse_conv_intermediate_bounds': True, 'sparse_intermediate_bounds_with_ibp': True}
+Experiment:
+Network: TinyImageNet_resnet_medium.onnx
+Batch size: 1
+Epsilon: 0.00392156862745098
+TF32: disabled (CF_DISABLE_TF32)
+dtype: torch.float32
+Dataset: cifar
+
+Warmup run 1/1: 1.7453200817108154 s
+=== batch 0 start ===
+Run 1/10: 0.995692253112793 s, Peak memory: 946224640 bytes, Resident memory: 8521728 bytes
+=== batch 0 end ===
+=== batch 1 start ===
+Run 2/10: 0.9430506229400635 s, Peak memory: 946224640 bytes, Resident memory: 8521728 bytes
+=== batch 1 end ===
+=== batch 2 start ===
+Run 3/10: 0.9444229602813721 s, Peak memory: 946224640 bytes, Resident memory: 8521728 bytes
+=== batch 2 end ===
+=== batch 3 start ===
+Run 4/10: 0.9273817539215088 s, Peak memory: 946224640 bytes, Resident memory: 8521728 bytes
+=== batch 3 end ===
+=== batch 4 start ===
+Run 5/10: 0.9974138736724854 s, Peak memory: 946224640 bytes, Resident memory: 8521728 bytes
+=== batch 4 end ===
+=== batch 5 start ===
+Run 6/10: 0.9529612064361572 s, Peak memory: 946224640 bytes, Resident memory: 8521728 bytes
+=== batch 5 end ===
+=== batch 6 start ===
+Run 7/10: 0.9041216373443604 s, Peak memory: 946224640 bytes, Resident memory: 8521728 bytes
+=== batch 6 end ===
+=== batch 7 start ===
+Run 8/10: 0.9456396102905273 s, Peak memory: 946224640 bytes, Resident memory: 8521728 bytes
+=== batch 7 end ===
+=== batch 8 start ===
+Run 9/10: 0.9871277809143066 s, Peak memory: 946224640 bytes, Resident memory: 8521728 bytes
+=== batch 8 end ===
+=== batch 9 start ===
+Run 10/10: 0.9521076679229736 s, Peak memory: 946224640 bytes, Resident memory: 8521728 bytes
+=== batch 9 end ===

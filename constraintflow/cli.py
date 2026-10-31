@@ -286,6 +286,8 @@ def simulacrum_compile(
     compact_patches: bool = typer.Option(True, "--compact-patches", help="Use direct patch-to-dense gathering and switch representation when a composed patch is at least as large as the full input feature map. Set for both capture and reuse."),
     fused_flow: bool = typer.Option(True, "--fused-flow/--no-fused-flow", help="Emit a layer-unrolled flow() into transformers.py instead of using the interpretive Flow.flow, replaying abs_elem.update from its simulacrum capture, and (under --inductor) compile the whole flow as one graph instead of one per op. Reuse compile only."),
     fuse_affine_subst: bool = typer.Option(False, "--fuse-affine-subst/--no-fuse-affine-subst", help="Two optimizations gated by one flag: (1) skip both concretizing traversals at any Affine layer that feeds only further Affine layers (always sound; single_bound.py). (2) Assert every Affine op's L and U outputs are identical (true for all deeppoly*/crown specs here) and drop the redundant sign-split when a traverse() substitution step crosses an Affine layer -- unsound if the assertion doesn't hold. Both take effect on the simulacrum and reuse compile passes below. Functional --sroa also proves and removes matching sign-split convolution pairs across residual branches."),
+    stable_relu: bool = typer.Option(False, "--stable-relu/--no-stable-relu", help="Skip stable pre-ReLU rows using interval bounds and fixed-shape compiled refinement kernels. Standard DeepPoly only; batch one; eager coordinator."),
+    stable_relu_chunk: int = typer.Option(128, "--stable-relu-chunk", min=1, help="Fixed number of uncertain neurons per compiled refinement chunk."),
     sroa: bool = typer.Option(True, "--sroa/--no-sroa", help="Splice every layer into one flow() and scalar-replace the Jit* aggregates, so the compiled region is pure tensor code. Requires --fused-flow. Reuse compile only."),
     early_reductions: bool = typer.Option(True, "--early-reductions/--no-early-reductions", help="Compute traversal sums as soon as their inputs exist, releasing large coefficients before later traversal steps. Requires functional --sroa; preserves the arithmetic tree."),
     fuse_sign_convs: bool = typer.Option(True, "--fuse-sign-convs/--no-fuse-sign-convs", help="Replace positive/negative convolution pairs by one convolution only when their inputs, weights, views and settings provably match. Requires functional --sroa. Uses linearity and can change floating-point rounding."),
@@ -318,6 +320,15 @@ def simulacrum_compile(
     Compile a ConstraintFlow program through the whole simulacrum+reuse pipeline
     in one shot.
     """
+    if stable_relu:
+        from pathlib import Path
+        supported = ('deeppoly_priority_add.cf', 'deeppoly_priority_add_lower.cf')
+        canonical = Path(__file__).resolve().parents[1] / 'examples' / 'compiler_examples' / Path(program_file).name
+        if (Path(program_file).name not in supported or not canonical.is_file()
+                or Path(program_file).read_bytes() != canonical.read_bytes()):
+            raise typer.BadParameter('--stable-relu requires the standard deeppoly_priority_add program')
+        if target != 'torch' or batch_size != 1 or not sroa or not fused_flow or training or cudagraphs:
+            raise typer.BadParameter('--stable-relu requires torch, batch size 1, SROA, fused flow, and no training/cudagraphs')
     start_time = time.perf_counter()
     choices = {'sroa_functional': sroa_functional, 'box_patch_reductions': box_patch_reductions,
                'patch_factor': patch_factor, 'conv_chunks': conv_chunks, 'conv_sum': conv_sum,
@@ -455,6 +466,11 @@ def simulacrum_compile(
         opt_flags.reset()
         if in_memory:
             globals.jit_store_clear()
+
+    if stable_relu:
+        from constraintflow.compiler.optimizations.stable_relu import optimize_program
+        optimize_program(output_path, network_file, X, y, dataset, eps,
+                         chunk_size=stable_relu_chunk, compile_kernels=inductor)
 
     typer.echo("Simulacrum+reuse compile complete ✅")
     typer.echo(f"Optimized code written to: {os.path.abspath(output_path)}")
