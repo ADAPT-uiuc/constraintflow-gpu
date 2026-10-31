@@ -1,0 +1,57 @@
+Network loaded
+{"event": "loaded", "load_s": 4.048647625371814}
+{"event": "warmup_start"}
+Traceback (most recent call last):
+  File "/home/db50/cf-harness/wt/stable-relu/benchmarks/stable_relu/vnncomp_benchmark.py", line 102, in <module>
+    main()
+  File "/home/db50/cf-harness/wt/stable-relu/benchmarks/stable_relu/vnncomp_benchmark.py", line 87, in main
+    lower = warmup_stable_relu(bound) if kind == 'warmup' else bound()
+            ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/db50/cf-harness/wt/stable-relu/constraintflow/compiler/optimizations/stable_relu.py", line 348, in warmup_stable_relu
+    return call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/db50/cf-harness/wt/stable-relu/benchmarks/stable_relu/vnncomp_benchmark.py", line 78, in bound
+    return sb.compute_spec_bounds('CROWN', lo, hi, C, d)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/db50/cf-harness/wt/stable-relu/constraintflow/lib/training.py", line 177, in compute_spec_bounds
+    return apply_spec_offset(network, flow(*explode_inputs(abs_elem, batch_size)))
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/db50/cf-harness/experiments/results/vnncomp/stable_relu_spec0/cf/selected_program/transformers.py", line 6413, in flow
+    _sr_hoist_6_0, _sr_hoist_6_1, _sr_hoist_6_2, _sr_hoist_6_3, _sr_hoist_6_4, _sr_hoist_6_5, _sr_hoist_6_6, _sr_hoist_6_7, _sr_l_17, _sr_u_17, ttb_var_1421609, ttb_var_1421627, ttb_var_1421630 = _sr_pre_6(batch_size, net_17_bias, net_17_weight, ttb_var_1421320, ttb_var_1421587)
+                                                                                                                                                                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/db50/cf-harness/constraintflow-gpu/cfg/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py", line 953, in compile_wrapper
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/db50/cf-harness/experiments/results/vnncomp/stable_relu_spec0/cf/selected_program/transformers.py", line 610, in _sr_pre_6
+    def _sr_pre_6(batch_size, net_17_bias, net_17_weight, ttb_var_1421320, ttb_var_1421587):
+  File "/home/db50/cf-harness/constraintflow-gpu/cfg/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py", line 1181, in _fn
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/db50/cf-harness/constraintflow-gpu/cfg/lib/python3.12/site-packages/torch/_functorch/aot_autograd.py", line 1148, in forward
+    return compiled_fn(full_args)
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/db50/cf-harness/constraintflow-gpu/cfg/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py", line 357, in runtime_wrapper
+    all_outs = call_func_at_runtime_with_args(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/db50/cf-harness/constraintflow-gpu/cfg/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/utils.py", line 134, in call_func_at_runtime_with_args
+    out = normalize_as_list(f(args))
+                            ^^^^^^^
+  File "/home/db50/cf-harness/constraintflow-gpu/cfg/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py", line 1962, in __call__
+    return self.compiled_fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/db50/cf-harness/constraintflow-gpu/cfg/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py", line 531, in wrapper
+    return compiled_fn(runtime_args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/db50/cf-harness/constraintflow-gpu/cfg/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py", line 729, in inner_fn
+    outs = compiled_fn(args)
+           ^^^^^^^^^^^^^^^^^
+  File "/home/db50/cf-harness/constraintflow-gpu/cfg/lib/python3.12/site-packages/torch/_inductor/output_code.py", line 638, in __call__
+    return self.current_callable(inputs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/db50/cf-harness/constraintflow-gpu/cfg/lib/python3.12/site-packages/torch/_inductor/utils.py", line 3220, in run
+    out = model(new_inputs)
+          ^^^^^^^^^^^^^^^^^
+  File "/tmp/torchinductor_db50/35/c35smsslfj3grarq3v7kov3rwbvj7s62xtsy3spw4qzck3eje62y.py", line 550, in call
+    buf0 = empty_strided_cuda((1, 256, 3136, 512), (411041792, 1605632, 512, 1), torch.float32)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.53 GiB. GPU 0 has a total capacity of 79.27 GiB of which 1.15 GiB is free. Including non-PyTorch memory, this process has 78.11 GiB memory in use. Of the allocated memory 77.53 GiB is allocated by PyTorch, and 85.65 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)

@@ -102,3 +102,48 @@ from discarded dummy chunks, cleanup after warmup exceptions, and a compiled
 kernel warmed on an all-stable input then reused across changing masks without
 additional graph compilation. Custom API callers must use the explicit warmup
 helper; the CLI requires `--warmup` of at least one for this preparation.
+
+## VGG16, VNN-COMP spec0 (Kerry blue terrier)
+
+Single timed run per tool on the same A100, with FP32 and TF32 disabled.
+Both environments used PyTorch 2.10.0+cu128. The parsed input bounds and output
+specification arrays match exactly. Both tools expand MaxPool with the shared
+parser and compute the same lower-only DeepPoly/CROWN margin.
+
+| Tool | Bounding | Loading | Total | Additional peak allocation | Margin lower bound |
+|---|---:|---:|---:|---:|---:|
+| cf-gpu, stable ReLU, chunk 128 | 76.13 s | 4.39 s | 80.52 s | 8.16 GiB | 7.179458 |
+| auto_LiRPA, sparse, CROWN batch 512 | 110.03 s | 17.82 s | 127.84 s | 49.36 GiB | 7.179489 |
+
+cf-gpu is **1.45× faster for bounding** and
+**1.59× faster including loading** in this run. Both verify.
+The absolute margin difference is 0.00003099,
+within the harness tolerance (atol=rtol=0.001). The cf-gpu result also agrees with
+the historical dense cf-gpu margin, 7.17949343; dense VGG16 was
+not rerun. The timed cf-gpu pass compiled **zero new Dynamo graphs**.
+
+Peak allocation follows the harness convention: peak allocated bytes minus
+allocation resident at call entry. cf-gpu's absolute timed peak was
+8.82 GiB. This does not measure CUDA reserved memory.
+
+### Preparation cost and fixes
+
+The first attempt ran out of memory. VGG's generated convolution weights use
+`expand` rather than `repeat`; the pass now gathers their channels before spatial
+expansion. The eager coordinator also releases tuple-unpacked outputs after their
+last use instead of retaining all layer temporaries. Eleven regression tests pass,
+including exact expanded/repeated-weight gathering and tensor lifetime checks.
+
+Source transformation took 43.35 seconds. The first corrected warmup was
+interrupted after roughly 18 minutes to remove its alarm at the user's request.
+The restarted process reused the partially populated Inductor cache and completed
+warmup in 196.78 seconds, registering 50 Dynamo graphs. **This is not
+a cold compilation measurement**; preparation also includes the interrupted
+attempt. Auto_LiRPA's warmup took 108.56 seconds. Warmup now has no timeout.
+None of these preparation costs is included in the timed table.
+
+The VGG runner uses cached lower-only generated source through `SpecBounds` for
+verification. This does not extend the optimization to gradient-based training
+or arbitrary certifiers. Raw results, metadata, comparison checks, initial OOM,
+interrupted warmup, and successful run logs are saved as `results/VGG16_*`.
+See [README.md](README.md#vgg16-spec0) for reproduction commands.

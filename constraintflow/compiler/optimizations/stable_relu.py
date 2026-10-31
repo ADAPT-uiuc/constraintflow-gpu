@@ -113,10 +113,13 @@ class _SelectedRows(_ChunkBody):
                 perm = node.func.value
                 if isinstance(perm, ast.Call) and isinstance(perm.func, ast.Attribute) and perm.func.attr == 'permute' and [ast.literal_eval(a) for a in perm.args] == [0, 1, 3, 2]:
                     rep = perm.func.value
-                    if isinstance(rep, ast.Call) and isinstance(rep.func, ast.Attribute) and rep.func.attr == 'repeat':
+                    if isinstance(rep, ast.Call) and isinstance(rep.func, ast.Attribute) and rep.func.attr in ('repeat', 'expand'):
                         reps = ast.literal_eval(rep.args[0])
                         unsq = rep.func.value
-                        if len(reps) == 4 and reps[:3] == [1, 1, 1] and isinstance(unsq, ast.Call) and isinstance(unsq.func, ast.Attribute) and unsq.func.attr == 'unsqueeze':
+                        if (len(reps) == 4 and reps[:3] == ([1, 1, 1] if rep.func.attr == 'repeat' else [-1, -1, -1])
+                                and reps[3] > 0 and isinstance(unsq, ast.Call)
+                                and isinstance(unsq.func, ast.Attribute) and unsq.func.attr == 'unsqueeze'
+                                and ast.literal_eval(unsq.args[0]) == -1):
                             value = ast.unparse(unsq.func.value)
                             return ast.parse(f'({value}).index_select(1, _idx // {reps[3]})', mode='eval').body
         if shape is not None and len(shape) >= 2 and shape[:2] == (1, self.n_rows):
@@ -126,6 +129,23 @@ class _SelectedRows(_ChunkBody):
                 node.args.insert(1, ast.Name('_idx', ast.Load()))
                 return node
         return super()._row_operand(node, result_ndim)
+
+
+def _release_driver_tensors(body):
+    """Release tuple-unpacked region outputs after their last coordinator use."""
+    assigned = {n.id for stmt in body if isinstance(stmt, ast.Assign)
+                for target in stmt.targets for n in ast.walk(target) if isinstance(n, ast.Name)}
+    last = {}
+    for i, stmt in enumerate(body):
+        for name in _names(stmt):
+            last[name] = i
+    result = []
+    for i, stmt in enumerate(body):
+        result.append(stmt)
+        dead = sorted(name for name in assigned if last[name] == i)
+        if dead and not isinstance(stmt, ast.Return):
+            result.append(ast.Delete([ast.Name(name, ast.Del()) for name in dead]))
+    return result
 
 
 class _UseIndices(ast.NodeTransformer):
@@ -327,7 +347,7 @@ def rewrite(source, module_globals, inputs, network, chunk_size=128, compile_ker
         out_names.append(name)
     final_args = emit_region(rest, out_names, '_sr_final')
     driver.append(f'return _sr_final({", ".join(final_args)})')
-    fn.body = ast.parse('\n'.join(driver)).body
+    fn.body = _release_driver_tensors(ast.parse('\n'.join(driver)).body)
     tree.body = [s for s in tree.body if s is not fn]
     tree.body += ast.parse('from constraintflow.compiler.optimizations.stable_relu import refine_stable, selected_patches_to_dense\n' + '\n'.join(sources)).body + [fn]
     return ast.unparse(ast.fix_missing_locations(tree))

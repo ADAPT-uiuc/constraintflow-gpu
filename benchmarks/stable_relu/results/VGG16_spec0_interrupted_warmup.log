@@ -1,0 +1,31 @@
+Network loaded
+{"event": "loaded", "load_s": 17.12378741055727}
+[stable-relu] ReLU 0: 3211264 neurons, 0 selected statements
+[stable-relu] ReLU 1: 3211264 neurons, 13 selected statements
+[stable-relu] ReLU 2: 1605632 neurons, 23 selected statements
+[stable-relu] ReLU 3: 802816 neurons, 43 selected statements
+[stable-relu] ReLU 4: 1605632 neurons, 59 selected statements
+[stable-relu] ReLU 5: 1605632 neurons, 65 selected statements
+[stable-relu] ReLU 6: 802816 neurons, 75 selected statements
+[stable-relu] ReLU 7: 401408 neurons, 96 selected statements
+[stable-relu] ReLU 8: 802816 neurons, 112 selected statements
+[stable-relu] ReLU 9: 802816 neurons, 117 selected statements
+[stable-relu] ReLU 10: 802816 neurons, 127 selected statements
+[stable-relu] ReLU 11: 401408 neurons, 137 selected statements
+[stable-relu] ReLU 12: 200704 neurons, 158 selected statements
+[stable-relu] ReLU 13: 401408 neurons, 174 selected statements
+[stable-relu] ReLU 14: 401408 neurons, 179 selected statements
+[stable-relu] ReLU 15: 401408 neurons, 189 selected statements
+[stable-relu] ReLU 16: 200704 neurons, 199 selected statements
+[stable-relu] ReLU 17: 100352 neurons, 220 selected statements
+[stable-relu] ReLU 18: 100352 neurons, 236 selected statements
+[stable-relu] ReLU 19: 100352 neurons, 241 selected statements
+[stable-relu] ReLU 20: 100352 neurons, 251 selected statements
+[stable-relu] ReLU 21: 50176 neurons, 261 selected statements
+[stable-relu] ReLU 22: 25088 neurons, 282 selected statements
+[stable-relu] ReLU 23: 4096 neurons, 252 selected statements
+[stable-relu] ReLU 24: 4096 neurons, 257 selected statements
+{"event": "transformed", "transform_s": 43.34830383211374}
+{"event": "warmup_start"}
+/home/db50/cf-harness/constraintflow-gpu/cfg/lib/python3.12/site-packages/torch/_inductor/compile_fx.py:321: UserWarning: TensorFloat32 tensor cores for float32 matrix multiplication available but not enabled. Consider setting `torch.set_float32_matmul_precision('high')` for better performance.
+  warnings.warn(
