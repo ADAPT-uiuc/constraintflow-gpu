@@ -1,5 +1,9 @@
 """Selective DeepPoly refinement of pre-ReLU bounds with shared row selection across batches.
 
+The CLI uses stable_relu_ir for compilation; the source rewrite in this module
+is retained as a compatibility path and benchmark reference. Both share the
+runtime coordinator below.
+
 The coordinator is eager: discovering a variable number of unstable neurons needs
 one device synchronization per layer. Numerical regions use fullgraph torch.compile
 and padded, fixed-size row chunks; masks are recomputed for every input box.

@@ -424,6 +424,12 @@ class CodeGen(irVisitor.IRVisitor):
             'estimated_peak_tensor_bytes': flow_shapes.peak_live_bytes(node.flow_block.children, sized) if sized else None,
             'workspace_included': False,
         }
+        # Stable selection consumes final SSA, after memory planning and before
+        # segmentation can hide dependencies behind emitted region calls.
+        from constraintflow.lib import globals as runtime_globals
+        if runtime_globals.stable_relu_config is not None:
+            from constraintflow.compiler.optimizations import stable_relu_ir
+            return stable_relu_ir.emit(self, node, *runtime_globals.stable_relu_config)
         if self.target == 'jax':
             from .jaxCodeGen import emit_flow
             emit_flow(self, node, sized, barriers)
@@ -493,6 +499,13 @@ class CodeGen(irVisitor.IRVisitor):
                 metrics['generated_source_bytes'] += os.path.getsize(os.path.join(self.folder, 'jax_flow.py'))
             with open(os.path.join(self.folder, 'compile_metrics.json'), 'w') as f:
                 json.dump(metrics, f, indent=2)
+        if hasattr(self, '_stable_dense_source'):
+            # tell() records byte offsets, including any non-ASCII prelude text.
+            with open(self.transformers_file, 'rb') as f:
+                source = f.read()
+            start, end, dense = self._stable_dense_source
+            with open(os.path.join(self.folder, 'transformers_dense.py'), 'wb') as f:
+                f.write(source[:start] + dense.encode('utf-8') + source[end:])
         if not reuse_mode.get_flag():
             return
         if training.get_flag():
@@ -1167,6 +1180,19 @@ class CodeGen(irVisitor.IRVisitor):
     def visitIrPatchesToDense(self, node):
         return ('patches_to_dense(' + self.visit(node.children[0]) + ', '
                 + ', '.join(str(v) for v in node.geometry) + ')')
+
+    def visitIrRowGather(self, node):
+        index = self.visit(node.children[1])
+        if node.divisor != 1:
+            index += ' // ' + str(node.divisor)
+        if node.period is not None:
+            index = '(' + index + ') % ' + str(node.period)
+        return '(' + self.visit(node.children[0]) + ').index_select(1, ' + index + ')'
+
+    def visitIrSelectedPatchesToDense(self, node):
+        return ('selected_patches_to_dense(' + self.visit(node.children[0]) + ', '
+                + self.visit(node.children[1]) + ', '
+                + ', '.join(str(x) for x in node.geometry) + ')')
 
     def visitIrTensorScatter(self, node):
         # out-of-place: no aliasing for dynamo to reason about, so no graph break

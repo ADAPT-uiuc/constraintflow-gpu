@@ -681,6 +681,21 @@ class IrPatchesToDense(IrExpression):
         self.update_parent_child([inputIr])
 
 
+class IrRowGather(IrExpression):
+    """Select axis-one rows, optionally mapping flattened rows to channels/tiles."""
+    def __init__(self, inputIr, divisor=1, period=None):
+        super().__init__()
+        self.divisor, self.period = divisor, period
+        self.update_parent_child([inputIr, IrVar('_idx', [])])
+
+
+class IrSelectedPatchesToDense(IrExpression):
+    def __init__(self, inputIr, geometry):
+        super().__init__()
+        self.geometry = geometry
+        self.update_parent_child([inputIr, IrVar('_idx', [])])
+
+
 class IrTensorScatter(IrExpression):
     def __init__(self, inputIr, valueIr, dim, index):
         super().__init__()

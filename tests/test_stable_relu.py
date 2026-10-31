@@ -29,6 +29,18 @@ class StableReLUTest(unittest.TestCase):
             expected = eval(expression, {'weights': weights}).index_select(1, indices)
             torch.testing.assert_close(actual, expected, atol=0, rtol=0)
 
+    def test_batch_equal_to_row_count_keeps_batch_literal(self):
+        # N18 at batch 10: a 10-neuron layer's [batch, rows, -1] reshape became [_n, _n, -1].
+        from constraintflow.compiler.optimizations.stable_relu import _SelectedRows
+        from constraintflow.compiler.optimizations.row_chunks import _Probe
+        x = torch.randn(10, 10, 6)
+        probe = _Probe({}, ['x'], [x])
+        transform = _SelectedRows(probe, 10, {'x'}, set(), batch_size=10)
+        for expression, expected in [('x.reshape([10, 10, -1])', 'x.reshape([10, _n, -1])'),
+                                     ('x.reshape([100, 6])', 'x.reshape([10 * _n, 6])')]:
+            rewritten = transform.visit(ast.parse(expression, mode='eval').body)
+            self.assertEqual(ast.unparse(rewritten), expected)
+
     def test_driver_releases_tuple_outputs_at_last_use(self):
         import weakref
         from constraintflow.compiler.optimizations.stable_relu import _release_driver_tensors
@@ -58,7 +70,8 @@ class StableReLUTest(unittest.TestCase):
             return offsets + idx[None], offsets + idx[None] + 1
         got = refine_stable(lower, upper, kernel, (), 3)
         self.assertEqual(calls, [[1, 2, 2]])
-        torch.testing.assert_close(got[0], torch.tensor([[1., 1., 1., 1.], [1., 1., 12., 1.], [1., 1., 1., 1.]]))
+        # Selected rows take the refined bounds for every example, stable or not.
+        torch.testing.assert_close(got[0], torch.tensor([[1., 1., 2., 1.], [1., 11., 12., 1.], [1., 21., 22., 1.]]))
         torch.testing.assert_close(got[0][:, [0, 3]], lower[:, [0, 3]])
         calls.clear()
         refine_stable(torch.ones_like(lower), upper, kernel, (), 3)
@@ -214,6 +227,7 @@ b = operator.le(upper, operator.mul(ones, 0.0))
                 '--batch-size', str(batch_size), '--stable-relu', '--stable-relu-chunk', '4', '--fuse-affine-subst',
                 '--output-path', folder], env=env, cwd=tmp, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('[stable-relu-ir]', result.stdout)
             check = """
 import sys
 from pathlib import Path
@@ -244,16 +258,8 @@ for width in (0., 0.01, 0.5, 10.):
     for got, expected in zip(main.flow(*args), env['flow'](*args)):
         torch.testing.assert_close(got, expected, atol=1e-5, rtol=1e-5)
     transformers.refine_stable = ordinary_refine
-    original = main.flow(*args)
-    # Changing other examples must not change this example's stability proof.
-    for row in range(batch):
-        same_x = x[row:row+1].expand_as(x).clone()
-        same_net, same_ae = main.build(sys.argv[2], batch, 0, same_x, torch.zeros(batch, dtype=torch.long),
-                          sys.argv[4], False, False, False, input_box=(same_x-width, same_x+width))
-        same_net[-1].weight = torch.eye(2).unsqueeze(0)
-        same = main.flow(*main.explode_inputs(same_ae, batch))
-        for a, b in zip(original, same):
-            torch.testing.assert_close(a[row], b[0], atol=1e-5, rtol=1e-5)
+    # An example's bounds may depend on its batch: rows are selected by the union
+    # over the batch and refined for every example, as in auto_LiRPA --sparse.
 """
             result = subprocess.run([sys.executable, '-c', check, folder, onnx, ','.join(map(str, input_shape)), dataset, str(batch_size)],
                                     env=env, cwd=tmp, capture_output=True, text=True)

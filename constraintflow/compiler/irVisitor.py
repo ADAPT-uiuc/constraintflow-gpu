@@ -3,6 +3,10 @@ from constraintflow.compiler import ir as IR
 
 class IRVisitor:
     def visit(self, node):
+        if isinstance(node, IR.IrRowGather):
+            return self.visitIrRowGather(node)
+        if isinstance(node, IR.IrSelectedPatchesToDense):
+            return self.visitIrSelectedPatchesToDense(node)
         if isinstance(node, IR.IrConst):
             return self.visitIrConst(node)
         

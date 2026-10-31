@@ -7,16 +7,23 @@ exact. The final specification bounds are always computed in full.
 
 The pass supports the standard `deeppoly_priority_add.cf` and
 `deeppoly_priority_add_lower.cf` programs, fixed positive batch sizes, and affine/ReLU/residual
-networks. It is opt-in. Unsupported layouts fail during transformation, before
-replacing the generated source. `transformers_dense.py` retains the original.
+networks. It is opt-in. The CLI applies `stable_relu_ir` to the final functional
+tensor IR after memory planning and before flow segmentation/emission. ReLU bound
+recognition, dependency slicing, interval propagation, and selected-row rewrites
+operate on IR nodes; generated Python is not parsed or matched by this pass.
+FakeTensor shape inference uses the existing emitter to evaluate IR expressions.
+Unsupported layouts fail during compilation. `transformers_dense.py` is emitted
+from the same final IR as a dense diagnostic reference. The legacy source rewrite
+remains available for comparison through `stable_relu.rewrite`.
 Training, JAX, and whole-flow CUDA graph capture are not supported by this option.
 
 ## Batched inputs
 
 Use `--batch-size B` when compiling and running. Each layer selects the union of
 neurons unstable in any example, then computes those rows for all examples in
-fixed-size chunks. Each example retains its own stable interval bounds even when
-another example needs the same row refined. Final output specifications remain
+fixed-size chunks. A selected row takes refined bounds for every example, even
+when only another example needed refinement. Unselected rows retain their interval
+bounds. Final output specifications remain
 per-example, including batches with different class labels.
 
 Batch size is fixed for a generated program. Changing masks between batches does
@@ -183,3 +190,41 @@ The N42 regression uses the original reproduction command above with
 `--batch-size 1`, ten images, and fresh `TORCHINDUCTOR_CACHE_DIR` and
 `TRITON_CACHE_DIR` directories. Changing the batch size requires generating a
 program for that batch size; `--batch-size` does not retarget an existing program.
+
+## Comparing the IR and legacy implementations
+
+`compare_ir.py` takes a program compiled with `jit --stable-relu --inductor`,
+constructs the legacy rewrite from its dense diagnostic module, and compares
+both with a fullgraph-compiled dense baseline. It uses identical fixed input
+boxes, weights, precision, and chunk sizes. Model loading is excluded from
+timing, CUDA is synchronized, execution order rotates, and any compilation
+during measured calls fails the benchmark. The report includes source/input
+hashes, warmup times, every timing sample, bounds, and verification decisions.
+IR versus legacy bounds must agree at `atol=1e-5, rtol=1e-5`; bitwise equality
+is recorded separately. Differences against dense bounds are reported rather
+than treated as equivalence: retaining stable interval bounds is intentional.
+
+```bash
+python benchmarks/stable_relu/compare_ir.py \
+  --kernel /path/to/ir-program --network /path/to/network.onnx \
+  --boxes /path/to/boxes.npz --dataset cifar --batch-size 1 \
+  --output /path/to/result.json
+```
+
+For the local harness model and dataset layout, the representative matrix is
+reproducible with:
+
+```bash
+python benchmarks/stable_relu/run_ir_matrix.py \
+  --harness /path/to/cf-harness --output /path/to/ir-comparison
+```
+
+The matrix covers N2, N19 (batch 3), N26, N32 (batch 3), N33, N42, and N36.
+Use `--configs N32_b3 N42` to select a subset. It reads local datasets without
+downloading them and writes compile logs, normalized boxes, generated programs,
+legacy sources, and JSON measurements into separate configuration directories.
+
+If a dense fullgraph baseline fails independently, `compare_ir.py --skip-dense`
+still measures and validates both selected paths. Such a report explicitly omits
+dense-relative speedups. The matrix accepts `--skip-dense-configs N33` for this
+case; retain the failed baseline log alongside the selected-only result.
