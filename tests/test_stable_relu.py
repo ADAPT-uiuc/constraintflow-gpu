@@ -8,7 +8,7 @@ import unittest
 
 import torch
 
-from constraintflow.compiler.optimizations.stable_relu import refine_stable, selected_patches_to_dense, flatten_flow, relu_pairs
+from constraintflow.compiler.optimizations.stable_relu import refine_stable, selected_patches_to_dense, flatten_flow, relu_pairs, warmup_stable_relu
 from constraintflow.gbcsr.sparse_block import patches_to_dense
 
 
@@ -31,6 +31,25 @@ class StableReLUTest(unittest.TestCase):
         refine_stable(-torch.ones_like(lower), torch.ones_like(upper), kernel, (), 2)
         self.assertEqual([x.tolist() for x in calls], [[0, 1], [2, 3], [4, 5]])
 
+    def test_warmup_exercises_empty_selection_without_changing_bounds(self):
+        lower = torch.tensor([[1., -2., 0.]])
+        upper = torch.tensor([[2., -1., 0.]])
+        calls = []
+        def kernel(idx):
+            calls.append(idx.clone())
+            return torch.full((1, idx.numel()), float('nan')), torch.zeros(1, idx.numel())
+        got = warmup_stable_relu(refine_stable, lower, upper, kernel, (), 4)
+        self.assertEqual(calls[0].tolist(), [0, 1, 2, 0])
+        for actual, expected in zip(got, (lower, upper)):
+            torch.testing.assert_close(actual, expected)
+        refine_stable(lower, upper, kernel, (), 4)
+        self.assertEqual(len(calls), 1, 'normal all-stable calls must still skip the kernel')
+        def fails(idx):
+            raise RuntimeError('compile failed')
+        with self.assertRaisesRegex(RuntimeError, 'compile failed'):
+            warmup_stable_relu(refine_stable, lower, upper, fails, (), 4)
+        refine_stable(lower, upper, fails, (), 4)  # warmup flag was reset
+
     def test_invalid_and_nonfinite_bounds_are_not_stability_proofs(self):
         called = []
         def kernel(indices):
@@ -50,6 +69,39 @@ class StableReLUTest(unittest.TestCase):
             got = selected_patches_to_dense(pieces.index_select(1, indices), indices, *dims)
             expected = patches_to_dense(pieces, *dims).index_select(1, indices)
             torch.testing.assert_close(got, expected, atol=0, rtol=0)
+
+    def test_cli_warmup_protocols_exercise_skipped_kernel(self):
+        # Execute each real CLI protocol with a tiny stand-in generated program.
+        # All calls have stable bounds: only an explicit warmup may invoke kernel.
+        from unittest.mock import patch
+        from constraintflow import cli
+        calls = []
+        stable = torch.ones(1, 3)
+        def kernel(idx):
+            calls.append(idx.tolist())
+            return stable, stable  # discarded dummy outputs
+        def run(*args, **kwargs):
+            return refine_stable(stable, stable, kernel, (), 4)
+        def batch(index):
+            return stable, torch.zeros(1, dtype=torch.long)
+        with tempfile.TemporaryDirectory() as tmp:
+            cli._run_image_batches(run, batch, 'unused', 1, 0., 2, 1,
+                                   str(Path(tmp, 'images.jsonl')), False, False,
+                                   'box-3-2-2', False, False, False, False)
+            self.assertEqual(calls, [[0, 1, 2, 0]])
+            calls.clear()
+            # Exercise the repeat-mode command through Typer so defaults are
+            # actual values, not the OptionInfo objects of a direct Python call.
+            from typer.testing import CliRunner
+            from types import SimpleNamespace
+            with patch.dict(sys.modules, {'main': SimpleNamespace(run=run)}), \
+                 patch.object(cli, 'get_dataset', return_value=(stable.repeat(2, 1), torch.zeros(2, dtype=torch.long))):
+                result = CliRunner().invoke(cli.app, ['run', 'unused.cf',
+                    '--network', 'unused.onnx', '--dataset', 'box-3-2-2',
+                    '--device', 'cpu', '--warmup', '1', '--repeat', '2',
+                    '--no-gc-freeze', '--output-path', tmp])
+            self.assertEqual(result.exit_code, 0, result.output + repr(result.exception))
+            self.assertEqual(calls, [[0, 1, 2, 0]])
 
     def test_reused_regions_are_alpha_renamed(self):
         source = """
@@ -130,7 +182,14 @@ for width in (0., 0.01, 0.5, 10.):
         compiled = torch.compile(body, fullgraph=True, dynamic=False, backend=counter)
         weight = torch.randn(11, 7, device='cuda')
         args = weight, -torch.ones(1, 7, device='cuda'), torch.ones(1, 7, device='cuda')
-        for unstable in (1, 7, 11, 0, 3):
+        # Reproduce N42: warmup is all-stable, a later image first needs this
+        # kernel. Also ensure it compiles even if no subsequent image needs it.
+        stable = torch.ones(1, 11, device='cuda')
+        warmed = warmup_stable_relu(refine_stable, stable, stable, compiled, args, 4)
+        self.assertEqual(counter.frame_count, 1)
+        for actual in warmed:
+            torch.testing.assert_close(actual, stable)
+        for unstable in (0, 1, 7, 11, 0, 3):
             lower = torch.ones(1, 11, device='cuda')
             lower[:, :unstable] = -1
             upper = torch.ones_like(lower)

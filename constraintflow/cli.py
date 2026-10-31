@@ -55,6 +55,7 @@ from constraintflow.lib.globals import dummy_mode, reuse_mode
 import constraintflow.lib.globals 
 from constraintflow.compiler.compile import compile as _compile
 from constraintflow.compiler.optimizations import opt_flags
+from constraintflow.compiler.optimizations.stable_relu import warmup_stable_relu
 from constraintflow.verifier.provesound import provesound as _provesound
 from constraintflow.lib.spec import get_network_and_input_spec
 
@@ -635,7 +636,7 @@ def run(
     for i in range(warmup):
         warmup_network = _network_for(f"warmup{i}")
         warmup_start = time.perf_counter()
-        run(
+        warmup_stable_relu(run,
             warmup_network,
             batch_size,
             eps,
@@ -740,7 +741,7 @@ def _run_image_batches(run, _batch, network_file, batch_size, eps, num_images, w
         for j in range(warmup):
             lo = num_images + j * batch_size
             warmup_start = time.perf_counter()
-            run(network_file, batch_size, eps, *_batch(lo), dataset=dataset, train=train,
+            warmup_stable_relu(run, network_file, batch_size, eps, *_batch(lo), dataset=dataset, train=train,
                 print_intermediate_results=False, no_sparsity=no_sparsity)
             if is_cuda:
                 torch.cuda.synchronize()

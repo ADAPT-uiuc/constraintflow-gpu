@@ -6,6 +6,7 @@ and padded, fixed-size row chunks; masks are recomputed for every input box.
 """
 import ast
 import copy
+from contextvars import ContextVar
 
 import torch
 
@@ -332,6 +333,23 @@ def rewrite(source, module_globals, inputs, network, chunk_size=128, compile_ker
     return ast.unparse(ast.fix_missing_locations(tree))
 
 
+_warming_stable_relu = ContextVar('warming_stable_relu', default=False)
+
+
+def warmup_stable_relu(call, *args, **kwargs):
+    """Run a warmup that exercises even currently unused refinement kernels.
+
+    Dummy results are discarded, so warmup returns the same bounds as a normal
+    call. Use the same grad mode, dtype and device as subsequent measurements.
+    No warmup state persists after the call, including if compilation raises.
+    """
+    token = _warming_stable_relu.set(True)
+    try:
+        return call(*args, **kwargs)
+    finally:
+        _warming_stable_relu.reset(token)
+
+
 def refine_stable(lower, upper, kernel, args, chunk_size):
     """Refine uncertain rows only; pad the last chunk to avoid recompilation.
 
@@ -341,6 +359,11 @@ def refine_stable(lower, upper, kernel, args, chunk_size):
     """
     stable = ((lower >= 0) | (upper <= 0)) & (lower <= upper) & torch.isfinite(lower) & torch.isfinite(upper)
     indices = torch.nonzero(~stable.all(dim=0), as_tuple=False).flatten()
+    if indices.numel() == 0 and _warming_stable_relu.get() and lower.shape[1] > 0:
+        # Match the real call's int64 index shape, strides and device, including
+        # layers with fewer neurons than a chunk. Never scatter these results.
+        dummy = torch.arange(chunk_size, device=lower.device) % lower.shape[1]
+        kernel(dummy, *args)
     out_l, out_u = lower, upper
     for offset in range(0, indices.numel(), chunk_size):
         idx = indices[offset:offset + chunk_size]

@@ -19,6 +19,27 @@ synchronization per refined layer). Numerical regions use
 so changing stability masks does not create new kernel shapes. This does not
 claim that the complete coordinator can be captured as one fullgraph.
 
+Both CLI warmup protocols (`run --warmup`, with either `--repeat` or
+`--num-images`) now exercise every row kernel. If a layer has no unstable neurons,
+warmup calls its kernel once with valid dummy indices and discards the results.
+Ordinary calls still skip all-stable layers. At least one warmup is required to
+move this first-use compilation out of timed runs; `--warmup 0` remains a cold run.
+
+Custom callers can use the same explicit warmup API, with the same grad mode,
+dtype and device as their subsequent calls:
+
+```python
+from constraintflow.compiler.optimizations.stable_relu import warmup_stable_relu
+
+with torch.no_grad():
+    warmup_bounds = warmup_stable_relu(flow, *inputs)
+    torch.cuda.synchronize()
+    bounds = flow(*next_inputs)
+```
+
+The benchmark script uses this warmup and records Dynamo's `new_graphs` count.
+It fails if any timed image compiles a new graph, even if the median looks normal.
+
 `--stable-relu-chunk 128` controls the fixed chunk size. Selection and patch-to-dense
 conversion retain the original channel/spatial coordinates, including padding,
 rectangular geometry, residual branches, and reused compiler regions. Masks are

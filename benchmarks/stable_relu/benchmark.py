@@ -8,6 +8,7 @@ import argparse
 import ast
 import hashlib
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -18,7 +19,7 @@ import torch
 
 from constraintflow.lib.globals import device_mode
 from constraintflow.lib.spec import apply_spec_offset
-from constraintflow.compiler.optimizations.stable_relu import rewrite, flatten_flow
+from constraintflow.compiler.optimizations.stable_relu import rewrite, flatten_flow, warmup_stable_relu
 from constraintflow.compiler.optimizations.row_chunks import _add_dels
 
 
@@ -69,7 +70,7 @@ def main():
         fn.body = _add_dels(fn.body)
         dense = dict(vars(transformers))
         exec(compile(ast.fix_missing_locations(tree), '<dense>', 'exec'), dense)
-    metadata = dict(arguments=vars(a), torch=torch.__version__, cuda=torch.version.cuda,
+    metadata = dict(arguments=vars(a), compile_cache_env={k: os.environ.get(k) for k in ('TORCHINDUCTOR_CACHE_DIR', 'TRITON_CACHE_DIR')}, torch=torch.__version__, cuda=torch.version.cuda,
                     gpu=torch.cuda.get_device_name(), tf32=False,
                     kernel_sha256=hashlib.sha256(source.encode()).hexdigest(),
                     selected_source_sha256=hashlib.sha256(out.encode()).hexdigest(),
@@ -84,10 +85,19 @@ def main():
             network, inputs = build(i)
             torch.cuda.synchronize()
             bound_start = time.perf_counter()
-            bounds = apply_spec_offset(network, env['flow'](*inputs))
+            from torch._dynamo.utils import counters
+            graphs_before = counters['stats']['unique_graphs']
+            if i == a.num_images:
+                result = warmup_stable_relu(env['flow'], *inputs)
+            else:
+                result = env['flow'](*inputs)
+            bounds = apply_spec_offset(network, result)
             torch.cuda.synchronize()
             end = time.perf_counter()
-            record = dict(kind='warmup' if i == a.num_images else 'batch', index=i,
+            new_graphs = counters['stats']['unique_graphs'] - graphs_before
+            if i != a.num_images:
+                assert new_graphs == 0, f'image {i} compiled {new_graphs} graphs after warmup'
+            record = dict(new_graphs=new_graphs, kind='warmup' if i == a.num_images else 'batch', index=i,
                           time_s=end-start, bound_s=end-bound_start,
                           peak_bytes=torch.cuda.max_memory_allocated(),
                           lower=bounds[0].tolist(), upper=bounds[1].tolist(),
