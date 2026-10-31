@@ -142,40 +142,9 @@ def get_dataset(
         transform = transforms.ToTensor()  # keep 32x32
         data = datasets.CIFAR10(root=".", train=train, download=True, transform=transform)
     elif dataset == "tinyimagenet":
-        train = True
-        transform = transforms.Compose([
-            # Match the reference input: resize to 64, then take the 56x56
-            # top-left crop below. Resizing directly to 56 changes the pixels
-            # and therefore the verification problem despite identical shapes.
-            transforms.Resize((64, 64)),
-            transforms.ToTensor(),
-        ])
-        root_dir = "tinyimagenet/tiny-imagenet-200"
-        split = "train" if train else "test"
-        data_dir = os.path.join(root_dir, split)
-        if train:
-            data = datasets.ImageFolder(root=data_dir, transform=transform)
-            # -----
-            # data = torch.utils.data.Subset(data, range(batch_size))
-            # -----
-        else:
-            # TinyImageNet test: all images in one folder
-            from torchvision.datasets.folder import default_loader
-            class TinyImageNetTest(torch.utils.data.Dataset):
-                def __init__(self, root, transform=None):
-                    self.root = root
-                    self.transform = transform
-                    self.loader = default_loader
-                    self.images = sorted(os.listdir(root))
-                def __len__(self):
-                    return len(self.images)
-                def __getitem__(self, idx):
-                    path = os.path.join(self.root, self.images[idx])
-                    img = self.loader(path)
-                    if self.transform:
-                        img = self.transform(img)
-                    return img, -1
-            data = TinyImageNetTest(data_dir, transform=transform)
+        #FIX FOR: TinyImageNet came from the unlabeled-order train split with a top-left crop; the benchmark verifies the labeled val split, center-cropped.
+        from constraintflow.lib.tinyimagenet import TinyImageNetValidation
+        data = TinyImageNetValidation(os.environ.get("CF_TINYIMAGENET_ROOT", "tinyimagenet/tiny-imagenet-200"))
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
 
@@ -188,8 +157,6 @@ def get_dataset(
         pin_memory=pin_memory,
     )
     image, label = next(iter(dataloader))
-    if dataset == 'tinyimagenet':
-        image = image[:, :, :56, :56]  # ensure 3 channels
     # ensure labels are a tensor
     if not isinstance(label, torch.Tensor):
         label = torch.tensor(label)

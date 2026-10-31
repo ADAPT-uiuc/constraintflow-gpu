@@ -32,6 +32,7 @@ import sys
 import torch
 
 ROWS_HELPER = '''
+from constraintflow.gbcsr.sparse_block import selection_gather_map as _cf_selection_map
 import os as _cf_os
 import time as _cf_time
 _CF_PROGRESS = _cf_os.environ.get('CF_ROW_CHUNKS_PROGRESS', '0') not in ('', '0')
@@ -47,9 +48,28 @@ def _cf_progress(k, n_rows):
         _cf_last[0] = now
 
 
+#FEAT: precompile mode (row_chunks --precompile): each loop runs its first chunk only and its results are
+# repeated to the full row count, so every compiled body is built once, on its real shapes.
+_CF_PRECOMPILE = [False]
+
+
+def _cf_chunks(n_rows, chunk):
+    return range(0, chunk if _CF_PRECOMPILE[0] else n_rows, chunk)
+
+
+def _cf_cat(parts, n_rows):
+    out = torch.cat(parts, dim=1)
+    return out.repeat([1, n_rows // out.shape[1]] + [1] * (out.dim() - 2)) if _CF_PRECOMPILE[0] else out
+
+
 def _cf_rows(x, r0, r1):
     """Rows [r0, r1) of axis 1 of a row-aligned tensor whose rows repeat with period x.shape[1]."""
     return x[:, r0:r1]
+
+
+def _cf_select(x, index, scale):
+    """conv_transpose2d with a channel-selection weight (disjoint taps): one gather and a scale."""
+    return x.reshape(x.shape[0], -1)[:, index].view(x.shape[0], *scale.shape) * scale
 
 
 def _cf_tiled_rows(x, times, r0, r1):
@@ -110,7 +130,8 @@ class _Probe:
 
     def shape(self, node):
         with self.mode:
-            return _shape_of(eval(compile(ast.Expression(node), '<expr>', 'eval'), self.env))
+            #FIX FOR: nodes built by the rewrite (e.g. _cf_select) have no line numbers, so compile() refused them.
+            return _shape_of(eval(compile(ast.fix_missing_locations(ast.Expression(node)), '<expr>', 'eval'), self.env))
 
 
 def _per_row(shape, n_rows):
@@ -156,6 +177,12 @@ def _elementwise(node):
     return isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and (f.value.id, f.attr) in ELEMENTWISE
 
 
+#FEAT: row-locality checks: a loop statement may only use operations that keep each row to itself.
+UNARY_METHODS = {'neg', 'abs', 'float', 'contiguous', 'clone', 'clamp'}
+# Products and convolutions whose first operand may carry the rows (on an axis they do not contract).
+ROW_FIRST = {'conv_transpose2d', 'training_bcast_matmul', 'bcast_matmul', 'matmul', '_cf_select'}
+
+
 class _ChunkBody(ast.NodeTransformer):
     """Rewrite one loop statement so it computes rows [_r0, _r1)."""
 
@@ -194,6 +221,57 @@ class _ChunkBody(ast.NodeTransformer):
         return ast.Call(ast.Name('_cf_rows', ast.Load()),
                         [ast.Name(name, ast.Load()), ast.Name('_r0', ast.Load()), ast.Name('_r1', ast.Load())], [])
 
+    def _row_axis(self, node):
+        """(axis of the rows, rank) of a row tensor; the axis is None unless its first non-unit axis has N."""
+        try:
+            shape = self.probe.shape(node)
+        except Exception:
+            return None, 0
+        d = next((k for k, z in enumerate(shape or ()) if z != 1), None)
+        return (d if d is not None and shape[d] == self.n_rows else None), len(shape or ())
+
+    def _method_error(self, node):
+        """Why a method call on a row tensor may mix rows, or None if it keeps them apart."""
+        if self.n_rows == 1:   # one row: a single chunk, nothing to mix
+            return None
+        f = node.func
+        d, ndim = self._row_axis(f.value)
+        if d is None:
+            return f'{f.attr} on a tensor whose first non-unit axis is not the {self.n_rows} rows'
+        try:
+            args = [ast.literal_eval(a) for a in node.args]
+            kw = {k.arg: ast.literal_eval(k.value) for k in node.keywords}
+        except ValueError:
+            return f'{f.attr} with non-constant arguments on a row tensor'
+        if f.attr == 'sum':
+            dims = kw.get('dim', args[0] if args else None)
+            dims = [dims] if isinstance(dims, int) else dims
+            return None if dims and all(k % ndim > d for k in dims) else 'sum over the row axis'
+        if f.attr in ('squeeze', 'unsqueeze'):
+            k = kw.get('dim', args[0] if args else None)
+            n = ndim + (f.attr == 'unsqueeze')
+            return None if isinstance(k, int) and k % n > d else f'{f.attr} at or before the row axis'
+        return None if f.attr in UNARY_METHODS else f'{f.attr} on a row tensor'
+
+    def _contract_error(self, node):
+        """Why a non-elementwise operation on row tensors may mix rows, or None."""
+        if self.n_rows == 1:
+            return None
+        if isinstance(node, ast.BinOp):
+            name, operands = ('matmul' if isinstance(node.op, ast.MatMult) else None), [node.left, node.right]
+        else:
+            f = node.func
+            name = f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else None
+            operands = node.args + [k.value for k in node.keywords]
+        if name not in ROW_FIRST:
+            return f'{name or ast.unparse(node)[:40]} on a row tensor'
+        if not operands or not self._is_row(operands[0]) or any(self._is_row(o) for o in operands[1:]):
+            return f'{name} with the rows outside its first operand'
+        d, ndim = self._row_axis(operands[0])
+        if d is None or d >= ndim - 1:
+            return f'{name} contracting the row axis'
+        return None
+
     def visit_Name(self, node):
         if node.id in self.sliced_vars:
             return ast.Call(ast.Name('_cf_rows', ast.Load()),
@@ -204,7 +282,9 @@ class _ChunkBody(ast.NodeTransformer):
         """A node that touches row variables: fix its column-side operands, then recurse."""
         #FIX FOR: a matmul's column-side operand of size N (fc 4096 -> 4096) was sliced like a row operand.
         # Only a broadcasting elementwise op aligns a column-side operand with the rows.
-        elementwise = isinstance(node, ast.BinOp) or _elementwise(node)
+        elementwise = isinstance(node, ast.BinOp) and not isinstance(node.op, ast.MatMult) or _elementwise(node)
+        if not elementwise:
+            self.failed = self.failed or self._contract_error(node)
         try:
             ndim = len(self.probe.shape(node)) if elementwise else None
         except Exception:
@@ -227,10 +307,14 @@ class _ChunkBody(ast.NodeTransformer):
             return node
         func = node.func
         if isinstance(func, ast.Attribute) and func.attr in ('reshape', 'view', 'expand') and self._is_row(func.value):
-            _rewrite_row_literals(node, self.n_rows)
+            #FIX FOR: a reshape without N as its leading row entry (e.g. one merging rows) was kept as written.
+            if not _rewrite_row_literals(node, self.n_rows) or self.n_rows > 1 and self._row_axis(func.value)[0] is None:
+                self.failed = self.failed or f'{func.attr} that does not keep the {self.n_rows} rows as its leading axis'
             node.func.value = self.visit(func.value)
             return node
         if isinstance(func, ast.Attribute) and self._is_row(func.value):
+            #FIX FOR: any method on a row tensor was accepted, including ones that mix rows (transpose, sum(dim=1)).
+            self.failed = self.failed or self._method_error(node)
             node.func.value = self.visit(func.value)
             node.args = [self.visit(a) for a in node.args]
             return node
@@ -300,13 +384,103 @@ def _components(stmts, probe, budget):
     return comps, defs, uses, users
 
 
-def _chunk_body(stmts, probe, n_rows, loop, outside, users):
+#FEAT: per-neuron sums over long rows as two stages, so Inductor need not split the reduction (a split
+# reduction materializes its pointwise input: a full extra write and read of the coefficients).
+TWO_STAGE_MIN = int(os.environ.get('CF_TWO_STAGE_MIN', 32768))  # lower it only to test
+
+
+def _sum_groups(k):
+    """Groups for a two-stage sum over k elements: the largest divisor <= 1024 leaving >= 4096 per group."""
+    per_group = min(4096, max(1, TWO_STAGE_MIN // 8))
+    for g in range(min(1024, k // per_group), 1, -1):
+        if k % g == 0:
+            return g
+    return None
+
+
+class _TwoStageSums(ast.NodeTransformer):
+    """x.sum(dim=-1) over [1, N, K] with K large -> x.reshape([1, N, G, K // G]).sum(dim=-1).sum(dim=-1)."""
+
+    def __init__(self, probe, n_rows):
+        self.probe, self.n_rows = probe, n_rows
+
+    def visit_Call(self, node):
+        f = node.func
+        if (isinstance(f, ast.Attribute) and f.attr == 'sum' and not node.args and len(node.keywords) == 1
+                and node.keywords[0].arg == 'dim' and isinstance(node.keywords[0].value, ast.UnaryOp)
+                and ast.unparse(node.keywords[0].value) == '-1'):
+            try:
+                shape = self.probe.shape(f.value)
+            except Exception:
+                shape = None
+            g = _sum_groups(shape[2]) if (shape is not None and len(shape) == 3 and shape[:2] == (1, self.n_rows)
+                                         and shape[2] >= TWO_STAGE_MIN) else None
+            if g is not None:
+                inner = self.visit(f.value)
+                dims = ast.List([ast.Constant(v) for v in (1, self.n_rows, g, shape[2] // g)], ast.Load())
+                return _two_stage(inner, dims)
+        return self.generic_visit(node)
+
+
+def _two_stage(inner, dims):
+    minus_one = [ast.keyword('dim', ast.UnaryOp(ast.USub(), ast.Constant(1)))]
+    reshaped = ast.Call(ast.Attribute(inner, 'reshape', ast.Load()), [dims], [])
+    first = ast.Call(ast.Attribute(reshaped, 'sum', ast.Load()), [], minus_one)
+    return ast.Call(ast.Attribute(first, 'sum', ast.Load()), [], copy.deepcopy(minus_one))
+
+
+def _fake_select(x, index, scale):
+    """_cf_select of ROWS_HELPER, for shape probes."""
+    return x.reshape(x.shape[0], -1)[:, index].view(x.shape[0], *scale.shape) * scale
+
+
+#FEAT: in compiled bodies, a transposed conv whose weight selects channels (e.g. the MaxPool expansion's) is
+# a gather that Inductor fuses into its consumer; flow() re-checks the weight on every call (cached).
+class _SelectionConvs(ast.NodeTransformer):
+    def __init__(self, probe, selections):
+        self.probe, self.selections = probe, selections
+        self.maps = []   # (index name, scale name, map expression) for the statements before the loop
+
+    def visit_Call(self, node):
+        self.generic_visit(node)
+        if not (isinstance(node.func, ast.Name) and node.func.id == 'conv_transpose2d' and len(node.args) == 2
+                and isinstance(node.args[1], ast.Name) and node.args[1].id in self.selections):
+            return node
+        kw = {k.arg: k.value for k in node.keywords}
+        try:
+            geo = [[int(v) for v in ast.literal_eval(kw[a])] for a in ('stride', 'padding', 'output_padding')]
+            x_spatial = list(self.probe.shape(node.args[0])[2:])
+        except Exception:
+            return node
+        w_shape = self.probe.shapes[node.args[1].id]
+        if w_shape[2] > geo[0][0] or w_shape[3] > geo[0][1]:
+            return node
+        k = len(self.maps)
+        idx, scale = f'_cf_selidx_{node.args[1].id}_{k}', f'_cf_selscale_{node.args[1].id}_{k}'
+        self.maps.append((idx, scale, f'_cf_selection_map({node.args[1].id}, {x_spatial}, {geo[0]}, {geo[1]}, {geo[2]})'))
+        #FIX FOR: the row-locality checks probe shapes of expressions holding _cf_select, which the probe did not know.
+        with self.probe.mode:
+            out = eval(compile(ast.fix_missing_locations(ast.Expression(node)), '<expr>', 'eval'), self.probe.env)
+            self.probe.env[scale] = out.new_empty(out.shape[1:])
+            self.probe.env[idx] = torch.empty(math.prod(out.shape[1:]), dtype=torch.long, device=out.device)
+        self.probe.env.setdefault('_cf_select', _fake_select)
+        return ast.Call(ast.Name('_cf_select', ast.Load()), [node.args[0], ast.Name(idx, ast.Load()),
+                                                              ast.Name(scale, ast.Load())], [])
+
+
+def _chunk_body(stmts, probe, n_rows, loop, outside, users, two_stage=False, selections=()):
     """Loop statements rewritten for rows [_r0, _r1), hoisted expressions, exported results, source periods."""
     row_vars = {stmts[i].targets[0].id for i in loop}
     sliced = {stmts[i].targets[0].id for i in outside}
-    body, hoisted, periods = [], [], []
+    body, hoisted, periods, selection_maps = [], [], [], []
     for i in sorted(loop):
         stmt = copy.deepcopy(stmts[i])
+        if two_stage:
+            stmt.value = _TwoStageSums(probe, n_rows).visit(stmt.value)
+        if selections:
+            sel = _SelectionConvs(probe, selections)
+            stmt.value = sel.visit(stmt.value)
+            selection_maps += sel.maps
         t = _ChunkBody(probe, n_rows, row_vars | sliced, sliced)
         if t._is_row(stmt.value):
             stmt.value = t.visit(stmt.value)
@@ -324,7 +498,8 @@ def _chunk_body(stmts, probe, n_rows, loop, outside, users):
         shape = probe.shapes[name]
         if not _per_row(shape, n_rows):
             raise ValueError(f'{name} {shape} is used after the loop but is not a per-neuron result')
-    return [ast.Assign([ast.Name(n, ast.Store())], e) for n, e in hoisted], body, exported, periods
+    pre = [ast.parse(f'{i}, {sc} = {e}').body[0] for i, sc, e in selection_maps]
+    return pre + [ast.Assign([ast.Name(n, ast.Store())], e) for n, e in hoisted], body, exported, periods
 
 
 def _emit_loop(n_rows, chunk, pre, body, exported, k=0):
@@ -411,7 +586,7 @@ def _emit_compiled(k, n_rows, chunk, mode, probe, pre, body, exported, module_gl
     body = [t.visit(copy.deepcopy(s)) for s in body]
     defined = {tgt.id for s in body for tgt in s.targets}
     loads = set().union(*(_names(s.value) for s in body)) - defined - {a for a, _ in t.args}
-    free = sorted(n for n in loads if n not in module_globals)
+    free = sorted(n for n in loads if n not in module_globals and n != "_cf_select")  # helper: a module global
     params = [a for a, _ in t.args] + free
     fn = ast.FunctionDef(f'_cf_body_{k}', ast.arguments([], [ast.arg(p) for p in params], None, [], [], None, []),
                          body + [ast.Return(ast.Tuple([ast.Name(n, ast.Load()) for n in exported], ast.Load()))],
@@ -421,10 +596,10 @@ def _emit_compiled(k, n_rows, chunk, mode, probe, pre, body, exported, module_gl
     pre += [ast.parse(f'_cf_out_{n} = []').body[0] for n in exported]
     call = ast.Call(ast.Name(f'_cf_body_{k}', ast.Load()),
                     [e for _, e in t.args] + [ast.Name(n, ast.Load()) for n in free], [])
-    loop = ast.parse(f'for _r0 in range(0, {n_rows}, {chunk}):\n    _cf_res = None\n').body[0]
+    loop = ast.parse(f'for _r0 in _cf_chunks({n_rows}, {chunk}):\n    _cf_res = None\n').body[0]
     loop.body = [ast.parse(f'_r1 = _r0 + {chunk}').body[0], ast.Assign([ast.Name('_cf_res', ast.Store())], call)]
     loop.body += [ast.parse(f'_cf_out_{n}.append(_cf_res[{j}])').body[0] for j, n in enumerate(exported)]
-    post = [ast.parse(f'{n} = torch.cat(_cf_out_{n}, dim=1)').body[0] for n in exported]
+    post = [ast.parse(f'{n} = _cf_cat(_cf_out_{n}, {n_rows})').body[0] for n in exported]
     post.append(ast.parse(f'_cf_progress({k}, {n_rows})').body[0])
     return [fn] + compiled, pre, loop, post
 
@@ -467,6 +642,10 @@ def rewrite(source, module_globals, inputs, budget, report=print, compile_bodies
     probe = _Probe(module_globals, params, inputs)
     probe.run(stmts)
     comps, defs, uses, users = _components(stmts, probe, budget)
+    #FEAT: flow() parameters holding channel-selection conv weights (compiled bodies only).
+    from constraintflow.gbcsr.sparse_block import _channel_selection
+    selections = {n for n, v in zip(params, inputs) if compile_bodies and isinstance(v, torch.Tensor) and v.dim() == 4
+                  and v.is_floating_point() and _channel_selection(v) is not None}
     if not comps:
         report('[row-chunks] nothing over budget')
         return None
@@ -476,7 +655,8 @@ def rewrite(source, module_globals, inputs, budget, report=print, compile_bodies
     for c, (n_rows, loop, outside) in enumerate(comps):
         per_row = max(probe.stmt_bytes.get(i, 0) for i in loop) / n_rows
         target = max(1, int(budget / (3 * per_row)))
-        pre, body, exported, periods = _chunk_body(stmts, probe, n_rows, loop, outside, users)
+        pre, body, exported, periods = _chunk_body(stmts, probe, n_rows, loop, outside, users,
+                                                    two_stage=compile_bodies, selections=selections)
         if compile_bodies:
             chunk, mode = _fixed_chunk(n_rows, target, periods)
             defs_c, pre, header, post = _emit_compiled(c, n_rows, chunk, mode, probe, pre, body, exported,
@@ -545,7 +725,13 @@ def main():
     p.add_argument('--budget-gb', type=float, default=20)
     p.add_argument('--compile-bodies', action='store_true',
                    help='torch.compile (Inductor) each loop body; chunk sizes divide the rows so shapes stay fixed')
+    #FEAT: build every compiled body now (Inductor's disk cache), so the first real run only loads them.
+    p.add_argument('--precompile', action='store_true',
+                   help='after the rewrite, run the program once with each loop cut to its first chunk')
+    p.add_argument('--precompile-only', action='store_true', help=argparse.SUPPRESS)
     args = p.parse_args()
+    if args.precompile_only:
+        return precompile(args)
     from constraintflow.lib.training import SpecBounds, load_program
     from constraintflow.lib.globals import device_mode
     import onnx
@@ -571,6 +757,37 @@ def main():
     out = rewrite(source, vars(transformers), inputs, args.budget_gb * 2**30, compile_bodies=args.compile_bodies)
     with open(src_path, 'w') as f:
         f.write(out if out is not None else source)
+    if args.precompile and out is not None:
+        import subprocess
+        subprocess.run([sys.executable, '-m', 'constraintflow.compiler.optimizations.row_chunks'] + sys.argv[1:]
+                       + ['--precompile-only'], check=True)
+
+
+def precompile(args):
+    """Run the chunked program once on a zero box with every loop cut to its first chunk."""
+    import time
+    import onnx
+    from constraintflow.lib.training import SpecBounds, load_program
+    from constraintflow.lib.globals import device_mode
+    if os.environ.get('CF_DISABLE_TF32', '0') not in ('', '0'):
+        torch.backends.cuda.matmul.allow_tf32 = torch.backends.cudnn.allow_tf32 = False
+    device_mode.set_mode('gpu')
+    shape = tuple(map(int, args.input_shape.split('x')))
+    n_out, rows = map(int, args.dataset.split('-')[-2:])
+    inits = [i for i in onnx.load(args.network).graph.initializer if i.data_type == onnx.TensorProto.FLOAT]
+    sb = SpecBounds.__new__(SpecBounds)
+    sb.dataset, sb.cudagraphs, sb.onnx_path = args.dataset, False, args.network
+    sb.params = {i.name: torch.from_numpy(onnx.numpy_helper.to_array(i).copy()).cuda() for i in inits}
+    main_mod = load_program(args.program)
+    sb.programs = {('CROWN', 1): sb._build(main_mod, torch.zeros(1, *shape), 1)}
+    transformers = sys.modules[main_mod.__name__.rsplit('.', 1)[0] + '.transformers']
+    transformers._CF_PRECOMPILE[0] = True
+    x = torch.zeros(1, *shape, device='cuda')
+    t = time.perf_counter()
+    with torch.no_grad():
+        sb.compute_spec_bounds('CROWN', x, x, torch.ones(1, rows, n_out, device='cuda'), torch.zeros(rows, device='cuda'))
+    torch.cuda.synchronize()
+    print(f'[row-chunks] precompiled every loop body in {time.perf_counter() - t:.0f} s', flush=True)
 
 
 if __name__ == '__main__':

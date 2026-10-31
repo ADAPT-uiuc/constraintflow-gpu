@@ -101,6 +101,7 @@ class _SelectedRows(_ChunkBody):
         self.batch_size = batch_size
 
     def visit_Call(self, node):
+        rewritten = False
         if (isinstance(node.func, ast.Attribute) and node.func.attr in ('reshape', 'view', 'expand')
                 and self._is_row(node.func.value)):
             dims = node.args[0].elts if len(node.args) == 1 and isinstance(node.args[0], (ast.List, ast.Tuple)) else node.args
@@ -108,12 +109,14 @@ class _SelectedRows(_ChunkBody):
                     and dims[0].value in (1, self.batch_size)
                     and isinstance(dims[1], ast.Constant) and dims[1].value == self.n_rows):
                 dims[1] = ast.Name('_n', ast.Load())
+                rewritten = True
             elif (node.func.attr in ('reshape', 'view') and dims
                     and isinstance(dims[0], ast.Constant)
                     and dims[0].value == self.batch_size * self.n_rows):
                 # Convolution back-substitution folds batch and selected rows
                 # into the convolution's leading dimension.
                 dims[0] = ast.BinOp(ast.Constant(self.batch_size), ast.Mult(), ast.Name('_n', ast.Load()))
+                rewritten = True
         if isinstance(node.func, ast.Name) and node.func.id == 'patches_to_dense' and self._is_row(node):
             node.args[0] = self.visit(node.args[0])
             node.func.id = 'selected_patches_to_dense'
@@ -123,7 +126,9 @@ class _SelectedRows(_ChunkBody):
             return node
         func = node.func
         if isinstance(func, ast.Attribute) and func.attr in ('reshape', 'view', 'expand') and self._is_row(func.value):
-            _rewrite_row_literals(node, self.n_rows)
+            #FIX FOR: with batch == rows, the batch-one rewrite also replaced the batch entry ([_n, _n, -1]).
+            if not rewritten:
+                _rewrite_row_literals(node, self.n_rows)
             node.func.value = self.visit(func.value)
             return node
         if isinstance(func, ast.Attribute) and self._is_row(func.value):
@@ -426,9 +431,9 @@ def refine_stable(lower, upper, kernel, args, chunk_size):
 
     NaN/invalid intervals are not a proof of stability. Zero-width zero intervals
     are stable. Use functional index_copy so inputs and compiled outputs aren't
-    mutated. Selection is the union across the batch; stable examples retain
-    their own intervals even for a row selected by another example. The dense
-    final specification must never use this shortcut.
+    mutated. Selection is the union across the batch; a selected row takes the
+    refined bounds for every example, as auto_LiRPA's sparse intermediate bounds
+    do. The dense final specification must never use this shortcut.
     """
     stable = ((lower >= 0) | (upper <= 0)) & (lower <= upper) & torch.isfinite(lower) & torch.isfinite(upper)
     indices = torch.nonzero(~stable.all(dim=0), as_tuple=False).flatten()
@@ -445,12 +450,8 @@ def refine_stable(lower, upper, kernel, args, chunk_size):
             idx = torch.cat((idx, idx[-1:].expand(chunk_size - count)))
         lo, hi = kernel(idx, *args)
         selected = idx[:count]
-        # A row needed by one example may already be stable in another. Keep
-        # that example's stability proof even if DeepPoly refinement is looser.
-        if lower.shape[0] > 1:
-            keep = stable.index_select(1, selected)
-            lo = torch.where(keep, lower.index_select(1, selected), lo[:, :count])
-            hi = torch.where(keep, upper.index_select(1, selected), hi[:, :count])
+        #FIX FOR: bounds differed from auto_LiRPA --sparse at batch > 1: examples already stable in a
+        #         selected row kept their IBP interval instead of the refined one.
         out_l = out_l.index_copy(1, selected, lo[:, :count])
         out_u = out_u.index_copy(1, selected, hi[:, :count])
     return out_l, out_u
