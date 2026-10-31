@@ -26,6 +26,8 @@ class ImageDataset:
     mnist_std = torch.tensor([0.3081]).reshape(-1, 1)
     cifar10_mean = torch.tensor([0.4914, 0.4822, 0.4465]).reshape(1, -1, 1, 1)
     cifar10_std = torch.tensor([0.2023, 0.1994, 0.2010]).reshape(1, -1, 1, 1)
+    tinyimagenet_mean = torch.tensor([0.4802, 0.4481, 0.3975]).reshape(1, -1, 1, 1)
+    tinyimagenet_std = torch.tensor([0.2302, 0.2265, 0.2262]).reshape(1, -1, 1, 1)
     imagenet_mean = torch.tensor([0.485, 0.456, 0.406]).reshape(1, -1, 1, 1)
     imagenet_std = torch.tensor([0.229, 0.224, 0.225]).reshape(1, -1, 1, 1)
     _normalization_cache = {}
@@ -38,10 +40,13 @@ class ImageDataset:
         if dataset == 'mnist':
             canonical_dataset = 'mnist'
             mean, std = ImageDataset.mnist_mean, ImageDataset.mnist_std
-        elif dataset in ['cifar10', 'cifar', 'tinyimagenet']:
-            # Note: in the original constraintflow, tinyimagenet is normalized with cifar10 mean and std. So replicating that. 
+        elif dataset in ['cifar10', 'cifar']:
             canonical_dataset = 'cifar10'
             mean, std = ImageDataset.cifar10_mean, ImageDataset.cifar10_std
+        #FIX FOR: TinyImageNet was normalized with the CIFAR-10 mean/std; use the benchmark's.
+        elif dataset == 'tinyimagenet':
+            canonical_dataset = 'tinyimagenet'
+            mean, std = ImageDataset.tinyimagenet_mean, ImageDataset.tinyimagenet_std
         elif dataset == 'imagenet':
             canonical_dataset = 'imagenet'
             mean, std = ImageDataset.imagenet_mean, ImageDataset.imagenet_std
@@ -189,9 +194,7 @@ def apply_spec_offset(network, res):
 
 #FEAT: input_box=(x_L, x_U), already in the network's input space, replaces the clip(X +- eps) box and dataset normalization.
 def get_network_and_input_spec(network_file, batch_size, X, y, dataset, eps, train=False, no_sparsity=False, initializers=None, members=None, input_box=None, fold_spec=False):
-    if dataset == 'tinyimagenet':
-        #FEAT: follow the run dtype instead of hardcoded fp32.
-        X = X.to(torch.float) / 255.0
+    #FIX FOR: TinyImageNet pixels were divided by 255 a second time (ToTensor already gives [0, 1]).
     #FEAT: images follow the run dtype (fp64 under --dtype float64).
     X = X.to(torch.get_default_dtype())
 

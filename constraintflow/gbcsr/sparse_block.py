@@ -3,6 +3,8 @@ import copy
 import os
 import sys
 import copyreg
+#FEAT: weak references for the selection-weight cache.
+import weakref
 import torch
 import torch.nn.functional as F
 import time
@@ -843,12 +845,104 @@ def _phase_lowering(weight, x_spatial, s, padding, output_padding):
     return phases
 
 
-def _conv_transpose_lowerings(weight, x_spatial, stride, padding, output_padding):
+#FEAT: channel-selection weights (at most one nonzero input channel per tap and output channel, e.g. the
+# MaxPool expansion's convs) as strided gathers; keyed by storage and version so in-place updates re-check,
+# with a weak reference so a freed weight's address is not mistaken for a new weight.
+_selection_cache = {}
+
+
+def _channel_selection(weight):
+    """(source channel, scale, taps): [kx, ky, out] sources and scales, and the taps with any nonzero; None for
+    any other weight."""
+    key = (weight.data_ptr(), weight._version, tuple(weight.shape), weight.dtype, weight.device)
+    hit = _selection_cache.get(key)
+    if hit is None or hit[0]() is None:
+        nonzero = weight != 0
+        sel = None
+        if weight.dim() == 4 and int(nonzero.sum(0).max()) <= 1:
+            src = nonzero.to(torch.uint8).argmax(0)
+            used = nonzero.any(0).any(0).nonzero().tolist()
+            sel = (src.permute(1, 2, 0).contiguous(), weight.gather(0, src[None])[0].permute(1, 2, 0).contiguous(),
+                   [tuple(t) for t in used])
+        _selection_cache[key] = hit = (weakref.ref(weight), sel)
+    return hit[1]
+
+
+_selection_maps = {}
+
+
+def _selection_map(sel, x_spatial, stride, padding, output_padding, out_spatial, device):
+    """Disjoint taps (k <= stride): per output element, its flat source index in one row of x and its scale
+    (0 where no tap reaches). Cached per selection and geometry."""
+    key = (id(sel), tuple(x_spatial), tuple(stride), tuple(padding), tuple(output_padding), device)
+    if key not in _selection_maps:
+        src, scale, _ = sel
+        kx, ky = src.shape[0], src.shape[1]
+        h, w = x_spatial
+        axes = []
+        for d, (k, n_in) in enumerate(((kx, h), (ky, w))):
+            full = torch.arange(out_spatial[d], device=device) + padding[d]
+            tap, pos = full % stride[d], torch.div(full, stride[d], rounding_mode='floor')
+            axes.append((tap.clamp(max=k - 1), pos.clamp(max=n_in - 1), (tap < k) & (pos < n_in)))
+        (ta, pa, va), (tb, pb, vb) = axes
+        src_map = src[ta[:, None], tb[None, :]].permute(2, 0, 1)           # [out, H, W]
+        index = src_map * (h * w) + (pa[:, None] * w + pb[None, :])[None]
+        scale_map = scale[ta[:, None], tb[None, :]].permute(2, 0, 1) * (va[:, None] & vb[None, :])[None]
+        _selection_maps[key] = (sel, index.reshape(-1).contiguous(), scale_map.contiguous())
+    return _selection_maps[key][1:]
+
+
+#FEAT: index map of a channel-selection transposed conv with disjoint taps, for compiled code that gathers
+# (and fuses the gather into its consumer) instead of convolving.
+def selection_gather_map(weight, x_spatial, stride, padding, output_padding):
+    """(flat source index, scale [out, H, W]) of conv_transpose2d(x, weight) for x of spatial size x_spatial."""
+    sel = _channel_selection(weight)
+    if sel is None or weight.shape[2] > stride[0] or weight.shape[3] > stride[1]:
+        raise ValueError('program compiled for a channel-selection weight with disjoint taps; '
+                         f'this {list(weight.shape)} weight is not one: recompile')
+    out_spatial = [(x_spatial[d] - 1) * stride[d] - 2 * padding[d] + weight.shape[2 + d] + output_padding[d]
+                   for d in range(2)]
+    return _selection_map(sel, x_spatial, stride, padding, output_padding, out_spatial, weight.device)
+
+
+def _selection_lowering(sel, weight, x_spatial, stride, padding, output_padding):
+    """A transposed conv with a channel-selection weight. Disjoint taps (k <= stride, e.g. a 2x2/stride-2 or
+    1x1 conv): every output element is one scaled input element, so one gather through an index map.
+    Overlapping taps: per tap, gather the source channels, scale, and add into its strided output positions."""
+    src, scale, taps = sel
+    kx, ky = weight.shape[2], weight.shape[3]
+    full = [(x_spatial[d] - 1) * stride[d] + weight.shape[2 + d] + output_padding[d] for d in range(2)]
+    out_spatial = [full[d] - 2 * padding[d] for d in range(2)]
+    cout = weight.shape[1]
+
+    if kx <= stride[0] and ky <= stride[1]:
+        def select(x):
+            index, scale_map = _selection_map(sel, x_spatial, stride, padding, output_padding, out_spatial, x.device)
+            out = x.reshape(x.shape[0], -1).index_select(1, index).view(x.shape[0], cout, *out_spatial)
+            return out.mul_(scale_map)
+
+        return select
+
+    def select(x):
+        h, w = x_spatial
+        out = x.new_zeros(x.shape[0], cout, *full)
+        for a, b in taps:
+            view = out[:, :, a:a + stride[0] * (h - 1) + 1:stride[0], b:b + stride[1] * (w - 1) + 1:stride[1]]
+            view.add_(x.index_select(1, src[a, b]) * scale[a, b].view(1, -1, 1, 1))
+        return out[:, :, padding[0]:padding[0] + out_spatial[0], padding[1]:padding[1] + out_spatial[1]]
+
+    return select
+
+
+def _conv_transpose_lowerings(weight, x_spatial, stride, padding, output_padding, sel=None):
     def plain(x):
         return F.conv_transpose2d(x, weight, stride=stride, padding=padding,
                                   output_padding=output_padding)
 
     lowerings = {"chunked": lambda x: _split_batch(plain, x), "plain": plain}
+    #FEAT: selection-weight lowering, chosen by the per-shape timing like the others.
+    if sel is not None:
+        lowerings["select"] = _selection_lowering(sel, weight, x_spatial, stride, padding, output_padding)
     kx, ky = weight.shape[2], weight.shape[3]
     if (stride == [1, 1] and output_padding == [0, 0]
             and padding[0] < kx and padding[1] < ky):
@@ -959,9 +1053,11 @@ def _choose_lowering(key, x, lowerings):
 @torch.library.custom_op("cf::conv_transpose2d", mutates_args=())
 def _conv_transpose2d_op(x: torch.Tensor, weight: torch.Tensor, stride: list[int],
                          padding: list[int], output_padding: list[int]) -> torch.Tensor:
-    lowerings = _conv_transpose_lowerings(weight, list(x.shape[2:]), stride, padding, output_padding)
+    #FEAT: selection weights get their own tuning key (a dense weight of the same shape must not reuse it).
+    sel = _channel_selection(weight) if CONV_TRANSPOSE_TUNE else None
+    lowerings = _conv_transpose_lowerings(weight, list(x.shape[2:]), stride, padding, output_padding, sel)
     key = (tuple(x.shape), tuple(x.stride()), tuple(weight.shape), x.dtype, x.device,
-           tuple(stride), tuple(padding), tuple(output_padding))
+           tuple(stride), tuple(padding), tuple(output_padding), sel is not None)
     # The fake kernel promises a contiguous result.
     return lowerings[_choose_lowering(key, x, lowerings)](x).contiguous()
 
