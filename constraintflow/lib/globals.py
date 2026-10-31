@@ -10,6 +10,8 @@ def set_jit_root(path):
 
 # For fuse-affine.
 network_path = None
+# Compile-local stable ReLU configuration; None disables the final IR pass.
+stable_relu_config = None
 
 def set_network_path(path):
     global network_path

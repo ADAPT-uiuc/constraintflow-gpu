@@ -256,6 +256,8 @@ def simulacrum_compile(
     fuse_affine_subst: bool = typer.Option(False, "--fuse-affine-subst/--no-fuse-affine-subst", help="Two optimizations gated by one flag: (1) skip both concretizing traversals at any Affine layer that feeds only further Affine layers (always sound; single_bound.py). (2) Assert every Affine op's L and U outputs are identical (true for all deeppoly*/crown specs here) and drop the redundant sign-split when a traverse() substitution step crosses an Affine layer -- unsound if the assertion doesn't hold. Both take effect on the simulacrum and reuse compile passes below. Functional --sroa also proves and removes matching sign-split convolution pairs across residual branches."),
     stable_relu: bool = typer.Option(False, "--stable-relu/--no-stable-relu", help="Skip stable pre-ReLU rows using interval bounds and fixed-shape compiled refinement kernels. Standard DeepPoly only; shared row selection across the batch; eager coordinator."),
     stable_relu_chunk: int = typer.Option(128, "--stable-relu-chunk", min=1, help="Fixed number of uncertain neurons per compiled refinement chunk."),
+    #FEAT: --stable-relu-legacy keeps the generated-source rewrite runnable next to the IR pass.
+    stable_relu_legacy: bool = typer.Option(False, "--stable-relu-legacy", help="With --stable-relu, use the old rewrite of the generated transformers.py instead of the IR pass."),
     sroa: bool = typer.Option(True, "--sroa/--no-sroa", help="Splice every layer into one flow() and scalar-replace the Jit* aggregates, so the compiled region is pure tensor code. Requires --fused-flow. Reuse compile only."),
     early_reductions: bool = typer.Option(True, "--early-reductions/--no-early-reductions", help="Compute traversal sums as soon as their inputs exist, releasing large coefficients before later traversal steps. Requires functional --sroa; preserves the arithmetic tree."),
     fuse_sign_convs: bool = typer.Option(True, "--fuse-sign-convs/--no-fuse-sign-convs", help="Replace positive/negative convolution pairs by one convolution only when their inputs, weights, views and settings provably match. Requires functional --sroa. Uses linearity and can change floating-point rounding."),
@@ -414,6 +416,7 @@ def simulacrum_compile(
     globals.flow_segment_mb.set_value(flow_segment_mb)
     globals.memory_budget_mb.set_value(memory_budget_mb if early_reductions else 0.0)
     globals.set_network_path(network_file)
+    globals.stable_relu_config = (stable_relu_chunk, inductor) if stable_relu and not stable_relu_legacy else None
     try:
         compile_code(program_file, output_path, target=target)
     finally:
@@ -431,11 +434,12 @@ def simulacrum_compile(
         globals.flow_segment_mb.set_value(0.0)
         globals.memory_budget_mb.reset()
         globals.set_network_path(None)
+        globals.stable_relu_config = None
         opt_flags.reset()
         if in_memory:
             globals.jit_store_clear()
 
-    if stable_relu:
+    if stable_relu and stable_relu_legacy:
         from constraintflow.compiler.optimizations.stable_relu import optimize_program
         optimize_program(output_path, network_file, X, y, dataset, eps,
                          chunk_size=stable_relu_chunk, compile_kernels=inductor)
