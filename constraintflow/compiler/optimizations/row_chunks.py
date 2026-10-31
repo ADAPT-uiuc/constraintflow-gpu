@@ -174,8 +174,8 @@ class _ChunkBody(ast.NodeTransformer):
         shape = self.probe.shape(node)
         if not _row_axis_size(shape, result_ndim, self.n_rows):
             return node
-        if len(shape) < 2 or shape[0] != 1 or shape[1] != self.n_rows:
-            self.failed = f'row-aligned operand of shape {shape} not in [1, N, ...] form'
+        if len(shape) < 2 or shape[0] not in (1, getattr(self, 'batch_size', 1)) or shape[1] != self.n_rows:
+            self.failed = f'unsupported batch/row layout for operand of shape {shape}'
             return node
         if _elementwise(node):
             # Broadcasting elementwise op: slice its row-aligned operands, keep the rest.

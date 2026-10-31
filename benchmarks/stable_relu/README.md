@@ -6,10 +6,22 @@ Stable neurons retain their interval bounds: their ReLU relaxation is already
 exact. The final specification bounds are always computed in full.
 
 The pass supports the standard `deeppoly_priority_add.cf` and
-`deeppoly_priority_add_lower.cf` programs, batch size one, and affine/ReLU/residual
+`deeppoly_priority_add_lower.cf` programs, fixed positive batch sizes, and affine/ReLU/residual
 networks. It is opt-in. Unsupported layouts fail during transformation, before
 replacing the generated source. `transformers_dense.py` retains the original.
 Training, JAX, and whole-flow CUDA graph capture are not supported by this option.
+
+## Batched inputs
+
+Use `--batch-size B` when compiling and running. Each layer selects the union of
+neurons unstable in any example, then computes those rows for all examples in
+fixed-size chunks. Each example retains its own stable interval bounds even when
+another example needs the same row refined. Final output specifications remain
+per-example, including batches with different class labels.
+
+Batch size is fixed for a generated program. Changing masks between batches does
+not change compiled row-kernel shapes. Larger batches can have a larger union of
+unstable neurons, so skipping can save less work than at batch size one.
 
 ## Compilation
 
@@ -131,3 +143,43 @@ timed call, and charges model loading plus verification to the reported total.
 Peak memory uses the harness's additional-allocation convention; absolute peak
 allocation is also recorded. Warmup has no timeout. Timed verification has a 1200-second limit,
 subtracting model loading from that allowance.
+
+## Batched N32 comparison and batch-one regression
+
+From the harness root, using the worktree on `PYTHONPATH`:
+
+```bash
+export PYTHONPATH="$PWD/wt/stable-relu"
+export CF_DISABLE_TF32=1 NVIDIA_TF32_OVERRIDE=0 TORCHINDUCTOR_COMPILE_THREADS=1
+constraintflow-gpu/cfg/bin/python wt/stable-relu/benchmarks/stable_relu/prepare_cifar_boxes.py \
+  --data-root constraintflow-gpu --eps 0.00196078431372549 --images 40 \
+  --output experiments/results/stable_relu_batched/N32_boxes.npz
+```
+
+Generate the dense batch-ten N32 source with `constraintflow.cli jit`,
+`--batch-size 10 --dataset cifar --fuse-affine-subst`, running from
+`constraintflow-gpu` so it finds the existing CIFAR dataset. Then:
+
+```bash
+constraintflow-gpu/cfg/bin/python wt/stable-relu/benchmarks/stable_relu/benchmark.py \
+  --kernel experiments/results/stable_relu_batched/N32_dense \
+  --network nets/cifar/convBigRELU__DiffAI.onnx \
+  --boxes experiments/results/stable_relu_batched/N32_boxes.npz --dataset cifar \
+  --batch-size 10 --num-images 30 --compare \
+  --source-output /tmp/N32_selected.py --output /tmp/N32_cf.jsonl
+```
+
+Run auto-LiRPA sequentially from `auto_LiRPA/examples/vision`, using its
+`lrpa311/bin/python3 simple_verification.py`, with
+`--network convBigRELU__DiffAI --network_format onnx --dataset cifar
+--eps 0.00196078431372549 --batch_size 10 --num_images 30 --warmup 1
+--program deeppoly --sparse --single_experiment --logs stdout --device gpu`,
+plus absolute `--nets_dir` and `--results_file` paths.
+Both tools warm on images 30–39 and time images 0–29 in three batches of ten.
+The cf-gpu benchmark checks all four batches against dense bounds and records
+per-image verification decisions. Warmup has no timeout.
+
+The N42 regression uses the original reproduction command above with
+`--batch-size 1`, ten images, and fresh `TORCHINDUCTOR_CACHE_DIR` and
+`TRITON_CACHE_DIR` directories. Changing the batch size requires generating a
+program for that batch size; `--batch-size` does not retarget an existing program.

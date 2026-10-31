@@ -1,0 +1,225 @@
+dummy_mode in cli: flag: False
+reuse_mode in cli: flag: False
+inductor_mode in cli: flag: False
+tf32 in cli: disabled (CF_DISABLE_TF32)
+dtype in cli: float32
+[opt-flags] off: none
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+Compilation successful ✅
+Network loaded
+[single_bound] skipped 1/8 affine layers this flow() call (total so far: 1)
+Peak memory usage: 10.12109375 MB
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 2)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 4)
+True
+True
+True
+True
+True
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 6)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 8)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 10)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 12)
+True
+True
+True
+True
+True
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 14)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 16)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 18)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 20)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 22)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 24)
+True
+True
+True
+True
+True
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 26)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 28)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 30)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 32)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 34)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 36)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 38)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 40)
+True
+True
+True
+True
+True
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 42)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 44)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 46)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 48)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 50)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 52)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 54)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 56)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 58)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 60)
+True
+True
+True
+True
+True
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 62)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 64)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 66)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 68)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 70)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 72)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 74)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 76)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 78)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 80)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 82)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 84)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 86)
+[fuse_affine_subst] fused 2 pair(s) this call (total so far: 88)
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+[sroa] 9318 aggregates removed, 76 clones and 21 identity lambdas and 0 casts dropped, 32388 dead stores removed, 2042 tensor statements, 20 flow params (functional=True, 0 view writes, 0 block writes)
+[block-opt] 2042 -> 1759 statements (cse=-187, copy_propagate=460, dce=10) in 0.0s
+[sign-convs] 0 redundant convolutions removed
+[sign-reductions] 0 redundant reductions removed
+[box-concretize] 12 input-box concretizations in center/radius form
+[conv-bias] 0 interval convolutions take the bias in the center conv
+[box-reductions] 0 sign-split reductions fused
+[flow-sizes] 280 statements, 159 allocating / 120 views, 26129.3 MB named total, 2942.8 MB named peak live; unnamed temporaries not profiled
+[patch-factor] 0 patch compositions factored
+[product-grids] 14 convolutions and mat-vecs evaluated as grids
+[flow-sizes] 286 statements, 165 allocating / 120 views, 26136.5 MB named total, 2943.9 MB named peak live; unnamed temporaries not profiled
+[early-reductions] 93 reductions scheduled after their inputs
+[flow-sizes] 379 statements, 258 allocating / 120 views, 26145.5 MB named total, 2577.7 MB named peak live; unnamed temporaries not profiled
+[conv-partials] 0 partial results exposed
+[flow-sizes] 379 statements, 258 allocating / 120 views, 26145.5 MB named total, 2577.7 MB named peak live; unnamed temporaries not profiled
+[view-aliases] 120 storage-sharing aliases inlined
+[flow-sizes] 259 statements, 258 allocating / 0 views, 26145.5 MB named total, 2577.7 MB named peak live; unnamed temporaries not profiled
+[fused-matvec] 28 pointwise matvecs lowered to row reductions
+[flow-sizes] 259 statements, 258 allocating / 0 views, 26145.5 MB named total, 2577.7 MB named peak live; unnamed temporaries not profiled
+[flow-sizes] 259 statements, 258 allocating / 0 views, 26145.5 MB named total, 2577.7 MB named peak live, worst statement 7765.0 MB (largest op 1280.0 MB)
+Compilation successful ✅
+Simulacrum+reuse compile complete ✅
+Optimized code written to: /home/db50/cf-harness/experiments/results/stable_relu_batched/N32_dense
+Total time: 16.959646 seconds
+Peak CPU memory: 1365897216 bytes

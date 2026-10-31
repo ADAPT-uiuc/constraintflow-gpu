@@ -1,4 +1,4 @@
-"""Selective DeepPoly refinement of pre-ReLU bounds (batch one).
+"""Selective DeepPoly refinement of pre-ReLU bounds with shared row selection across batches.
 
 The coordinator is eager: discovering a variable number of unstable neurons needs
 one device synchronization per layer. Numerical regions use fullgraph torch.compile
@@ -96,7 +96,24 @@ def relu_pairs(stmts):
 
 
 class _SelectedRows(_ChunkBody):
+    def __init__(self, probe, n_rows, row_vars, sliced_vars, batch_size=1):
+        super().__init__(probe, n_rows, row_vars, sliced_vars)
+        self.batch_size = batch_size
+
     def visit_Call(self, node):
+        if (isinstance(node.func, ast.Attribute) and node.func.attr in ('reshape', 'view', 'expand')
+                and self._is_row(node.func.value)):
+            dims = node.args[0].elts if len(node.args) == 1 and isinstance(node.args[0], (ast.List, ast.Tuple)) else node.args
+            if (len(dims) >= 2 and isinstance(dims[0], ast.Constant)
+                    and dims[0].value in (1, self.batch_size)
+                    and isinstance(dims[1], ast.Constant) and dims[1].value == self.n_rows):
+                dims[1] = ast.Name('_n', ast.Load())
+            elif (node.func.attr in ('reshape', 'view') and dims
+                    and isinstance(dims[0], ast.Constant)
+                    and dims[0].value == self.batch_size * self.n_rows):
+                # Convolution back-substitution folds batch and selected rows
+                # into the convolution's leading dimension.
+                dims[0] = ast.BinOp(ast.Constant(self.batch_size), ast.Mult(), ast.Name('_n', ast.Load()))
         if isinstance(node.func, ast.Name) and node.func.id == 'patches_to_dense' and self._is_row(node):
             node.args[0] = self.visit(node.args[0])
             node.func.id = 'selected_patches_to_dense'
@@ -108,7 +125,7 @@ class _SelectedRows(_ChunkBody):
         # Generated convolution weights repeat each channel over spatial positions.
         # Gather channels before the repeat so stable rows never get materialized.
         shape = self.probe.shape(node)
-        if shape is not None and len(shape) >= 2 and shape[:2] == (1, self.n_rows):
+        if shape is not None and len(shape) >= 2 and shape[0] in (1, self.batch_size) and shape[1] == self.n_rows:
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == 'reshape':
                 perm = node.func.value
                 if isinstance(perm, ast.Call) and isinstance(perm.func, ast.Attribute) and perm.func.attr == 'permute' and [ast.literal_eval(a) for a in perm.args] == [0, 1, 3, 2]:
@@ -122,7 +139,7 @@ class _SelectedRows(_ChunkBody):
                                 and ast.literal_eval(unsq.args[0]) == -1):
                             value = ast.unparse(unsq.func.value)
                             return ast.parse(f'({value}).index_select(1, _idx // {reps[3]})', mode='eval').body
-        if shape is not None and len(shape) >= 2 and shape[:2] == (1, self.n_rows):
+        if shape is not None and len(shape) >= 2 and shape[0] in (1, self.batch_size) and shape[1] == self.n_rows:
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'patches_to_dense':
                 node.args[0] = self._row_operand(node.args[0], 3)
                 node.func.id = 'selected_patches_to_dense'
@@ -193,7 +210,7 @@ def _interval_source(network, target, known):
             w, b = f'net_{i}_weight', f'net_{i}_bias'
             wp, wn = f'torch.clamp({w}, min=0)', f'torch.clamp({w}, max=0)'
             if layer.type == LayerType.Conv2D:
-                shape = tuple(network[layer.parents[0]].shape)
+                shape = (-1, *network[layer.parents[0]].shape[1:])
                 def op(x, weight):
                     return f'F.conv2d({x}.reshape({shape!r}), {weight}, stride={tuple(layer.stride)!r}, padding={tuple(layer.padding)!r}).flatten(1)'
             else:
@@ -212,13 +229,14 @@ def _interval_source(network, target, known):
 def rewrite(source, module_globals, inputs, network, chunk_size=128, compile_kernels=True, report=print):
     """Return selective source; reject layouts whose row independence is unproven.
 
-    Supports the emitted standard DeepPoly ReLU chord and batch-one tensor flows.
+    Supports the emitted standard DeepPoly ReLU chord and batched tensor flows.
     Final specification bounds are always computed densely.
     """
     tree, fn = flatten_flow(source)
     params = [a.arg for a in fn.args.args]
-    if not inputs or tuple(inputs[0].shape[:1]) != (1,):
-        raise ValueError('stable ReLU currently requires batch size one')
+    if not inputs or not isinstance(inputs[0], torch.Tensor) or inputs[0].ndim != 2 or inputs[0].shape[0] < 1:
+        raise ValueError('stable ReLU requires a nonempty [batch, neurons] input')
+    batch_size = inputs[0].shape[0]
     if chunk_size < 1:
         raise ValueError('chunk size must be positive')
     stmts = fn.body
@@ -274,7 +292,7 @@ def rewrite(source, module_globals, inputs, network, chunk_size=128, compile_ker
     for k, ((lower, upper), relu) in enumerate(zip(pairs, relus)):
         target = relu.parents[0]
         n = network[target].size
-        if probe.shapes[lower] != (1, n) or probe.shapes[upper] != (1, n):
+        if probe.shapes[lower] != (batch_size, n) or probe.shapes[upper] != (batch_size, n):
             raise ValueError(f'bound shape does not match ReLU {relu.identifier}')
         needed = closure([lower, upper])
         phase = [stmts[defs[v]] for v in sorted(needed, key=defs.get)]
@@ -284,9 +302,9 @@ def rewrite(source, module_globals, inputs, network, chunk_size=128, compile_ker
         for s in phase:
             name = s.targets[0].id
             shape = probe.shapes[name]
-            if shape and len(shape) >= 3 and shape[:2] == (1, n) and shape[2] > 1:
+            if shape and len(shape) >= 3 and shape[0] in (1, batch_size) and shape[1] == n and shape[2] > 1:
                 rows.add(name)
-            elif shape and len(shape) >= 2 and shape[:2] == (1, n) and _names(s.value) & rows:
+            elif shape and len(shape) >= 2 and shape[0] in (1, batch_size) and shape[1] == n and _names(s.value) & rows:
                 rows.add(name)
         future = set().union(*(v for name, v in uses.items() if name not in needed and name not in emitted))
         # Non-bound coefficient escape would require dense values downstream.
@@ -310,7 +328,7 @@ def rewrite(source, module_globals, inputs, network, chunk_size=128, compile_ker
             for s in phase:
                 if s.targets[0].id not in rows:
                     continue
-                t = _SelectedRows(probe, n, rows, set())
+                t = _SelectedRows(probe, n, rows, set(), batch_size=batch_size)
                 s = copy.deepcopy(s)
                 s.value = t.visit(s.value) if t._is_row(s.value) else t._row_operand(s.value, len(probe.shapes[s.targets[0].id]))
                 if t.failed:
@@ -375,7 +393,9 @@ def refine_stable(lower, upper, kernel, args, chunk_size):
 
     NaN/invalid intervals are not a proof of stability. Zero-width zero intervals
     are stable. Use functional index_copy so inputs and compiled outputs aren't
-    mutated. The dense final specification must never use this shortcut.
+    mutated. Selection is the union across the batch; stable examples retain
+    their own intervals even for a row selected by another example. The dense
+    final specification must never use this shortcut.
     """
     stable = ((lower >= 0) | (upper <= 0)) & (lower <= upper) & torch.isfinite(lower) & torch.isfinite(upper)
     indices = torch.nonzero(~stable.all(dim=0), as_tuple=False).flatten()
@@ -391,8 +411,15 @@ def refine_stable(lower, upper, kernel, args, chunk_size):
         if count < chunk_size:
             idx = torch.cat((idx, idx[-1:].expand(chunk_size - count)))
         lo, hi = kernel(idx, *args)
-        out_l = out_l.index_copy(1, idx[:count], lo[:, :count])
-        out_u = out_u.index_copy(1, idx[:count], hi[:, :count])
+        selected = idx[:count]
+        # A row needed by one example may already be stable in another. Keep
+        # that example's stability proof even if DeepPoly refinement is looser.
+        if lower.shape[0] > 1:
+            keep = stable.index_select(1, selected)
+            lo = torch.where(keep, lower.index_select(1, selected), lo[:, :count])
+            hi = torch.where(keep, upper.index_select(1, selected), hi[:, :count])
+        out_l = out_l.index_copy(1, selected, lo[:, :count])
+        out_u = out_u.index_copy(1, selected, hi[:, :count])
     return out_l, out_u
 
 
@@ -430,8 +457,9 @@ def optimize_program(folder, network_file, x, y, dataset, eps=0.0, *, chunk_size
             spec.loader.exec_module(module)
             modules[name] = module
         main = modules['main']
-        network, abs_elem = main.build(network_file, 1, eps, x, y, dataset, False, False, False)
-        inputs = main.explode_inputs(abs_elem, 1)
+        batch_size = x.shape[0]
+        network, abs_elem = main.build(network_file, batch_size, eps, x, y, dataset, False, False, False)
+        inputs = main.explode_inputs(abs_elem, batch_size)
         path = root / 'transformers.py'
         source = path.read_text()
         transformed = rewrite(source, vars(modules['transformers']), inputs, network,
