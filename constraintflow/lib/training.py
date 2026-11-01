@@ -28,11 +28,8 @@ PROGRAMS = {'IBP': 'ibp.cf', 'CROWN-IBP': 'crownibp_lower.cf',
             'CROWN-lower': 'deeppoly_priority_add_lower.cf'}  #FEAT: CROWN with only the last layer's lower bound back-substituted
 #FEAT: DeepZ and DeepPoly with back-substitution stopped KK layers back, spec upper bound one-step interval.
 PROGRAMS.update({'zono': 'zono_lower.cf', **{f'DP-stop{k:02d}': f'custom_stops/deeppoly_custom_stop{k:02d}_lower.cf' for k in range(19)}})
-#FEAT: the same stops with CROWN-0's (c0), CROWN-0-C's (c0c) or Fast-Lin's (fl) ReLU lower bound (paradox-of-certified-training probe).
+#FEAT: the same stops with CROWN-0's (c0), CROWN-0-C's (c0c) or Fast-Lin's (fl) ReLU lower bound.
 PROGRAMS.update({f'DP-stop{k:02d}-{v}': f'custom_stops/deeppoly_custom_stop{k:02d}_{v}_lower.cf' for k in (1, 2, 3, 18) for v in ('c0', 'c0c', 'fl')})
-#FEAT: every spec in compiler_examples/paradox/ is a training program PX-<file name> (certifier search; no code change per spec).
-_PARADOX = os.path.join(CF_ROOT, 'examples', 'compiler_examples', 'paradox')
-PROGRAMS.update({'PX-' + f[:-3]: 'paradox/' + f for f in sorted(os.listdir(_PARADOX)) if f.endswith('.cf')} if os.path.isdir(_PARADOX) else {})
 
 
 def _source_hash():

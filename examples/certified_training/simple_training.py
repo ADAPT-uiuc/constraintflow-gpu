@@ -26,6 +26,9 @@ import models
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 
+STOP_VARIANTS = [f"DP-stop{k:02d}-{v}" for k in (1, 2, 3, 18) for v in ("c0", "c0c", "fl")]  # CF-GPU: CROWN-0 / CROWN-0-C / Fast-Lin ReLU lower bound
+# CF-GPU: MIX<w>-<X> trains on f * X + (1 - f) * IBP, f going from 1 to w/100 with the eps ramp (CROWN-IBP's mixing, w = 0)
+MIXES = [f"MIX{w}-{m}" for w in (0, 25, 50) for m in ["CROWN", "CROWN-IBP"] + STOP_VARIANTS]
 parser = argparse.ArgumentParser()
 
 parser.add_argument("--verify", action="store_true", help='verification mode, do not train')
@@ -36,7 +39,8 @@ parser.add_argument("--seed", type=int, default=100, help='random seed')
 parser.add_argument("--eps", type=float, default=0.3, help='Target training epsilon')
 parser.add_argument("--norm", type=float, default='inf', help='p norm for epsilon perturbation')
 parser.add_argument("--bound_type", type=str, default="CROWN-IBP",
-                    choices=["IBP", "CROWN-IBP", "CROWN", "CROWN-FAST", "zid"], help='method of bound analysis')  # CF-GPU: + zid
+                    choices=["IBP", "CROWN-IBP", "CROWN", "CROWN-FAST", "zid", "zono"] + [f"DP-stop{k:02d}" for k in range(19)] + STOP_VARIANTS + MIXES,
+                    help='method of bound analysis')  # CF-GPU: + zid, zono, DeepPoly with back-substitution stopped KK layers back
 parser.add_argument("--model", type=str, default="resnet", help='model name (mlp_3layer, cnn_4layer, cnn_6layer, cnn_7layer, resnet)')
 parser.add_argument("--num_epochs", type=int, default=100, help='number of total epochs')
 parser.add_argument("--batch_size", type=int, default=256, help='batch size')
@@ -51,9 +55,9 @@ parser.add_argument("--save_model", type=str, default='')
 parser.add_argument("--cf_cache_dir", type=str, default='cf_training_cache')  # CF-GPU: compiled programs
 
 args = parser.parse_args()
-# CF-GPU: the cf-gpu programs each bound type needs (CROWN = DeepPoly; zid has no auto_LiRPA counterpart)
+# CF-GPU: the cf-gpu programs each bound type needs (CROWN = DeepPoly; zid, zono, DP-stopKK have no auto_LiRPA counterpart)
 TRAINING_METHODS = {'IBP': ['IBP'], 'CROWN-IBP': ['IBP', 'CROWN-IBP'], 'CROWN-FAST': ['CROWN-IBP'],
-                    'CROWN': ['CROWN'], 'zid': ['zid']}
+                    'CROWN': ['CROWN'], 'zid': ['zid'], 'zono': ['zono'], **{f'DP-stop{k:02d}': [f'DP-stop{k:02d}'] for k in range(19)}, **{m: [m] for m in STOP_VARIANTS}, **{m: ['IBP', m.split('-', 1)[1]] for m in MIXES}}
 
 
 def Train(model, cf, t, loader, eps_scheduler, norm, train, opt, bound_type, method='robust'):  # CF-GPU: cf
@@ -113,7 +117,7 @@ def Train(model, cf, t, loader, eps_scheduler, norm, train, opt, bound_type, met
         if batch_method == "robust":
             if bound_type == "IBP":
                 lb, ub = cf.compute_bounds('IBP', data_lb, data_ub, labels)  # CF-GPU
-            elif bound_type in ("CROWN", "zid"):
+            elif bound_type in ("CROWN", "zid", "zono") or bound_type.startswith("DP-stop"):
                 lb, ub = cf.compute_bounds(bound_type, data_lb, data_ub, labels)  # CF-GPU
             elif bound_type == "CROWN-IBP":
                 # lb, ub = model.compute_bounds(ptb=ptb, IBP=True, x=data, C=c, method="backward")  # pure IBP bound
@@ -125,6 +129,12 @@ def Train(model, cf, t, loader, eps_scheduler, norm, train, opt, bound_type, met
                 else:
                     clb, cub = cf.compute_bounds('CROWN-IBP', data_lb, data_ub, labels)  # CF-GPU
                     lb = clb * factor + ilb * (1 - factor)
+            elif bound_type.startswith("MIX"):  # CF-GPU
+                final = int(bound_type[3:bound_type.index("-")]) / 100
+                factor = final + (1 - final) * (eps_scheduler.get_max_eps() - eps) / eps_scheduler.get_max_eps()
+                ilb, iub = cf.compute_bounds('IBP', data_lb, data_ub, labels)
+                xlb, xub = cf.compute_bounds(bound_type.split("-", 1)[1], data_lb, data_ub, labels)
+                lb = xlb * factor + ilb * (1 - factor)
             elif bound_type == "CROWN-FAST":
                 # Similar to CROWN-IBP but no mix between IBP and CROWN bounds.
                 lb, ub = cf.compute_bounds('CROWN-IBP', data_lb, data_ub, labels)  # CF-GPU

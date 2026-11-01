@@ -8,7 +8,7 @@ import torch
 from constraintflow.compiler.codeGen import CodeGen
 from constraintflow.compiler.ir import (
     IrBlock, IrConst, IrSimpleBinary, IrTorchExpand, IrTorchPermute,
-    IrTorchRepeat, IrTorchReshape, IrTorchUnsqueeze, IrTransRetBasic,
+    IrTorchMatmul, IrTorchRepeat, IrTorchReshape, IrTorchSqueeze, IrTorchUnsqueeze, IrTransRetBasic,
 )
 from constraintflow.compiler.optimizations.stable_relu_ir import (
     SelectRows, assign, plan, relu_pairs, var,
@@ -70,6 +70,20 @@ class StableReLUIRTest(unittest.TestCase):
                 expected = expected.reshape(30, 6)
             torch.testing.assert_close(got, expected)
             self.assertEqual(expr.shape, shape, 'the original dense IR must remain unchanged')
+
+    def test_pointwise_operand_behind_views_is_gathered_in_kernel(self):
+        # N33's last layer: W * slope behind squeeze/unsqueeze was computed for all rows before the kernel.
+        weights, slope, other = torch.randn(1, 6, 5), torch.randn(1, 1, 5), torch.randn(5, 6)
+        probe = Probe({'weights': weights, 'slope': slope, 'other': other})
+        selector = SelectRows(probe, 6, set(), 1, '_hoist')
+        expr = IrTorchSqueeze(IrTorchUnsqueeze(IrSimpleBinary(var('weights'), var('slope'), 'mul'), 3), 3)
+        selected = selector.operand(expr, 3)
+        idx = torch.tensor([5, 0, 3, 3])
+        torch.testing.assert_close(probe.value(selected, _idx=idx), probe.value(expr).index_select(1, idx))
+        self.assertEqual(selector.hoisted, [])
+        # A matrix product is not pointwise: it is still computed once before the kernel.
+        selector.operand(IrTorchMatmul(var('weights'), var('other')), 3)
+        self.assertEqual(len(selector.hoisted), 1)
 
     def test_repeated_row_gather_preserves_noncontiguous_order(self):
         x = torch.randn(2, 3, 5)

@@ -79,6 +79,25 @@ class StableReLUTest(unittest.TestCase):
         warmup_stable_relu(refine_stable, torch.ones_like(lower), upper, kernel, (), 3)
         self.assertEqual(calls, [[0, 1, 2]])
 
+    def test_several_chunk_sizes_pick_smallest_cover_and_cap_at_width(self):
+        def kernel(idx):
+            calls.append(idx.numel())
+            return idx[None].float(), idx[None].float() + 1
+        n = 300
+        upper = torch.ones(1, n)
+        for unstable, expected in [(1, [8]), (44, [128]), (300, [128, 128, 128]), (129, [128, 8])]:
+            calls = []
+            lower = torch.ones(1, n)
+            lower[0, :unstable] = -1
+            lo, hi = refine_stable(lower, upper, kernel, (), (8, 32, 128))
+            self.assertEqual(calls, expected)
+            torch.testing.assert_close(lo[0, :unstable], torch.arange(unstable).float())
+            torch.testing.assert_close(lo[0, unstable:], lower[0, unstable:])
+        # Sizes wider than the layer collapse to the width, and warmup compiles every size.
+        calls = []
+        warmup_stable_relu(refine_stable, torch.ones(1, 50), torch.ones(1, 50), kernel, (), (8, 32, 128, 512))
+        self.assertEqual(calls, [8, 32, 50])
+
     def test_selection_boundaries_padding_and_changing_masks(self):
         calls = []
         def kernel(indices):
@@ -166,7 +185,9 @@ class StableReLUTest(unittest.TestCase):
                 result = CliRunner().invoke(cli.app, ['run', 'unused.cf',
                     '--network', 'unused.onnx', '--dataset', 'box-3-2-2',
                     '--device', 'cpu', '--warmup', '1', '--repeat', '2',
-                    '--no-gc-freeze', '--output-path', tmp])
+                    '--output-path', tmp])
+            import gc
+            gc.unfreeze()  # run froze this test process's heap after its warmup
             self.assertEqual(result.exit_code, 0, result.output + repr(result.exception))
             self.assertEqual(calls, [[0, 1, 2, 0]])
 

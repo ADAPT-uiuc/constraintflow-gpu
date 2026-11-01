@@ -279,8 +279,7 @@ def rewrite(source, module_globals, inputs, network, chunk_size=128, compile_ker
     if not inputs or not isinstance(inputs[0], torch.Tensor) or inputs[0].ndim != 2 or inputs[0].shape[0] < 1:
         raise ValueError('stable ReLU requires a nonempty [batch, neurons] input')
     batch_size = inputs[0].shape[0]
-    if chunk_size < 1:
-        raise ValueError('chunk size must be positive')
+    chunk_sizes(chunk_size)
     stmts = fn.body
     if not all(isinstance(s, ast.Assign) for s in stmts[:-1]) or not isinstance(stmts[-1], ast.Return):
         raise ValueError('stable ReLU requires a straight-line functional tensor flow')
@@ -430,6 +429,14 @@ def warmup_stable_relu(call, *args, **kwargs):
         _warming_stable_relu.reset(token)
 
 
+def chunk_sizes(chunk_size):
+    """Block sizes as a sorted tuple; an int is today's single fixed block."""
+    sizes = (chunk_size,) if isinstance(chunk_size, int) else tuple(sorted(set(chunk_size)))
+    if not sizes or any(not isinstance(c, int) or c < 1 for c in sizes):
+        raise ValueError('chunk sizes must be positive integers')
+    return sizes
+
+
 def refine_stable(lower, upper, kernel, args, chunk_size):
     """Refine uncertain rows only; pad the last chunk to avoid recompilation.
 
@@ -438,20 +445,30 @@ def refine_stable(lower, upper, kernel, args, chunk_size):
     mutated. Selection is the union across the batch; a selected row takes the
     refined bounds for every example, as auto_LiRPA's sparse intermediate bounds
     do. The dense final specification must never use this shortcut.
+
+    A tuple of chunk sizes compiles one kernel per size (capped at the layer
+    width): full blocks of the largest, then the smallest size that covers the rest.
     """
     stable = ((lower >= 0) | (upper <= 0)) & (lower <= upper) & torch.isfinite(lower) & torch.isfinite(upper)
     indices = torch.nonzero(~stable.all(dim=0), as_tuple=False).flatten()
-    if indices.numel() == 0 and _warming_stable_relu.get() and lower.shape[1] > 0:
+    n = lower.shape[1]
+    #FEAT: several block sizes per layer, so a few unstable rows don't pay for a full block.
+    sizes = (chunk_size,) if isinstance(chunk_size, int) else tuple(sorted({min(c, n) for c in chunk_size}))
+    if _warming_stable_relu.get() and n > 0 and (indices.numel() == 0 or len(sizes) > 1):
         # Match the real call's int64 index shape, strides and device, including
         # layers with fewer neurons than a chunk. Never scatter these results.
-        dummy = torch.arange(chunk_size, device=lower.device) % lower.shape[1]
-        kernel(dummy, *args)
+        for size in sizes:
+            kernel(torch.arange(size, device=lower.device) % n, *args)
     out_l, out_u = lower, upper
-    for offset in range(0, indices.numel(), chunk_size):
-        idx = indices[offset:offset + chunk_size]
+    offset = 0
+    while offset < indices.numel():
+        left = indices.numel() - offset
+        size = sizes[-1] if left >= sizes[-1] else next(c for c in sizes if c >= left)
+        idx = indices[offset:offset + size]
         count = idx.numel()
-        if count < chunk_size:
-            idx = torch.cat((idx, idx[-1:].expand(chunk_size - count)))
+        offset += count
+        if count < size:
+            idx = torch.cat((idx, idx[-1:].expand(size - count)))
         lo, hi = kernel(idx, *args)
         selected = idx[:count]
         #FIX FOR: bounds differed from auto_LiRPA --sparse at batch > 1: examples already stable in a
