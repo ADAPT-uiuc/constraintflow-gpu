@@ -1,6 +1,7 @@
 import os
 import gc
 import sys
+import faulthandler
 
 DISABLE_TF32 = os.environ.get("CF_DISABLE_TF32", "0") not in ("", "0")
 if DISABLE_TF32:
@@ -255,7 +256,7 @@ def simulacrum_compile(
     fused_flow: bool = typer.Option(True, "--fused-flow/--no-fused-flow", help="Emit a layer-unrolled flow() into transformers.py instead of using the interpretive Flow.flow, replaying abs_elem.update from its simulacrum capture, and (under --inductor) compile the whole flow as one graph instead of one per op. Reuse compile only."),
     fuse_affine_subst: bool = typer.Option(False, "--fuse-affine-subst/--no-fuse-affine-subst", help="Two optimizations gated by one flag: (1) skip both concretizing traversals at any Affine layer that feeds only further Affine layers (always sound; single_bound.py). (2) Assert every Affine op's L and U outputs are identical (true for all deeppoly*/crown specs here) and drop the redundant sign-split when a traverse() substitution step crosses an Affine layer -- unsound if the assertion doesn't hold. Both take effect on the simulacrum and reuse compile passes below. Functional --sroa also proves and removes matching sign-split convolution pairs across residual branches."),
     stable_relu: bool = typer.Option(False, "--stable-relu/--no-stable-relu", help="Skip stable pre-ReLU rows using interval bounds and fixed-shape compiled refinement kernels. Standard DeepPoly only; shared row selection across the batch; eager coordinator."),
-    stable_relu_chunk: int = typer.Option(128, "--stable-relu-chunk", min=1, help="Fixed number of uncertain neurons per compiled refinement chunk."),
+    stable_relu_chunk: str = typer.Option("128", "--stable-relu-chunk", help="Fixed number of uncertain neurons per compiled refinement chunk; a comma list (e.g. 8,32,128,512) compiles one kernel per size and uses the smallest that fits."),
     #FEAT: --stable-relu-legacy keeps the generated-source rewrite runnable next to the IR pass.
     stable_relu_legacy: bool = typer.Option(False, "--stable-relu-legacy", help="With --stable-relu, use the old rewrite of the generated transformers.py instead of the IR pass."),
     sroa: bool = typer.Option(True, "--sroa/--no-sroa", help="Splice every layer into one flow() and scalar-replace the Jit* aggregates, so the compiled region is pure tensor code. Requires --fused-flow. Reuse compile only."),
@@ -416,6 +417,9 @@ def simulacrum_compile(
     globals.flow_segment_mb.set_value(flow_segment_mb)
     globals.memory_budget_mb.set_value(memory_budget_mb if early_reductions else 0.0)
     globals.set_network_path(network_file)
+    #FEAT: a comma list of stable-ReLU block sizes; one value keeps a single fixed block.
+    stable_relu_chunk = [int(c) for c in stable_relu_chunk.split(',')]
+    stable_relu_chunk = stable_relu_chunk[0] if len(stable_relu_chunk) == 1 else tuple(stable_relu_chunk)
     globals.stable_relu_config = (stable_relu_chunk, inductor) if stable_relu and not stable_relu_legacy else None
     try:
         compile_code(program_file, output_path, target=target)
@@ -485,11 +489,12 @@ def run(
     perturb_seed: int = typer.Option(0, "--perturb-seed", help="Seed for --perturb-eps's noise, for reproducible sweeps."),
     # UNFAIR LOADING
     # direct_onnx_load: bool = typer.Option(False, "--direct-onnx-load/--no-direct-onnx-load", help="Load the network without onnx.load: memory-map the file, parse only the graph (weights stripped from the protobuf), and upload each weight from the mapped file through a pinned staging buffer that PyTorch's caching host allocator keeps between runs. Weights are still read and uploaded on every run. Off: onnx.load + numpy copies + pageable upload, as the baselines do."),
-    gc_freeze: bool = typer.Option(True, "--gc-freeze/--no-gc-freeze", help="gc.freeze() after warmup, so the untimed gc.collect() between runs scans only per-run garbage instead of the whole torch/inductor heap (which evicts CPU caches before every timed run)."),
     #FEAT: --dtype on run, so typer accepts it (applied from argv above).
     dtype: str = typer.Option("float32", "--dtype", help="float32, or float64 to compute every float tensor in fp64 (a precision oracle for bound mismatches; compile and run must agree). Read from argv before the imports; listed here so typer accepts it."),
     #FEAT: --profile-comm records CPU-GPU communication per timed batch (lib/comm_profile.py).
     profile_comm: bool = typer.Option(False, "--profile-comm", help="With --num-images: profile each timed batch with torch.profiler and add syncs, alloc_syncs, gpu_idle_pct and sync_calls to its results line; its time goes to profiled_time_s instead of time_s. Warmups are not profiled."),
+    #FEAT: per-batch time limit (warmups are never limited).
+    batch_timeout: float = typer.Option(0.0, "--batch-timeout", min=0, help="With --num-images: end the process if one timed batch runs longer than this many seconds (faulthandler prints 'Timeout' and every thread's stack). Warmups have no limit. 0: no limit."),
 ):
     """
     Run a compiled ConstraintFlow program.
@@ -600,8 +605,8 @@ def run(
 
     if num_images:
         _run_image_batches(run, _batch, network_file, batch_size, eps, num_images, warmup,
-                           results_file, is_cuda, gc_freeze, dataset, train,
-                           print_intermediate_results, no_sparsity, profile_comm)
+                           results_file, is_cuda, dataset, train,
+                           print_intermediate_results, no_sparsity, profile_comm, batch_timeout)
         return
 
     for i in range(warmup):
@@ -627,9 +632,10 @@ def run(
         # if is_cuda:
         #     torch.cuda.empty_cache()
 
-    if gc_freeze:
-        gc.collect()
-        gc.freeze()
+    # gc.freeze() after warmup, as every tool does: the untimed gc.collect() between runs then scans
+    # only per-run garbage instead of the whole torch/inductor heap.
+    gc.collect()
+    gc.freeze()
 
     mem_label = "Peak GPU memory" if is_cuda else "Peak CPU memory"
 
@@ -692,8 +698,8 @@ def run(
     typer.echo(f"Total time: {total_time:.6f} seconds")
     typer.echo(f"{mem_label}: {peak_bytes} bytes")
 def _run_image_batches(run, _batch, network_file, batch_size, eps, num_images, warmup,
-                       results_file, is_cuda, gc_freeze, dataset, train,
-                       print_intermediate_results, no_sparsity, profile_comm=False):
+                       results_file, is_cuda, dataset, train,
+                       print_intermediate_results, no_sparsity, profile_comm=False, batch_timeout=0.0):
     """The --num-images protocol: warmups on the images after the evaluated ones, then one
     timed run per batch. The timed region is the --repeat protocol's (network load and
     build, box, spec, host-to-device copy, bounds, sync); the results line is written after
@@ -722,9 +728,8 @@ def _run_image_batches(run, _batch, network_file, batch_size, eps, num_images, w
                          "time_s": warmup_time})
             gc.collect()
 
-        if gc_freeze:
-            gc.collect()
-            gc.freeze()
+        gc.collect()
+        gc.freeze()
 
         for i in range(num_images // batch_size):
             lo = i * batch_size
@@ -741,6 +746,8 @@ def _run_image_batches(run, _batch, network_file, batch_size, eps, num_images, w
                     #FEAT: per-run CPU memory: resident set at the start, high-water mark during the run.
                     resident = cpu_memory.start()
 
+                if batch_timeout:
+                    faulthandler.dump_traceback_later(batch_timeout, exit=True)
                 start_time = time.perf_counter()
                 with comm.region():
                     lb, ub = run(network_file, batch_size, eps, *_batch(lo), dataset=dataset,
@@ -749,6 +756,7 @@ def _run_image_batches(run, _batch, network_file, batch_size, eps, num_images, w
                     if is_cuda:
                         torch.cuda.synchronize()
                 run_time = time.perf_counter() - start_time
+                faulthandler.cancel_dump_traceback_later()
             peak = torch.cuda.max_memory_allocated() if is_cuda else cpu_memory.peak()
 
             _write(out, {"kind": "batch", "batch": i, "images": [lo, lo + batch_size],

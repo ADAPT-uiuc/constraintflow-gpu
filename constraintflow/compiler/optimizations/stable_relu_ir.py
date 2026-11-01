@@ -15,8 +15,8 @@ import torch.nn.functional as F
 from constraintflow.compiler.ir import (
     IrAssignment, IrConst, IrFConv2d, IrPatchesToDense, IrRowGather,
     IrSelectedPatchesToDense, IrSimpleBinary, IrSimpleUnary, IrTensorClamp,
-    IrTorchExpand, IrTorchMatmul, IrTorchPermute, IrTorchRepeat, IrTorchReshape,
-    IrTorchTranspose, IrTorchUnsqueeze, IrTorchView, IrTorchWhere,
+    IrTorchExpand, IrTorchMatmul, IrTorchPad, IrTorchPermute, IrTorchRepeat, IrTorchReshape,
+    IrTorchSlice, IrTorchSqueeze, IrTorchTranspose, IrTorchUnsqueeze, IrTorchView, IrTorchWhere,
     IrTransRetBasic, IrVar,
 )
 from constraintflow.compiler.optimizations.subexp_inlining import get_vars_expr_occurrences
@@ -107,6 +107,9 @@ class Shapes:
 
 _ELEMENTWISE = (IrSimpleBinary, IrSimpleUnary, IrTensorClamp, IrTorchWhere)
 _VIEWS = (IrTorchReshape, IrTorchView, IrTorchExpand)
+# Elementwise arithmetic over views: Inductor fuses a row gather into it, so it costs only the selected rows.
+_POINTWISE = _ELEMENTWISE + _VIEWS + (IrVar, IrConst, IrTorchSqueeze, IrTorchUnsqueeze, IrTorchPad,
+                                      IrTorchSlice, IrTorchPermute, IrTorchTranspose, IrTorchRepeat, int, float)
 
 
 class SelectRows:
@@ -148,6 +151,10 @@ class SelectRows:
             if (isinstance(dims, (list, tuple)) and dims[0] == 1
                     and all(d == 1 for d in dims[2:])):
                 return IrRowGather(expr.children[0], period=self.probe.shape(expr.children[0])[1])
+        #FIX FOR: operands behind squeeze/pad views were computed for every row before the row kernel
+        #         (N33's last layer: 452 MiB with 0 unstable rows); gather them inside the kernel instead.
+        if all(isinstance(e, _POINTWISE) for e in walk(expr)):
+            return IrRowGather(expr)
         name = f'{self.prefix}_{len(self.hoisted)}'
         self.hoisted.append(assign(name, expr))
         return IrRowGather(var(name))
@@ -340,8 +347,10 @@ def plan(node, network, probe):
 
 
 def emit(cg, node, chunk_size, compile_kernels):
-    if chunk_size < 1 or cg.target != 'torch':
-        raise ValueError('stable ReLU requires torch and a positive chunk size')
+    from constraintflow.compiler.optimizations.stable_relu import chunk_sizes
+    chunk_sizes(chunk_size)
+    if cg.target != 'torch':
+        raise ValueError('stable ReLU requires torch')
     import onnx
     from constraintflow.lib.parse import parse_onnx_layers
     network = parse_onnx_layers(onnx.load(globals.network_path), torch.zeros(1, 1),
@@ -380,7 +389,7 @@ def emit(cg, node, chunk_size, compile_kernels):
         args = list(call.args)
         if call.refinement:
             name, inputs = call.refinement
-            args += [name, '(' + ', '.join(inputs) + (',' if inputs else '') + ')', str(chunk_size)]
+            args += [name, '(' + ', '.join(inputs) + (',' if inputs else '') + ')', repr(chunk_size)]
         expr = call.function + '(' + ', '.join(args) + ')'
         if i == len(calls) - 1:
             cg.write('return ' + expr)
