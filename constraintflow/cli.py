@@ -258,6 +258,9 @@ def simulacrum_compile(
     stable_relu: bool = typer.Option(False, "--stable-relu/--no-stable-relu", help="Skip stable pre-ReLU rows using interval bounds and fixed-shape compiled refinement kernels. Standard DeepPoly only; shared row selection across the batch; eager coordinator."),
     stable_relu_chunk: str = typer.Option("128", "--stable-relu-chunk", help="Fixed number of uncertain neurons per compiled refinement chunk; a comma list (e.g. 8,32,128,512) compiles one kernel per size and uses the smallest that fits."),
     #FEAT: --stable-relu-legacy keeps the generated-source rewrite runnable next to the IR pass.
+    #FEAT: block sizes and batch rule for rows selected by row-invariant traversal stops.
+    traversal_stop_chunk: str = typer.Option("128", "--traversal-stop-chunk", help="Rows per compiled kernel for traversal-stop selection; a comma list (e.g. 8,16,32,64,128,256,512) compiles one kernel per size and uses the smallest that fits."),
+    traversal_stop_per_example: bool = typer.Option(False, "--traversal-stop-per-example", help="Keep each example's own stop decision, as the program states. Default: a row refined for any example takes the refined values for every example (auto_LiRPA's sparse rule)."),
     stable_relu_legacy: bool = typer.Option(False, "--stable-relu-legacy", help="With --stable-relu, use the old rewrite of the generated transformers.py instead of the IR pass."),
     sroa: bool = typer.Option(True, "--sroa/--no-sroa", help="Splice every layer into one flow() and scalar-replace the Jit* aggregates, so the compiled region is pure tensor code. Requires --fused-flow. Reuse compile only."),
     early_reductions: bool = typer.Option(True, "--early-reductions/--no-early-reductions", help="Compute traversal sums as soon as their inputs exist, releasing large coefficients before later traversal steps. Requires functional --sroa; preserves the arithmetic tree."),
@@ -421,6 +424,8 @@ def simulacrum_compile(
     stable_relu_chunk = [int(c) for c in stable_relu_chunk.split(',')]
     stable_relu_chunk = stable_relu_chunk[0] if len(stable_relu_chunk) == 1 else tuple(stable_relu_chunk)
     globals.stable_relu_config = (stable_relu_chunk, inductor) if stable_relu and not stable_relu_legacy else None
+    stop_chunk = [int(c) for c in traversal_stop_chunk.split(',')]
+    globals.traversal_stop_config = (stop_chunk[0] if len(stop_chunk) == 1 else tuple(stop_chunk), not traversal_stop_per_example)
     try:
         compile_code(program_file, output_path, target=target)
     finally:
@@ -439,6 +444,7 @@ def simulacrum_compile(
         globals.memory_budget_mb.reset()
         globals.set_network_path(None)
         globals.stable_relu_config = None
+        globals.traversal_stop_config = (128, True)
         opt_flags.reset()
         if in_memory:
             globals.jit_store_clear()

@@ -12,6 +12,8 @@ def set_jit_root(path):
 network_path = None
 # Compile-local stable ReLU configuration; None disables the final IR pass.
 stable_relu_config = None
+# Traversal-stop row scheduling: (chunk sizes, refine selected rows for the whole batch).
+traversal_stop_config = (128, True)
 
 def set_network_path(path):
     global network_path
