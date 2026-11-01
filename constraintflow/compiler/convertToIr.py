@@ -11,6 +11,7 @@ class FuncDef:
 
 class ConvertToIr(astVisitor.ASTVisitor):
     def __init__(self):
+        self.stop_call_cache = {}
         self.counter = 0
         self.store = {}
         self.fstore = {}
@@ -305,7 +306,10 @@ class ConvertToIr(astVisitor.ASTVisitor):
                 return new_var, condSeqIr + [new_out]
 
     def visitTernary(self, ast_node: AST.TernaryNode):
-        return self.get_conditional_args(ast_node, IrTernary)
+        result, seq = self.get_conditional_args(ast_node, IrTernary)
+        if getattr(ast_node, "invariant_stop", False):
+            result.invariant_stop = True
+        return result, seq
     
     def visitIf(self, ast_node: AST.IfNode):
         return self.get_conditional_args(ast_node, IrIte)
@@ -360,12 +364,23 @@ class ConvertToIr(astVisitor.ASTVisitor):
                 seqIr.append(new_var_assignment)
             else:
                 argIrs.append(exprIr)
-        # argIrs = [self.visit(expr) for expr in ast_node.arglist.exprlist]
+        fn = self.ast_fstore[ast_node.name.name]
+        cache_key = None
+        if getattr(fn.expr, 'invariant_stop', False) and all(isinstance(x, (IrVar, IrConst)) for x in argIrs):
+            cache_key = (ast_node.name.name, tuple((x.__class__.__name__, x.name if isinstance(x, IrVar) else x.const) for x in argIrs))
+            if cache_key in self.stop_call_cache:
+                return self.stop_call_cache[cache_key], seqIr
+
         original_store = copy.deepcopy(self.store)
         for i, (type, arg) in enumerate(self.ast_fstore[ast_node.name.name].decl.arglist.arglist):
             self.store[arg.name] = argIrs[i]
         retIr, retSeqIr = self.visit(self.ast_fstore[ast_node.name.name].expr)
         self.store = original_store
+        if cache_key is not None:
+            value = IrVar(self.get_var(), retIr.irMetadata)
+            retSeqIr.append(IrAssignment(value, retIr))
+            retIr = value
+            self.stop_call_cache[cache_key] = value
         return retIr, seqIr + retSeqIr 
 
     def visitMap(self, ast_node, inputExpIr=None, inputExpSeqIr = None, name=None, reduce=True, dims=None):
@@ -584,6 +599,8 @@ class ConvertToIr(astVisitor.ASTVisitor):
         return lhsIr + rhsIr
     
     def visitTransRetBasic(self, ast_node):
+        # Reuse is local to one return branch; sibling branches do not dominate it.
+        self.stop_call_cache = {}
         exprIrs = []
         seqIr = []
         for i in range(len(self.shape.keys())):
@@ -665,6 +682,7 @@ class ConvertToIr(astVisitor.ASTVisitor):
         return condIr[1] + [new_assignment, IrIte(new_var, leftIrs, rightIrs)]
     
     def visitOpStmt(self, ast_node):
+        self.stop_call_cache = {}
         original_store = copy.deepcopy(self.store)
         if ast_node.op.op_name == 'Relu' or ast_node.op.op_name == 'Abs' or ast_node.op.op_name == 'HardSigmoid' or ast_node.op.op_name == 'HardTanh' or ast_node.op.op_name == 'Sigmoid':
             self.store['curr'] = IrVar('curr', [IrMetadataElement([1, IrAst.curr_size], 'Neuron', [IrAst.batch_size, 1], False)])

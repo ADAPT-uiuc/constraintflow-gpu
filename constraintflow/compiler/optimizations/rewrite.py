@@ -55,7 +55,7 @@ def rewrite_expr_1(expr):
         new_assignments += new_assignment
     expr.update_parent_child(new_children)
     if isinstance(expr, IrTernary):
-        if not is_div(expr) :
+        if not is_div(expr) and not getattr(expr, "invariant_stop", False):
             new_name = get_var(True)
             new_var = IrVar(new_name, expr.children[0].irMetadata)
             new_assignment = IrAssignment(new_var, IrConvertBoolToFloat(expr.children[0]))

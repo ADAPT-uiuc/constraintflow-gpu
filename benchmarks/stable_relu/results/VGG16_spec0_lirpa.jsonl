@@ -1,3 +1,0 @@
-{"kind": "load", "launch": 0, "pid": 257541, "time": "2026-10-31T01:08:59", "load_s": 17.817019456997514}
-{"kind": "warmup", "launch": 0, "pid": 257541, "time": "2026-10-31T01:10:48", "status": "ok", "spec": "spec0_Kerry_blue_terrier", "time_s": 108.55706359259784, "margin_lower": 7.179487705230713, "lower": [7.179487705230713], "upper": null}
-{"kind": "spec", "launch": 0, "pid": 257541, "time": "2026-10-31T01:12:38", "spec": "spec0_Kerry_blue_terrier", "status": "verified", "load_s": 17.817019456997514, "verify_s": 110.02551238052547, "total_s": 127.84253183752298, "limit_s": 1200.0, "margin_lower": 7.1794891357421875, "rows_lower": [7.1794891357421875], "rows_upper": null, "peak_bytes": 53004858880}

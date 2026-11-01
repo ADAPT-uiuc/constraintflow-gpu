@@ -59,3 +59,5 @@ optimization-results/
 !tests/test_opt_flags.py
 
 !tests/test_stable_relu_ir.py
+
+!tests/test_traversal_stop.py

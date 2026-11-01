@@ -83,7 +83,11 @@ def compile(inputfile, output_path, target='torch'):
     tree = parser.prog()
     
     ast = astBuilder.ASTBuilder().visit(tree)
-    if fuse_affine_subst.get_flag():
+    from constraintflow.compiler.traversal_stop import transform
+    invariant_stops = transform(ast)
+    if invariant_stops:
+        print(f"[traversal-stop] hoisted {invariant_stops} row-invariant predicates")
+    if fuse_affine_subst.get_flag() and not invariant_stops:
         single_bound.inject_affine_skip(ast)
     astTC.ASTTC().visit(ast)
     
@@ -166,6 +170,7 @@ def compile(inputfile, output_path, target='torch'):
         # constant_folding.constant_fold(ir)
         # copyPropagation.copy_proagate(ir)
 
+    ir.flow_invariant_stops = invariant_stops
     cg = codeGen.CodeGen(output_path, target=target)
     cg.visit(ir)
     cg.finish()

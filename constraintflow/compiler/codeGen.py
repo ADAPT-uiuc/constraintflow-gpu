@@ -430,6 +430,9 @@ class CodeGen(irVisitor.IRVisitor):
         if runtime_globals.stable_relu_config is not None:
             from constraintflow.compiler.optimizations import stable_relu_ir
             return stable_relu_ir.emit(self, node, *runtime_globals.stable_relu_config)
+        from constraintflow.compiler.optimizations import conditional_rows
+        if conditional_rows.emit(self, node):
+            return
         if self.target == 'jax':
             from .jaxCodeGen import emit_flow
             emit_flow(self, node, sized, barriers)

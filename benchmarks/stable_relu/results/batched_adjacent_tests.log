@@ -1,8 +1,0 @@
-test_every_flag_defaults_on (test_opt_flags.OptFlagsTest.test_every_flag_defaults_on) ... ok
-test_set_enabled (test_opt_flags.OptFlagsTest.test_set_enabled) ... ok
-test_unknown_flag (test_opt_flags.OptFlagsTest.test_unknown_flag) ... ok
-
-----------------------------------------------------------------------
-Ran 3 tests in 0.000s
-
-OK
