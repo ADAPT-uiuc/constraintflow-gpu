@@ -1,3 +1,4 @@
+import functools
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 
@@ -13,6 +14,19 @@ ACAS_INPUT_SHAPE = (1, 1, 5)
 
 
 #FEAT: other box-input specs (VNN-LIB benchmarks): dataset 'box-<input shape, x-separated>-<outputs>-<spec rows>', e.g. 'box-4-2-2'.
+#FEAT: 'vnnlib:<npz>' datasets: VNN-COMP specs (input box lo/hi, margin rows C y + d > 0), stacked by the harness.
+@functools.lru_cache(maxsize=None)
+def load_vnnlib_specs(path):
+    """{'lo', 'hi': [specs, inputs], 'C': [specs, rows, outputs], 'd': [specs, rows], 'x_shape'} of a harness spec file."""
+    import numpy as np
+    with np.load(path) as f:
+        return {k: torch.from_numpy(f[k]) for k in ('lo', 'hi', 'C', 'd', 'x_shape')}
+
+
+def vnnlib_path(dataset):
+    return dataset[len('vnnlib:'):] if dataset.startswith('vnnlib:') else None
+
+
 def parse_box_dataset(dataset):
     """(input shape, number of outputs, spec rows) of a 'box-...' dataset name, else None."""
     if not dataset.startswith('box-'):
@@ -26,6 +40,9 @@ class ImageDataset:
     mnist_std = torch.tensor([0.3081]).reshape(-1, 1)
     cifar10_mean = torch.tensor([0.4914, 0.4822, 0.4465]).reshape(1, -1, 1, 1)
     cifar10_std = torch.tensor([0.2023, 0.1994, 0.2010]).reshape(1, -1, 1, 1)
+    #FEAT: CIFAR-100 (CIFAR100_TinyImageNet_ResNet benchmark's normalizer).
+    cifar100_mean = torch.tensor([0.5071, 0.4865, 0.4409]).reshape(1, -1, 1, 1)
+    cifar100_std = torch.tensor([0.2673, 0.2564, 0.2761]).reshape(1, -1, 1, 1)
     tinyimagenet_mean = torch.tensor([0.4802, 0.4481, 0.3975]).reshape(1, -1, 1, 1)
     tinyimagenet_std = torch.tensor([0.2302, 0.2265, 0.2262]).reshape(1, -1, 1, 1)
     imagenet_mean = torch.tensor([0.485, 0.456, 0.406]).reshape(1, -1, 1, 1)
@@ -44,6 +61,9 @@ class ImageDataset:
             canonical_dataset = 'cifar10'
             mean, std = ImageDataset.cifar10_mean, ImageDataset.cifar10_std
         #FIX FOR: TinyImageNet was normalized with the CIFAR-10 mean/std; use the benchmark's.
+        elif dataset == 'cifar100':
+            canonical_dataset = 'cifar100'
+            mean, std = ImageDataset.cifar100_mean, ImageDataset.cifar100_std
         elif dataset == 'tinyimagenet':
             canonical_dataset = 'tinyimagenet'
             mean, std = ImageDataset.tinyimagenet_mean, ImageDataset.tinyimagenet_std
@@ -62,6 +82,9 @@ class ImageDataset:
         return ImageDataset._normalization_cache[key]
 
     def create_l(image, network_size, batch_size, eps = 0.01, dataset = 'mnist', no_sparsity=False):
+        #FEAT: a vnnlib image is its box itself: [batch, 2 (lo, hi), ...], no clipping or normalization.
+        if vnnlib_path(dataset):
+            return create_sparse_init(image[:, 0].reshape(batch_size, -1), float('-inf'), batch_size, network_size, no_sparsity)
         l = torch.clip(image - eps, min=0., max=1.)
         mean, std = ImageDataset._normalization(l, dataset)
         if mean is not None:
@@ -71,6 +94,8 @@ class ImageDataset:
         return l
 
     def create_u(image, network_size, batch_size, eps = 0.01, dataset = 'mnist', no_sparsity=False):
+        if vnnlib_path(dataset):
+            return create_sparse_init(image[:, 1].reshape(batch_size, -1), float('inf'), batch_size, network_size, no_sparsity)
         u = torch.clip(image + eps, min=0., max=1.)
         mean, std = ImageDataset._normalization(u, dataset)
         if mean is not None:
@@ -97,6 +122,14 @@ class ImageDataset:
             margins, _ = ImageDataset.get_output_spec_weight_and_bias(X, y, 'margins5')
             weight = torch.cat([margins, -margins[:, :ACAS_SPEC_ROWS - 4]], dim=1)
             return weight, torch.zeros(ACAS_SPEC_ROWS, device=X.device, dtype=X.dtype)
+        #FEAT: vnnlib specs: y indexes the spec file; its margin rows C y + d > 0 (one batch shares d).
+        path = vnnlib_path(dataset)
+        if path:
+            specs = load_vnnlib_specs(path)
+            y = y.to(device='cpu', dtype=torch.long)
+            d = specs['d'][y]
+            assert (d == d[0]).all(), 'specs in one batch must share their offsets d'
+            return (specs['C'][y].to(device=X.device, dtype=X.dtype), d[0].to(device=X.device, dtype=X.dtype))
         #FEAT: box specs trace with a dense placeholder spec of the right size; SpecBounds swaps in each property's.
         box = parse_box_dataset(dataset)
         if box is not None:
@@ -107,6 +140,8 @@ class ImageDataset:
             num_classes = 5
         elif dataset in ['mnist', 'cifar10', 'cifar']:
             num_classes = 10
+        elif dataset == 'cifar100':
+            num_classes = 100
         elif dataset in ['tinyimagenet', 'imagenet']:
             num_classes = 200
         y = y.to(device=X.device)

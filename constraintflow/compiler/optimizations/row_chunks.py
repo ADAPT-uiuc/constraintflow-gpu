@@ -48,18 +48,12 @@ def _cf_progress(k, n_rows):
         _cf_last[0] = now
 
 
-#FEAT: precompile mode (row_chunks --precompile): each loop runs its first chunk only and its results are
-# repeated to the full row count, so every compiled body is built once, on its real shapes.
-_CF_PRECOMPILE = [False]
-
-
 def _cf_chunks(n_rows, chunk):
-    return range(0, chunk if _CF_PRECOMPILE[0] else n_rows, chunk)
+    return range(0, n_rows, chunk)
 
 
 def _cf_cat(parts, n_rows):
-    out = torch.cat(parts, dim=1)
-    return out.repeat([1, n_rows // out.shape[1]] + [1] * (out.dim() - 2)) if _CF_PRECOMPILE[0] else out
+    return torch.cat(parts, dim=1)
 
 
 def _cf_rows(x, r0, r1):
@@ -725,13 +719,7 @@ def main():
     p.add_argument('--budget-gb', type=float, default=20)
     p.add_argument('--compile-bodies', action='store_true',
                    help='torch.compile (Inductor) each loop body; chunk sizes divide the rows so shapes stay fixed')
-    #FEAT: build every compiled body now (Inductor's disk cache), so the first real run only loads them.
-    p.add_argument('--precompile', action='store_true',
-                   help='after the rewrite, run the program once with each loop cut to its first chunk')
-    p.add_argument('--precompile-only', action='store_true', help=argparse.SUPPRESS)
     args = p.parse_args()
-    if args.precompile_only:
-        return precompile(args)
     from constraintflow.lib.training import SpecBounds, load_program
     from constraintflow.lib.globals import device_mode
     import onnx
@@ -757,37 +745,6 @@ def main():
     out = rewrite(source, vars(transformers), inputs, args.budget_gb * 2**30, compile_bodies=args.compile_bodies)
     with open(src_path, 'w') as f:
         f.write(out if out is not None else source)
-    if args.precompile and out is not None:
-        import subprocess
-        subprocess.run([sys.executable, '-m', 'constraintflow.compiler.optimizations.row_chunks'] + sys.argv[1:]
-                       + ['--precompile-only'], check=True)
-
-
-def precompile(args):
-    """Run the chunked program once on a zero box with every loop cut to its first chunk."""
-    import time
-    import onnx
-    from constraintflow.lib.training import SpecBounds, load_program
-    from constraintflow.lib.globals import device_mode
-    if os.environ.get('CF_DISABLE_TF32', '0') not in ('', '0'):
-        torch.backends.cuda.matmul.allow_tf32 = torch.backends.cudnn.allow_tf32 = False
-    device_mode.set_mode('gpu')
-    shape = tuple(map(int, args.input_shape.split('x')))
-    n_out, rows = map(int, args.dataset.split('-')[-2:])
-    inits = [i for i in onnx.load(args.network).graph.initializer if i.data_type == onnx.TensorProto.FLOAT]
-    sb = SpecBounds.__new__(SpecBounds)
-    sb.dataset, sb.cudagraphs, sb.onnx_path = args.dataset, False, args.network
-    sb.params = {i.name: torch.from_numpy(onnx.numpy_helper.to_array(i).copy()).cuda() for i in inits}
-    main_mod = load_program(args.program)
-    sb.programs = {('CROWN', 1): sb._build(main_mod, torch.zeros(1, *shape), 1)}
-    transformers = sys.modules[main_mod.__name__.rsplit('.', 1)[0] + '.transformers']
-    transformers._CF_PRECOMPILE[0] = True
-    x = torch.zeros(1, *shape, device='cuda')
-    t = time.perf_counter()
-    with torch.no_grad():
-        sb.compute_spec_bounds('CROWN', x, x, torch.ones(1, rows, n_out, device='cuda'), torch.zeros(rows, device='cuda'))
-    torch.cuda.synchronize()
-    print(f'[row-chunks] precompiled every loop body in {time.perf_counter() - t:.0f} s', flush=True)
 
 
 if __name__ == '__main__':

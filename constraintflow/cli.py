@@ -130,6 +130,14 @@ def get_dataset(
         from constraintflow.lib.spec import ACAS_INPUT_SHAPE
         return (torch.zeros(batch_size, *ACAS_INPUT_SHAPE, device=device),
                 torch.zeros(batch_size, dtype=torch.long, device=device))
+    #FEAT: vnnlib specs: image i is spec i mod #specs as [lo, hi]; its label is that spec's index.
+    from constraintflow.lib.spec import load_vnnlib_specs, vnnlib_path
+    if vnnlib_path(dataset):
+        specs = load_vnnlib_specs(vnnlib_path(dataset))
+        idx = torch.arange(batch_size) % specs['lo'].shape[0]
+        shape = tuple(specs['x_shape'].tolist())
+        image = torch.stack([specs['lo'][idx], specs['hi'][idx]], 1).reshape(batch_size, 2, *shape)
+        return image.to(device), idx.to(device)
     #FEAT: box specs likewise trace on zero inputs of the shape named in the dataset.
     from constraintflow.lib.spec import parse_box_dataset
     box = parse_box_dataset(dataset)
@@ -142,6 +150,9 @@ def get_dataset(
     elif dataset == "cifar10" or dataset == "cifar":
         transform = transforms.ToTensor()  # keep 32x32
         data = datasets.CIFAR10(root=".", train=train, download=True, transform=transform)
+    #FEAT: CIFAR-100 test set (CIFAR100_TinyImageNet_ResNet benchmark).
+    elif dataset == "cifar100":
+        data = datasets.CIFAR100(root=".", train=train, download=True, transform=transforms.ToTensor())
     elif dataset == "tinyimagenet":
         #FIX FOR: TinyImageNet came from the unlabeled-order train split with a top-left crop; the benchmark verifies the labeled val split, center-cropped.
         from constraintflow.lib.tinyimagenet import TinyImageNetValidation
@@ -499,8 +510,10 @@ def run(
     dtype: str = typer.Option("float32", "--dtype", help="float32, or float64 to compute every float tensor in fp64 (a precision oracle for bound mismatches; compile and run must agree). Read from argv before the imports; listed here so typer accepts it."),
     #FEAT: --profile-comm records CPU-GPU communication per timed batch (lib/comm_profile.py).
     profile_comm: bool = typer.Option(False, "--profile-comm", help="With --num-images: profile each timed batch with torch.profiler and add syncs, alloc_syncs, gpu_idle_pct and sync_calls to its results line; its time goes to profiled_time_s instead of time_s. Warmups are not profiled."),
-    #FEAT: per-batch time limit (warmups are never limited).
-    batch_timeout: float = typer.Option(0.0, "--batch-timeout", min=0, help="With --num-images: end the process if one timed batch runs longer than this many seconds (faulthandler prints 'Timeout' and every thread's stack). Warmups have no limit. 0: no limit."),
+    #FEAT: per-batch time limit.
+    batch_timeout: float = typer.Option(0.0, "--batch-timeout", min=0, help="With --num-images: end the process if one timed batch runs longer than this many seconds (faulthandler prints 'Timeout' and every thread's stack). Warmups: --warmup-timeout. 0: no limit."),
+    #FEAT: per-warmup time limit.
+    warmup_timeout: float = typer.Option(0.0, "--warmup-timeout", min=0, help="With --num-images: end the process if one warmup run takes longer than this many seconds (faulthandler prints 'Timeout' and every thread's stack). 0: no limit."),
 ):
     """
     Run a compiled ConstraintFlow program.
@@ -612,7 +625,7 @@ def run(
     if num_images:
         _run_image_batches(run, _batch, network_file, batch_size, eps, num_images, warmup,
                            results_file, is_cuda, dataset, train,
-                           print_intermediate_results, no_sparsity, profile_comm, batch_timeout)
+                           print_intermediate_results, no_sparsity, profile_comm, batch_timeout, warmup_timeout)
         return
 
     for i in range(warmup):
@@ -705,7 +718,8 @@ def run(
     typer.echo(f"{mem_label}: {peak_bytes} bytes")
 def _run_image_batches(run, _batch, network_file, batch_size, eps, num_images, warmup,
                        results_file, is_cuda, dataset, train,
-                       print_intermediate_results, no_sparsity, profile_comm=False, batch_timeout=0.0):
+                       print_intermediate_results, no_sparsity, profile_comm=False, batch_timeout=0.0,
+                       warmup_timeout=0.0):
     """The --num-images protocol: warmups on the images after the evaluated ones, then one
     timed run per batch. The timed region is the --repeat protocol's (network load and
     build, box, spec, host-to-device copy, bounds, sync); the results line is written after
@@ -723,12 +737,15 @@ def _run_image_batches(run, _batch, network_file, batch_size, eps, num_images, w
     with open(results_file, "w") as out:
         for j in range(warmup):
             lo = num_images + j * batch_size
+            if warmup_timeout:
+                faulthandler.dump_traceback_later(warmup_timeout, exit=True)
             warmup_start = time.perf_counter()
             warmup_stable_relu(run, network_file, batch_size, eps, *_batch(lo), dataset=dataset, train=train,
                 print_intermediate_results=False, no_sparsity=no_sparsity)
             if is_cuda:
                 torch.cuda.synchronize()
             warmup_time = time.perf_counter() - warmup_start
+            faulthandler.cancel_dump_traceback_later()
             typer.echo(f"Warmup run {j + 1}/{warmup}: {warmup_time:.6f} s")
             _write(out, {"kind": "warmup", "index": j, "images": [lo, lo + batch_size],
                          "time_s": warmup_time})

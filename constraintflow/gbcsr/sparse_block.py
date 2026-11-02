@@ -3,6 +3,7 @@ import copy
 import os
 import sys
 import copyreg
+import math
 #FEAT: weak references for the selection-weight cache.
 import weakref
 import torch
@@ -1201,6 +1202,14 @@ def _expanded_matvec(a, b):
 
 
 def bcast_matmul(a, b):
+    #FEAT: a single-sample matrix-vector product under torch.compile is a multiply-sum, so an elementwise-derived
+    # matrix (|W|, clamp(W)) fuses into the sum instead of being written out for cuBLAS (N33: 3 x 62.5 MiB).
+    if (torch.compiler.is_compiling() and a.dim() >= 2 and b.dim() >= 2
+            and math.prod(a.shape[:-2]) == 1 and math.prod(b.shape[:-2]) == 1):
+        if b.shape[-1] == 1:
+            return (a * b.transpose(-1, -2)).sum(-1, keepdim=True)
+        if a.shape[-2] == 1:
+            return (a.transpose(-1, -2) * b).sum(-2, keepdim=True)
     if a.dim() == 3 and b.dim() == 3 and a.shape[0] > 1 and b.shape[0] == a.shape[0] and a.stride(0) != 0:
         #FEAT: per-sample matrices times one batch-expanded matrix or vector: one tall GEMM over the stacked rows.
         #FEAT: a tiny inner dimension (Inductor unrolls sums up to 8 terms) is a multiply-sum that fuses with its

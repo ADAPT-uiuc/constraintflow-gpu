@@ -532,7 +532,7 @@ def _collapse_affine(layers):
     nonlinear sources s, one Linear per source plus Adds; the affine layers in between go. Back-substitution
     through affine layers is exact, so only rounding changes. Returns `layers` unchanged when not applicable."""
     affine = (LayerType.Linear, LayerType.Add)
-    if (any(l.type not in affine + (LayerType.Input, LayerType.ReLU, LayerType.Sigmoid, LayerType.Mul) for l in layers)
+    if (any(l.type not in affine + (LayerType.Input, LayerType.ReLU, LayerType.Sigmoid, LayerType.Tanh, LayerType.Mul) for l in layers)
             or any(l.type == LayerType.Linear and (l.weight.dim() != 2 or l.weight.requires_grad
                                                    or (l.bias is not None and l.bias.requires_grad)) for l in layers)):
         return layers
@@ -778,11 +778,13 @@ def parse_onnx_layers(
             source_shape = tensor_shapes[nd_inps[0]]
             layer.shape = source_shape + [1] * (4 - len(source_shape))
 
-        elif operation == 'Sigmoid':
+        #FEAT: Tanh, as Sigmoid (ERAN tanh networks).
+        elif operation in ('Sigmoid', 'Tanh'):
             names_hash[str(net.graph.node[cur_layer].output[0])] = index
             parents[index] = [names_hash[str(net.graph.node[cur_layer].input[0])]]
             
-            layer = Layer(type=LayerType.Sigmoid, identifier=index, parents=parents[index])
+            layer = Layer(type=LayerType.Sigmoid if operation == 'Sigmoid' else LayerType.Tanh,
+                          identifier=index, parents=parents[index])
             layers.append(layer)
             source_shape = tensor_shapes[nd_inps[0]]
             layer.shape = source_shape + [1] * (4 - len(source_shape))
@@ -873,7 +875,7 @@ def parse_onnx_layers(
 
         if operation in ('MatMul', 'Gemm'):
             tensor_shapes[node.output[0]] = [1, layer.shape[1]]
-        elif operation in ('Relu', 'Sigmoid', 'Add'):
+        elif operation in ('Relu', 'Sigmoid', 'Tanh', 'Add'):
             tensor_shapes[node.output[0]] = tensor_shapes[nd_inps[0]]
         elif operation == 'Concat':
             tensor_shapes[node.output[0]] = result_shape

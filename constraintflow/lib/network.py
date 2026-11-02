@@ -103,6 +103,7 @@ class LayerType(Enum):
 JIT_OP_FOR_LAYER = {
     LayerType.ReLU: 'Relu',
     LayerType.Sigmoid: 'Sigmoid',
+    LayerType.Tanh: 'Tanh',  #FEAT: ERAN tanh networks
     LayerType.Linear: 'Affine',
     LayerType.Conv2D: 'Affine',
     LayerType.Add: 'Add',
