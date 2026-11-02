@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 
 from constraintflow.compiler.ir import (
-    IrAssignment, IrConst, IrFConv2d, IrPatchesToDense, IrRowGather,
+    IrAssignment, IrConst, IrFConv2d, IrPatchesToDense, IrRowGather, IrTorchDiagEmbed,
     IrSelectedPatchesToDense, IrSimpleBinary, IrSimpleUnary, IrTensorClamp,
     IrTorchExpand, IrTorchMatmul, IrTorchPad, IrTorchPermute, IrTorchRepeat, IrTorchReshape,
     IrTorchSlice, IrTorchSqueeze, IrTorchTranspose, IrTorchUnsqueeze, IrTorchView, IrTorchWhere,
@@ -76,8 +76,11 @@ class Shapes:
 _ELEMENTWISE = (IrSimpleBinary, IrSimpleUnary, IrTensorClamp, IrTorchWhere)
 _VIEWS = (IrTorchReshape, IrTorchView, IrTorchExpand)
 # Elementwise arithmetic over views: Inductor fuses a row gather into it, so it costs only the selected rows.
+#FIX FOR: identity patches (pad(diag_embed(ones))) were built for every row before the row kernel
+#         (N35: 2 x 400 MiB for 65536 rows); diag_embed lowers to a pointwise select, so gather it inside.
 _POINTWISE = _ELEMENTWISE + _VIEWS + (IrVar, IrConst, IrTorchSqueeze, IrTorchUnsqueeze, IrTorchPad,
-                                      IrTorchSlice, IrTorchPermute, IrTorchTranspose, IrTorchRepeat, int, float)
+                                      IrTorchSlice, IrTorchPermute, IrTorchTranspose, IrTorchRepeat,
+                                      IrTorchDiagEmbed, int, float)
 
 
 class SelectRows:
