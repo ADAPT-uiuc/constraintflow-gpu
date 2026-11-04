@@ -417,7 +417,7 @@ def convert_to_ir_ttb(expr, layer_index, while_iteration):
                 inputIr = rhs
             else:
                 raise Exception("NOT IMPLEMENTED")
-            output = IrSimpleUnary(inputIr, "sigma")
+            output = IrSimpleUnary(inputIr, json_obj.get("op", "sigma"))
 
         elif json_obj["method"] == "lambda":
             output = IrLambda(json_obj["op"])
@@ -1789,7 +1789,8 @@ def _collect_ir_tree_nodes(obj, nodes):
     visited, pending = set(), [obj]
     while pending:
         obj = pending.pop()
-        if id(obj) in visited:
+        #FIX FOR: most of the walk was visiting numbers and strings in metadata lists.
+        if type(obj) in opt_flags.ATOMS or id(obj) in visited:
             continue
         visited.add(id(obj))
         if isinstance(obj, IrAst):
@@ -1800,7 +1801,7 @@ def _collect_ir_tree_nodes(obj, nodes):
         elif isinstance(obj, (list, tuple, set)):
             pending.extend(obj)
         elif hasattr(obj, '__dict__'):
-            pending.extend(v for k, v in vars(obj).items() if k not in opt_flags.ANALYSIS_EDGES)
+            pending.extend(v for k, v in vars(obj).items() if k not in opt_flags.TREE_SKIP)
 
 
 def _rename_vars(obj, rename):

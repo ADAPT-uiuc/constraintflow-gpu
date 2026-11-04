@@ -6,6 +6,9 @@ import copyreg
 import math
 #FEAT: weak references for the selection-weight cache.
 import weakref
+from torch.utils.weak import WeakIdKeyDictionary
+from constraintflow.lib import s_shaped
+from constraintflow.lib.s_shaped import sigma_tangent, tanh_tangent
 import torch
 import torch.nn.functional as F
 import time
@@ -75,6 +78,16 @@ def unary_operation(x, op, json_list = None, block_index = -1, unary_index = -1,
                 "output" : len(json_list)
             })
         z = torch.sigmoid(x)
+    #FEAT: table-backed tangent points of S-shaped activations.
+    elif op in s_shaped.FUNCTIONS:
+        if json_list is not None:
+            json_list.append({
+                "method": "torch_sigmoid",
+                "op": op,
+                "block": "json_list_" + str(block_index),
+                "output" : len(json_list)
+            })
+        z = s_shaped.FUNCTIONS[op](x)
     else:
         if json_list is not None:
             
@@ -935,6 +948,18 @@ def _selection_lowering(sel, weight, x_spatial, stride, padding, output_padding)
     return select
 
 
+#FIX FOR: the "forward" lowering flipped its weight on the GPU at every call; one flip per weight per run is enough.
+_flipped_weights = WeakIdKeyDictionary()
+
+
+def _forward_conv(x, weight, padding):
+    """Stride-1 transposed conv as the forward conv with the kernel flipped and in/out channels swapped."""
+    hit = _flipped_weights.get(weight)
+    if hit is None or hit[0] != weight._version:
+        hit = _flipped_weights[weight] = (weight._version, weight.transpose(0, 1).flip(2, 3).contiguous())
+    return F.conv2d(x, hit[1], padding=(weight.shape[2] - 1 - padding[0], weight.shape[3] - 1 - padding[1]))
+
+
 def _conv_transpose_lowerings(weight, x_spatial, stride, padding, output_padding, sel=None):
     def plain(x):
         return F.conv_transpose2d(x, weight, stride=stride, padding=padding,
@@ -948,13 +973,8 @@ def _conv_transpose_lowerings(weight, x_spatial, stride, padding, output_padding
     if (stride == [1, 1] and output_padding == [0, 0]
             and padding[0] < kx and padding[1] < ky):
         # Stride 1: the forward conv with the kernel flipped and in/out channels swapped.
-        pad = (kx - 1 - padding[0], ky - 1 - padding[1])
-        flipped = []
-
         def forward(x):
-            if not flipped:
-                flipped.append(weight.transpose(0, 1).flip(2, 3).contiguous())
-            return F.conv2d(x, flipped[0], padding=pad)
+            return _forward_conv(x, weight, padding)
 
         lowerings["forward"] = forward
         lowerings["forward_chunked"] = lambda x: _split_batch(forward, x)
@@ -1056,9 +1076,20 @@ def _conv_transpose2d_op(x: torch.Tensor, weight: torch.Tensor, stride: list[int
                          padding: list[int], output_padding: list[int]) -> torch.Tensor:
     #FEAT: selection weights get their own tuning key (a dense weight of the same shape must not reuse it).
     sel = _channel_selection(weight) if CONV_TRANSPOSE_TUNE else None
-    lowerings = _conv_transpose_lowerings(weight, list(x.shape[2:]), stride, padding, output_padding, sel)
     key = (tuple(x.shape), tuple(x.stride()), tuple(weight.shape), x.dtype, x.device,
            tuple(stride), tuple(padding), tuple(output_padding), sel is not None)
+    #FIX FOR: every call built all candidate lowerings in Python though the tuner needs them only once (N33: ~330 calls per image).
+    choice = _conv_transpose_choice.get(key)
+    if choice == "plain":
+        return F.conv_transpose2d(x, weight, stride=stride, padding=padding, output_padding=output_padding).contiguous()
+    if choice == "chunked":
+        return _split_batch(lambda part: F.conv_transpose2d(part, weight, stride=stride, padding=padding,
+                                                            output_padding=output_padding), x).contiguous()
+    if choice == "forward":
+        return _forward_conv(x, weight, padding).contiguous()
+    if choice == "forward_chunked":
+        return _split_batch(lambda part: _forward_conv(part, weight, padding), x).contiguous()
+    lowerings = _conv_transpose_lowerings(weight, list(x.shape[2:]), stride, padding, output_padding, sel)
     # The fake kernel promises a contiguous result.
     return lowerings[_choose_lowering(key, x, lowerings)](x).contiguous()
 
@@ -1155,6 +1186,20 @@ _conv_transpose2d_op.register_autograd(_conv_transpose2d_backward,
 
 def conv_transpose2d(x, weight, stride=1, padding=0, output_padding=0):
     return _conv_transpose2d_op(x, weight, _pair(stride), _pair(padding), _pair(output_padding))
+
+
+#FIX FOR: Inductor merged F.pad with the computation feeding it and returned wrong coefficients (ResNet50 row chunks).
+@torch.library.custom_op("cf::realized_pad", mutates_args=())
+def realized_pad(x: torch.Tensor, pad: list[int]) -> torch.Tensor:
+    return F.pad(x, pad).contiguous()
+
+
+@realized_pad.register_fake
+def _(x, pad):
+    size = list(x.shape)
+    for d in range(len(pad) // 2):
+        size[-1 - d] += pad[2 * d] + pad[2 * d + 1]
+    return x.new_empty(size)
 
 
 def patches_to_dense(pieces, batch, oc, ox, oy, ic, kx, ky, ix, iy, px, py, sx, sy):
@@ -1312,7 +1357,7 @@ def safe_div(num, den):
 
 
 # Called by name from generated flow code; codeGen imports and flow_shapes evaluates them.
-RUNTIME_HELPERS = {f.__name__: f for f in (col2im_columns, patches_to_dense, conv_transpose2d, bcast_matmul, training_bcast_matmul, training_einsum, safe_div)}
+RUNTIME_HELPERS = {f.__name__: f for f in (s_shaped.sigma_tangent, s_shaped.tanh_tangent, col2im_columns, patches_to_dense, conv_transpose2d, bcast_matmul, training_bcast_matmul, training_einsum, safe_div)}
 # Imported only by --training builds, so verification code is unchanged.
 TRAINING_HELPERS = {'training_bcast_matmul', 'training_einsum'}
 

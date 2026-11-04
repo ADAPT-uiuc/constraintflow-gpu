@@ -32,7 +32,8 @@ import sys
 import torch
 
 ROWS_HELPER = '''
-from constraintflow.gbcsr.sparse_block import selection_gather_map as _cf_selection_map
+from constraintflow.gbcsr.sparse_block import selection_gather_map as _cf_selection_map, realized_pad as _cf_pad
+from constraintflow.lib.pre_grad_cse import PRE_GRAD_CSE  # loop bodies use it; normal builds don't import it
 import os as _cf_os
 import time as _cf_time
 _CF_PROGRESS = _cf_os.environ.get('CF_ROW_CHUNKS_PROGRESS', '0') not in ('', '0')
@@ -185,6 +186,7 @@ class _ChunkBody(ast.NodeTransformer):
         self.row_vars, self.sliced_vars = row_vars, sliced_vars
         self.hoisted = []          # (name, expression) computed once before the loop
         self.periods = []          # rows of each tiled source (positions per channel)
+        self.whole_periods = []    # the chunk size must be a multiple of these
         self.failed = None
 
     def _is_row(self, node):
@@ -215,14 +217,61 @@ class _ChunkBody(ast.NodeTransformer):
         return ast.Call(ast.Name('_cf_rows', ast.Load()),
                         [ast.Name(name, ast.Load()), ast.Name('_r0', ast.Load()), ast.Name('_r1', ast.Load())], [])
 
-    def _row_axis(self, node):
-        """(axis of the rows, rank) of a row tensor; the axis is None unless its first non-unit axis has N."""
+    def _row_span(self, node):
+        """(first row axis, number of row axes, rank): rows on one axis of size N, or split as channels x
+        positions over two adjacent axes; the first axis is None when the first non-unit axis is neither."""
         try:
             shape = self.probe.shape(node)
         except Exception:
-            return None, 0
-        d = next((k for k, z in enumerate(shape or ()) if z != 1), None)
-        return (d if d is not None and shape[d] == self.n_rows else None), len(shape or ())
+            return None, 0, 0
+        shape = shape or ()
+        d = next((k for k, z in enumerate(shape) if z != 1), None)
+        if d is not None and shape[d] == self.n_rows:
+            return d, 1, len(shape)
+        #FEAT: rows split into channels x positions (DPE reshapes [1, N, K] to [1, C, P, K]).
+        if d is not None and d + 1 < len(shape) and shape[d + 1] > 1 and shape[d] * shape[d + 1] == self.n_rows:
+            return d, 2, len(shape)
+        return None, 0, len(shape)
+
+    def _row_axis(self, node):
+        """(last axis carrying the rows, rank) of a row tensor; None unless its first non-unit axes hold N."""
+        d, span, ndim = self._row_span(node)
+        return (None if d is None else d + span - 1), ndim
+
+    #FEAT: a reshape that splits the N rows into C channels x P positions keeps whole channels together when
+    # every chunk is a multiple of P, so it becomes the same reshape with _n // P channels.
+    def _split_rows(self, node):
+        lst = node.args[0] if len(node.args) == 1 and isinstance(node.args[0], (ast.List, ast.Tuple)) else None
+        elts = lst.elts if lst is not None else node.args
+        if not all(isinstance(e, ast.Constant) and isinstance(e.value, int) for e in elts):
+            return False
+        sizes = [e.value for e in elts]
+        k = next((i for i, z in enumerate(sizes) if z != 1), None)
+        if k is None or k + 1 >= len(sizes) or sizes[k + 1] <= 1 or sizes[k] * sizes[k + 1] != self.n_rows:
+            return False
+        positions = sizes[k + 1]
+        elts[k] = ast.BinOp(ast.Name('_n', ast.Load()), ast.FloorDiv(), ast.Constant(positions))
+        self.periods.append(positions)
+        self.whole_periods.append(positions)
+        return True
+
+    #FEAT: a row's patches_to_dense gather depends only on its position, so a chunk of whole channels is the same call with fewer channels.
+    def _patches_rows(self, node):
+        try:
+            batch, channels, ox, oy = [ast.literal_eval(a) for a in node.args[1:5]]
+        except ValueError:
+            self.failed = self.failed or 'patches_to_dense with non-constant geometry'
+            return node
+        positions = ox * oy
+        if batch != 1 or channels * positions != self.n_rows or self._row_axis(node.args[0])[0] is None \
+                or any(self._is_row(a) for a in node.args[1:]):
+            self.failed = self.failed or f'patches_to_dense that does not have the {self.n_rows} rows as channels x positions'
+            return node
+        node.args[0] = self.visit(node.args[0])
+        node.args[2] = ast.BinOp(ast.Name('_n', ast.Load()), ast.FloorDiv(), ast.Constant(positions))
+        self.periods.append(positions)
+        self.whole_periods.append(positions)
+        return node
 
     def _method_error(self, node):
         """Why a method call on a row tensor may mix rows, or None if it keeps them apart."""
@@ -257,6 +306,14 @@ class _ChunkBody(ast.NodeTransformer):
             f = node.func
             name = f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else None
             operands = node.args + [k.value for k in node.keywords]
+        #FEAT: pad on dimensions after the row axis keeps rows apart (residual merges pad patches, e.g. ResNets).
+        if name == 'pad' and len(operands) > 1 and self._is_row(operands[0]):
+            d, ndim = self._row_axis(operands[0])
+            try:
+                widths = ast.literal_eval(operands[1])
+            except ValueError:
+                return 'pad with non-constant widths on a row tensor'
+            return None if d is not None and len(widths) // 2 <= ndim - d - 1 else 'pad at or before the row axis'
         if name not in ROW_FIRST:
             return f'{name or ast.unparse(node)[:40]} on a row tensor'
         if not operands or not self._is_row(operands[0]) or any(self._is_row(o) for o in operands[1:]):
@@ -283,6 +340,25 @@ class _ChunkBody(ast.NodeTransformer):
             ndim = len(self.probe.shape(node)) if elementwise else None
         except Exception:
             ndim = None
+        #FEAT: with the rows split as channels x positions, a column-side operand may vary over positions (every
+        # chunk holds whole channels) but not over channels, which would need slicing per chunk.
+        d, span, _ = self._row_span(node) if elementwise else (None, 0, 0)
+        if span == 2:
+            for item in [v for _, v in ast.iter_fields(node) for v in (v if isinstance(v, list) else [v])]:
+                if isinstance(item, ast.expr) and not isinstance(item, (ast.Constant, ast.List, ast.Tuple)) \
+                        and not self._is_row(item):
+                    try:
+                        shape = self.probe.shape(item) or ()
+                    except Exception:
+                        shape = None
+                    c = None if shape is None else d - (ndim - len(shape))
+                    if shape is None or c >= 0 and shape[c] != 1:
+                        self.failed = self.failed or 'operand aligned with the channels of split rows'
+            for field, value in ast.iter_fields(node):
+                items = value if isinstance(value, list) else [value]
+                new = [self.visit(i) if isinstance(i, ast.AST) and self._is_row(i) else i for i in items]
+                setattr(node, field, new if isinstance(value, list) else new[0])
+            return node
         for field, value in ast.iter_fields(node):
             items = value if isinstance(value, list) else [value]
             new = []
@@ -300,9 +376,12 @@ class _ChunkBody(ast.NodeTransformer):
         if not self._is_row(node):
             return node
         func = node.func
+        if isinstance(func, ast.Name) and func.id == 'patches_to_dense':
+            return self._patches_rows(node)
         if isinstance(func, ast.Attribute) and func.attr in ('reshape', 'view', 'expand') and self._is_row(func.value):
             #FIX FOR: a reshape without N as its leading row entry (e.g. one merging rows) was kept as written.
-            if not _rewrite_row_literals(node, self.n_rows) or self.n_rows > 1 and self._row_axis(func.value)[0] is None:
+            if not (_rewrite_row_literals(node, self.n_rows) or func.attr != 'expand' and self._split_rows(node)) \
+                    or self.n_rows > 1 and self._row_axis(func.value)[0] is None:
                 self.failed = self.failed or f'{func.attr} that does not keep the {self.n_rows} rows as its leading axis'
             node.func.value = self.visit(func.value)
             return node
@@ -466,7 +545,7 @@ def _chunk_body(stmts, probe, n_rows, loop, outside, users, two_stage=False, sel
     """Loop statements rewritten for rows [_r0, _r1), hoisted expressions, exported results, source periods."""
     row_vars = {stmts[i].targets[0].id for i in loop}
     sliced = {stmts[i].targets[0].id for i in outside}
-    body, hoisted, periods, selection_maps = [], [], [], []
+    body, hoisted, periods, whole_periods, selection_maps = [], [], [], [], []
     for i in sorted(loop):
         stmt = copy.deepcopy(stmts[i])
         if two_stage:
@@ -484,6 +563,7 @@ def _chunk_body(stmts, probe, n_rows, loop, outside, users, two_stage=False, sel
             raise ValueError(f'statement {i} ({stmts[i].targets[0].id}): {t.failed}')
         hoisted += t.hoisted
         periods += t.periods
+        whole_periods += t.whole_periods
         body.append(stmt)
     exported = sorted({stmts[i].targets[0].id for i in loop
                        if any(j not in loop for j in users[i]) or isinstance(stmts[-1], ast.Return)
@@ -493,7 +573,7 @@ def _chunk_body(stmts, probe, n_rows, loop, outside, users, two_stage=False, sel
         if not _per_row(shape, n_rows):
             raise ValueError(f'{name} {shape} is used after the loop but is not a per-neuron result')
     pre = [ast.parse(f'{i}, {sc} = {e}').body[0] for i, sc, e in selection_maps]
-    return pre + [ast.Assign([ast.Name(n, ast.Store())], e) for n, e in hoisted], body, exported, periods
+    return pre + [ast.Assign([ast.Name(n, ast.Store())], e) for n, e in hoisted], body, exported, periods, whole_periods
 
 
 def _emit_loop(n_rows, chunk, pre, body, exported, k=0):
@@ -569,6 +649,16 @@ def _repeat(param, times, ndim):
                     [ast.List([ast.Constant(1), ast.Constant(times)] + [ast.Constant(1)] * (ndim - 2), ast.Load())], [])
 
 
+#FIX FOR: a compiled body merged F.pad with its input and produced unsound bounds (N40); keep pad out of the fusion.
+class _RealizedPads(ast.NodeTransformer):
+    def visit_Call(self, node):
+        self.generic_visit(node)
+        f = node.func
+        if isinstance(f, ast.Attribute) and f.attr == 'pad' and isinstance(f.value, ast.Name) and f.value.id == 'F':
+            node.func = ast.Name('_cf_pad', ast.Load())
+        return node
+
+
 INDUCTOR = ("dict(fullgraph=True, dynamic=False, options={'layout_optimization': False, "
             "'triton.autotune_pointwise': False, 'pre_grad_custom_pass': PRE_GRAD_CSE, "
             "'post_grad_custom_post_pass': SharedLhsMM()})")
@@ -577,10 +667,10 @@ INDUCTOR = ("dict(fullgraph=True, dynamic=False, options={'layout_optimization':
 def _emit_compiled(k, n_rows, chunk, mode, probe, pre, body, exported, module_globals):
     """A torch.compile'd body over one chunk, the eager loop calling it, and the statements around it."""
     t = _BodyArgs(probe, chunk, mode, k)
-    body = [t.visit(copy.deepcopy(s)) for s in body]
+    body = [_RealizedPads().visit(t.visit(copy.deepcopy(s))) for s in body]
     defined = {tgt.id for s in body for tgt in s.targets}
     loads = set().union(*(_names(s.value) for s in body)) - defined - {a for a, _ in t.args}
-    free = sorted(n for n in loads if n not in module_globals and n != "_cf_select")  # helper: a module global
+    free = sorted(n for n in loads if n not in module_globals and n not in ("_cf_select", "_cf_pad"))  # helper: a module global
     params = [a for a, _ in t.args] + free
     fn = ast.FunctionDef(f'_cf_body_{k}', ast.arguments([], [ast.arg(p) for p in params], None, [], [], None, []),
                          body + [ast.Return(ast.Tuple([ast.Name(n, ast.Load()) for n in exported], ast.Load()))],
@@ -649,15 +739,18 @@ def rewrite(source, module_globals, inputs, budget, report=print, compile_bodies
     for c, (n_rows, loop, outside) in enumerate(comps):
         per_row = max(probe.stmt_bytes.get(i, 0) for i in loop) / n_rows
         target = max(1, int(budget / (3 * per_row)))
-        pre, body, exported, periods = _chunk_body(stmts, probe, n_rows, loop, outside, users,
+        pre, body, exported, periods, whole_periods = _chunk_body(stmts, probe, n_rows, loop, outside, users,
                                                     two_stage=compile_bodies, selections=selections)
         if compile_bodies:
             chunk, mode = _fixed_chunk(n_rows, target, periods)
+            if any(chunk % p for p in whole_periods):
+                raise ValueError(f'chunk of {chunk} rows splits a channel of patches_to_dense ({sorted(set(whole_periods))} positions)')
             defs_c, pre, header, post = _emit_compiled(c, n_rows, chunk, mode, probe, pre, body, exported,
                                                        module_globals)
             module_defs += defs_c
         else:
-            chunk = target
+            whole = math.lcm(*whole_periods) if whole_periods else 1
+            chunk = max(whole, target - target % whole)
             pre, header, post = _emit_loop(n_rows, chunk, pre, body, exported, c)
         units[('l', c)] = pre + [header] + post
         for i in loop:
@@ -715,12 +808,11 @@ def main():
     p.add_argument('program')
     p.add_argument('--network', required=True)
     p.add_argument('--dataset', required=True)
-    p.add_argument('--input-shape', required=True, help='e.g. 3x224x224')
+    p.add_argument('--input-shape', help='e.g. 3x224x224; default: the ONNX input')
     p.add_argument('--budget-gb', type=float, default=20)
     p.add_argument('--compile-bodies', action='store_true',
                    help='torch.compile (Inductor) each loop body; chunk sizes divide the rows so shapes stay fixed')
     args = p.parse_args()
-    from constraintflow.lib.training import SpecBounds, load_program
     from constraintflow.lib.globals import device_mode
     import onnx
     device_mode.set_mode('gpu')
@@ -732,16 +824,22 @@ def main():
         source = f.read()
     with open(src_path, 'w') as f:      # load the unchunked program to build the inputs
         f.write(source)
-    main_mod = load_program(args.program)
-    shape = tuple(map(int, args.input_shape.split('x')))
-    inits = [i for i in onnx.load(args.network).graph.initializer if i.data_type == onnx.TensorProto.FLOAT]
+    #FEAT: import the program as cli.py run does, so normal verification builds work (not only --training ones).
+    sys.path.insert(0, os.path.abspath(args.program))
+    import main as main_mod
+    graph = onnx.load(args.network).graph
+    init_names = {i.name for i in graph.initializer}
+    data_input = next(i for i in graph.input if i.name not in init_names)
+    shape = (tuple(map(int, args.input_shape.split('x'))) if args.input_shape
+             else tuple(d.dim_value for d in data_input.type.tensor_type.shape.dim)[1:])
+    inits = [i for i in graph.initializer if i.data_type == onnx.TensorProto.FLOAT]
     params = {i.name: torch.from_numpy(onnx.numpy_helper.to_array(i).copy()).cuda() for i in inits}
     x = torch.zeros(1, *shape, device='cuda')
     y = torch.zeros(1, dtype=torch.long, device='cuda')
     network, abs_elem = main_mod.build(args.network, 1, 0.0, x, y, args.dataset, False, False, False,
                                        initializers=params, input_box=(x, x))
     inputs = main_mod.explode_inputs(abs_elem, 1)
-    transformers = sys.modules[main_mod.__name__.rsplit('.', 1)[0] + '.transformers']
+    transformers = sys.modules['transformers']
     out = rewrite(source, vars(transformers), inputs, args.budget_gb * 2**30, compile_bodies=args.compile_bodies)
     with open(src_path, 'w') as f:
         f.write(out if out is not None else source)
