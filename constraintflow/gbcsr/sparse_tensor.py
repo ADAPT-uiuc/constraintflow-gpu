@@ -2,7 +2,9 @@ import builtins
 from pprint import pprint
 import inspect
 from typing import Any
+import numpy as np
 import torch
+from constraintflow.lib.s_shaped import FUNCTIONS
 import math
 import copy
 import time
@@ -230,11 +232,17 @@ def find_connected_blocks(start_indices, end_indices):
     n = len(start_indices)
     visited = [False] * n
     blocks = []
+    if n == 0:
+        return {}
+    #FIX FOR: comparing every pair in Python was a large part of compile time; same test, computed at once.
+    starts = np.array([[int(x) for x in s] for s in start_indices]).reshape(n, -1)
+    ends = np.array([[int(x) for x in e] for e in end_indices]).reshape(n, -1)
+    overlap = ((starts[:, None] < ends[None]) & (starts[None] < ends[:, None])).all(-1)
     def dfs(node, block):
         visited[node] = True
         block.append(node)
-        for neighbor in range(n):
-            if not visited[neighbor] and block_overlap([start_indices[node], end_indices[node]], [start_indices[neighbor], end_indices[neighbor]]):
+        for neighbor in np.flatnonzero(overlap[node]).tolist():
+            if not visited[neighbor]:
                 dfs(neighbor, block)
     for node in range(n):
         if not visited[node]:
@@ -1130,6 +1138,11 @@ Blocks Types: "
             assert(self.type == float or self.type == int)
             dense_const = 1 / (1 + math.exp(-self.dense_const))
             op_name = 'sigma'
+        #FEAT: table-backed tangent points of S-shaped activations.
+        elif op in ('sigma_tangent', 'tanh_tangent'):
+            assert(self.type == float or self.type == int)
+            dense_const = float(FUNCTIONS[op](torch.tensor(float(self.dense_const))))
+            op_name = op
         else:
             assert(False)
 

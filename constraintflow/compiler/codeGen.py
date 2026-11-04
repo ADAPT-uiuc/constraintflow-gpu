@@ -1387,8 +1387,8 @@ class CodeGen(irVisitor.IRVisitor):
             op_str = 'operator.neg'
         elif op == 'not':
             op_str = 'operator.not_'
-        elif op == 'sigma':
-            op_str = "'sigma'"
+        elif op in ('sigma', 'sigma_tangent', 'tanh_tangent'):
+            op_str = repr(op)
         else:
             raise Exception('OP NOT IDENTIFIED', op)
         return self.visit(node.children[0]) + '.unary(' + op_str + ')'
@@ -1557,8 +1557,8 @@ class CodeGen(irVisitor.IRVisitor):
             op_name = 'operator.neg'
         elif node.op == 'not':
             op_name = 'operator.not_'
-        elif node.op == 'sigma':
-            op_name = f"'sigma'"
+        elif node.op in ('sigma', 'sigma_tangent', 'tanh_tangent'):
+            op_name = repr(node.op)
         elif node.op == 'any':
             op_name = 'any'
             flag = True
@@ -1599,6 +1599,8 @@ class CodeGen(irVisitor.IRVisitor):
             op_str = 'operator.not_'
         elif op == 'sigma':
             return 'torch.sigmoid(' + self.visit(node.children[0]) + ')'
+        elif op in ('sigma_tangent', 'tanh_tangent'):
+            return op + '(' + self.visit(node.children[0]) + ')'
         else:
             raise Exception('OP NOT IDENTIFIED', op)
         return op_str + '(' + self.visit(node.children[0]) + ')'

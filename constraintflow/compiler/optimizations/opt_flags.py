@@ -21,6 +21,9 @@ FLAGS = (
 # to the rest of the program. Tree walks that skip them visit only the code
 # actually reachable through statements, children and operator attributes.
 ANALYSIS_EDGES = frozenset(('uses', 'parents', 'defs'))
+ATOMS = frozenset((int, float, str, bool, type(None)))
+#FIX FOR: tree walks spent most of their time in the metadata on every expression, which holds no IR to visit.
+TREE_SKIP = ANALYSIS_EDGES | {'irMetadata'}
 
 _enabled = set(FLAGS)
 

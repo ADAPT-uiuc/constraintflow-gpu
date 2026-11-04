@@ -364,6 +364,9 @@ class ConvertToIr(astVisitor.ASTVisitor):
                 seqIr.append(new_var_assignment)
             else:
                 argIrs.append(exprIr)
+        #FEAT: reserved names call the backend's tangent-point tables (constraintflow/lib/s_shaped.py).
+        if ast_node.name.name in ('sigma_tangent', 'tanh_tangent'):
+            return IrUnaryOp(argIrs[0], ast_node.name.name), seqIr
         fn = self.ast_fstore[ast_node.name.name]
         cache_key = None
         if getattr(fn.expr, 'invariant_stop', False) and all(isinstance(x, (IrVar, IrConst)) for x in argIrs):

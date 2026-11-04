@@ -147,7 +147,8 @@ def _walk_tree(obj, out):
     seen, pending = set(), [obj]
     while pending:
         obj = pending.pop()
-        if id(obj) in seen:
+        #FIX FOR: most of the walk was visiting numbers and strings in metadata lists.
+        if type(obj) in opt_flags.ATOMS or id(obj) in seen:
             continue
         seen.add(id(obj))
         if isinstance(obj, IrAst):
@@ -155,7 +156,7 @@ def _walk_tree(obj, out):
         if isinstance(obj, (list, tuple, set)):
             pending.extend(obj)
         elif hasattr(obj, '__dict__'):
-            pending.extend(v for k, v in vars(obj).items() if k not in opt_flags.ANALYSIS_EDGES)
+            pending.extend(v for k, v in vars(obj).items() if k not in opt_flags.TREE_SKIP)
 
 
 def _reads(stmt):
