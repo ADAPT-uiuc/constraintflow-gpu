@@ -437,6 +437,24 @@ def chunk_sizes(chunk_size):
     return sizes
 
 
+#FIX FOR: the rest went to the smallest size covering it, so 260 rows ran as a 500-row block (240 padded
+#         rows of real work; N8 _cr_rows_3). Rows are refined independently, so the split changes no value.
+def block_plan(rows, sizes):
+    """Block sizes covering `rows`: full blocks of the largest size, then the smallest size covering the
+    rest if that pads fewer rows than the smallest size, else the largest size that fits, repeated."""
+    plan = []
+    while rows > 0:
+        if rows >= sizes[-1]:
+            size = sizes[-1]
+        else:
+            cover = next(c for c in sizes if c >= rows)
+            fits = [c for c in sizes if c <= rows]
+            size = cover if not fits or cover - rows < sizes[0] else fits[-1]
+        plan.append(size)
+        rows -= min(size, rows)
+    return plan
+
+
 def refine_stable(lower, upper, kernel, args, chunk_size):
     """Refine uncertain rows only; pad the last chunk to avoid recompilation.
 
@@ -447,7 +465,7 @@ def refine_stable(lower, upper, kernel, args, chunk_size):
     do. The dense final specification must never use this shortcut.
 
     A tuple of chunk sizes compiles one kernel per size (capped at the layer
-    width): full blocks of the largest, then the smallest size that covers the rest.
+    width), used as block_plan splits the rows.
     """
     stable = ((lower >= 0) | (upper <= 0)) & (lower <= upper) & torch.isfinite(lower) & torch.isfinite(upper)
     indices = torch.nonzero(~stable.all(dim=0), as_tuple=False).flatten()
@@ -461,9 +479,7 @@ def refine_stable(lower, upper, kernel, args, chunk_size):
             kernel(torch.arange(size, device=lower.device) % n, *args)
     out_l, out_u = lower, upper
     offset = 0
-    while offset < indices.numel():
-        left = indices.numel() - offset
-        size = sizes[-1] if left >= sizes[-1] else next(c for c in sizes if c >= left)
+    for size in block_plan(indices.numel(), sizes):
         idx = indices[offset:offset + size]
         count = idx.numel()
         offset += count

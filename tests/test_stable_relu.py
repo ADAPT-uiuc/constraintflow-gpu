@@ -79,13 +79,26 @@ class StableReLUTest(unittest.TestCase):
         warmup_stable_relu(refine_stable, torch.ones_like(lower), upper, kernel, (), 3)
         self.assertEqual(calls, [[0, 1, 2]])
 
-    def test_several_chunk_sizes_pick_smallest_cover_and_cap_at_width(self):
+    def test_block_plan_pads_less_than_the_smallest_size(self):
+        from constraintflow.compiler.optimizations.stable_relu import block_plan
+        sizes = (8, 16, 32, 64, 128, 256, 500)  # 512 capped at a 500-wide layer
+        # N8: 260 unstable rows ran as one 500-row block.
+        self.assertEqual(block_plan(260, sizes), [256, 8])
+        self.assertEqual(block_plan(467, sizes), [256, 128, 64, 16, 8])
+        self.assertEqual(block_plan(500, sizes), [500])
+        self.assertEqual(block_plan(0, sizes), [])
+        for rows in range(1, 1200):
+            plan = block_plan(rows, sizes)
+            self.assertGreaterEqual(sum(plan), rows)
+            self.assertLess(sum(plan) - rows, sizes[0])
+
+    def test_several_chunk_sizes_pack_blocks_and_cap_at_width(self):
         def kernel(idx):
             calls.append(idx.numel())
             return idx[None].float(), idx[None].float() + 1
         n = 300
         upper = torch.ones(1, n)
-        for unstable, expected in [(1, [8]), (44, [128]), (300, [128, 128, 128]), (129, [128, 8])]:
+        for unstable, expected in [(1, [8]), (44, [32, 8, 8]), (300, [128, 128, 32, 8, 8]), (129, [128, 8])]:
             calls = []
             lower = torch.ones(1, n)
             lower[0, :unstable] = -1

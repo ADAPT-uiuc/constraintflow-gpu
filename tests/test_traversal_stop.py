@@ -95,9 +95,9 @@ class RowRuntimeTest(unittest.TestCase):
         torch.testing.assert_close(refine_rows(stop,defaults,kernel,(),4)[0],torch.tensor([[0.,7.,0.],[0.,0.,0.]]))
         torch.testing.assert_close(refine_rows(stop,defaults,kernel,(),4,union=True)[0],torch.tensor([[0.,7.,0.],[0.,7.,0.]]))
 
-    def test_several_chunk_sizes_pick_smallest_cover_and_warm_every_size(self):
+    def test_several_chunk_sizes_pack_blocks_and_warm_every_size(self):
         values=(torch.arange(300.)[None],)
-        for needed,expected in [(1,[8]),(44,[64]),(129,[128,8]),(300,[128,128,64])]:
+        for needed,expected in [(1,[8]),(44,[32,16]),(129,[128,8]),(300,[128,128,32,16])]:
             stop=torch.ones(1,300,dtype=torch.bool); stop[0,:needed]=False; seen=[]
             def kernel(idx):
                 seen.append(len(idx));return tuple(x.index_select(1,idx) for x in values)
