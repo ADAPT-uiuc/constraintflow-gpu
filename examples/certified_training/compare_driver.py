@@ -326,11 +326,14 @@ def lirpa_bounder(model, method, args):
 
 def cf_bounder(model, method, args, sizes):
     from constraintflow.lib.training import TrainingBounds
-    cf = TrainingBounds(model, dummy_input(args.data), args.data.lower(), [method], sizes, args.cf_cache_dir)
+    #FEAT: MIX<w>-<X>: the certifier w/100 * X + (1 - w/100) * IBP (sound: a convex combination of lower bounds).
+    parts = {'IBP': 1 - int(method[3:method.index('-')]) / 100, method.split('-', 1)[1]: int(method[3:method.index('-')]) / 100} \
+        if method.startswith('MIX') else {method: 1.0}
+    cf = TrainingBounds(model, dummy_input(args.data), args.data.lower(), list(parts), sizes, args.cf_cache_dir)
 
     def bound(x, x_L, x_U, y):
         cf.begin_step()
-        return cf.compute_bounds(method, x_L, x_U, y)[0]
+        return sum(w * cf.compute_bounds(m, x_L, x_U, y)[0].clone() for m, w in parts.items())
     return bound
 
 
@@ -375,7 +378,7 @@ def bounds(tool, st, net, ckpt, out, num_images=256):
 
 
 #FEAT: --precision_ckpt
-def precision(tool, st, net, ckpt, out, num_images, eval_batch_size):
+def precision(tool, st, net, ckpt, out, num_images, eval_batch_size, name=None):
     """cf-gpu's precision (cli.get_precision): the fraction of images whose margin lower bounds are all >= 0,
     plus clean accuracy. A folder of checkpoints gives one entry per checkpoint (precision_curve_<tool>.json)."""
     assert num_images % eval_batch_size == 0, '--num_images must be a multiple of --eval_batch_size'
@@ -384,7 +387,7 @@ def precision(tool, st, net, ckpt, out, num_images, eval_batch_size):
     model = load_model(net, ckpts[0])
     x, x_L, x_U, y = test_box(st.args, num_images)
     chunks = [slice(i, i + eval_batch_size) for i in range(0, num_images, eval_batch_size)]
-    results, bounders = [], {}
+    results, bounders, masks = [], {}, {}
     for path in ckpts:
         if path:
             state = torch.load(path)
@@ -399,16 +402,40 @@ def precision(tool, st, net, ckpt, out, num_images, eval_batch_size):
             with torch.no_grad():
                 verified = torch.cat([(bounders[method](x[s], x_L[s], x_U[s], y[s]) >= 0).all(1) for s in chunks])
             result['methods'][method] = {'verified': int(verified.sum()), 'precision': verified.float().mean().item()}
+            masks[method] = verified.cpu()
         print(f"epoch {result['epoch']}: clean {result['clean']:.4f}",
               {m: r['precision'] for m, r in result['methods'].items()}, flush=True)
         results.append(result)
     if len(ckpts) > 1 or (ckpt and os.path.isdir(ckpt)):
-        with open(os.path.join(out, f'precision_curve_{tool}.json'), 'w') as f:
+        with open(os.path.join(out, f"{name or 'precision_curve'}_{tool}.json"), 'w') as f:  #FEAT: --name for curves too
             json.dump(results, f, indent=2)
     else:
-        name = os.path.splitext(os.path.basename(ckpt))[0] if ckpt else 'onnx'
-        with open(os.path.join(out, f'precision_{name}_{tool}.json'), 'w') as f:
+        #FEAT: --name: own result file (e.g. the cross-product evaluation next to the core one)
+        name = name or 'precision_' + (os.path.splitext(os.path.basename(ckpt))[0] if ckpt else 'onnx')
+        with open(os.path.join(out, f'{name}_{tool}.json'), 'w') as f:
             json.dump(results[0], f, indent=2)
+        #FEAT: per-image verified masks, for the union over verifiers (an image counts if any method proves it).
+        torch.save(masks, os.path.join(out, f'{name}_{tool}_verified.pt'))
+
+
+#FEAT: --distinct_methods
+def distinct_methods(st, net, out, eval_batch_size):
+    """Compile the --methods programs (ordered by increasing depth, e.g. DP-stop00, DP-stop01, ...) at the
+    evaluation batch size; stop at the first one whose generated code equals its predecessor's, since deeper
+    ones are the same program on this net. Writes distinct_methods.json."""
+    from constraintflow.lib.training import compile_program, export_model
+    onnx_path, _ = export_model(load_model(net, None), dummy_input(st.args.data), st.args.cf_cache_dir)
+    distinct, previous = [], None
+    for method in METHODS['cf']:
+        folder = compile_program(onnx_path, method, eval_batch_size, st.args.data.lower(), st.args.cf_cache_dir)
+        code = ''.join(open(os.path.join(folder, f)).read() for f in ('transformers.py', 'jit_constants.py'))
+        if code == previous:
+            break
+        distinct.append(method)
+        previous = code
+    print('distinct:', distinct, flush=True)
+    with open(os.path.join(out, 'distinct_methods.json'), 'w') as f:
+        json.dump(distinct, f)
 
 
 #FEAT: --probe_memory
@@ -454,6 +481,8 @@ def main():
     p.add_argument('--precision_ckpt', help="checkpoint (or folder of checkpoints) to evaluate; 'onnx' for the ONNX file's own weights")
     p.add_argument('--ckpt_every', type=int, default=0, help='training: also keep every Nth epoch checkpoint in OUT/ckpts')
     p.add_argument('--probe_memory', help='comma-separated batch sizes')
+    p.add_argument('--distinct_methods', action='store_true', help='cf-gpu: the --methods whose generated code differs on this net')
+    p.add_argument('--name', help='--precision_ckpt: result file name (default precision_<ckpt>, or precision_curve for a folder)')
     p.add_argument('--num_images', type=int, default=1000)
     p.add_argument('--eval_batch_size', type=int, default=100)
     p.add_argument('--gpu_data', action='store_true', help='GPULoader instead of DataLoader, for both tools (MNIST, CIFAR)')
@@ -464,7 +493,10 @@ def main():
     torch.backends.cuda.matmul.allow_tf32 = torch.backends.cudnn.allow_tf32 = False  # same precision in both
     NORMALIZE = a.normalize
     if a.methods:
-        METHODS[a.tool] = [m for m in a.methods.split(',') if m in METHODS[a.tool]]
+        #FEAT: cf-gpu accepts any training program (zono, DP-stopKK, ...) as a method.
+        known = METHODS[a.tool] + (list(importlib.import_module('constraintflow.lib.training').PROGRAMS) if a.tool == 'cf' else [])
+        known += [m for m in a.methods.split(',') if m.startswith('MIX') and a.tool == 'cf']  # blends of known programs
+        METHODS[a.tool] = [m for m in a.methods.split(',') if m in known]
 
     net = os.path.splitext(os.path.basename(a.onnx))[0]
     st = load_script(a.tool, ['--model', net] + [r for r in a.rest if r != '--'])
@@ -478,7 +510,9 @@ def main():
         bounds(a.tool, st, net, ckpt, a.out, a.num_images if a.num_images != 1000 else 256)
     elif a.precision_ckpt:
         ckpt = None if a.precision_ckpt == 'onnx' else a.precision_ckpt
-        precision(a.tool, st, net, ckpt, a.out, a.num_images, a.eval_batch_size)
+        precision(a.tool, st, net, ckpt, a.out, a.num_images, a.eval_batch_size, a.name)
+    elif a.distinct_methods:
+        distinct_methods(st, net, a.out, a.eval_batch_size)
     elif a.probe_memory:
         probe_memory(a.tool, st, net, [int(n) for n in a.probe_memory.split(',')], a.out)
     else:
