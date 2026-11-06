@@ -19,6 +19,29 @@ from constraintflow.compiler.optimizations import product_grids as product_grids
 #FEAT: per-change toggles for the DeepPoly-efficient passes
 from constraintflow.compiler.optimizations import opt_flags
 from constraintflow.gbcsr.sparse_block import RUNTIME_HELPERS, TRAINING_HELPERS
+from constraintflow.lib import globals as globals_mod
+
+_dense_weight_cache = {}
+
+
+#FIX FOR: see visitIrFConvTranspose2d; the weights come from parsing the network once on the CPU.
+def _dense_conv_weights(network_path):
+    """flow() parameter names (net_<i>_weight) of the network's 4-D weights that select no channels."""
+    if network_path is None:
+        return set()
+    if network_path not in _dense_weight_cache:
+        import onnx
+        import torch
+        from constraintflow.lib.parse import parse_onnx_layers
+        from constraintflow.gbcsr.sparse_block import _channel_selection
+        layers = parse_onnx_layers(onnx.load(network_path), torch.zeros(1, 1), torch.zeros(1), no_sparsity=True)
+        _dense_weight_cache[network_path] = {
+            f'net_{i}_weight' for i, layer in enumerate(layers)
+            if isinstance(getattr(layer, 'weight', None), torch.Tensor) and layer.weight.dim() == 4
+            and layer.weight.is_floating_point() and _channel_selection(layer.weight.cpu()) is None}
+    return _dense_weight_cache[network_path]
+
+
 #FEAT: parameters of the generated build() and run().
 RUN_PARAMS = ("network_file, batch_size, eps, dataset_X, dataset_y, dataset, train, print_intermediate_results, "
               "no_sparsity, initializers=None, input_box=None")
@@ -1222,9 +1245,13 @@ class CodeGen(irVisitor.IRVisitor):
             kwargs.append('padding=' + self.visit(node.padding))
         if node.output_padding is not None:
             kwargs.append('output_padding=' + self.visit(node.output_padding))
+        weight = self.visit(node.children[1])
+        #FIX FOR: conv_transpose2d checked every weight for channel selection on the GPU at run time (a D2H
+        # per conv weight per batch); a network weight known to be dense at compile time skips the check.
+        if weight in _dense_conv_weights(globals_mod.network_path):
+            kwargs.append('may_select=False')
         return (
-            'conv_transpose2d(' + self.visit(node.children[0]) + ', '
-            + self.visit(node.children[1])
+            'conv_transpose2d(' + self.visit(node.children[0]) + ', ' + weight
             + (', ' + ', '.join(kwargs) if kwargs else '') + ')'
         )
 
