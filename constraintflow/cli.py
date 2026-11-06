@@ -130,13 +130,13 @@ def get_dataset(
         from constraintflow.lib.spec import ACAS_INPUT_SHAPE
         return (torch.zeros(batch_size, *ACAS_INPUT_SHAPE, device=device),
                 torch.zeros(batch_size, dtype=torch.long, device=device))
-    #FEAT: vnnlib specs: image i is spec i mod #specs as [lo, hi]; its label is that spec's index.
-    from constraintflow.lib.spec import load_vnnlib_specs, vnnlib_path
+    #FEAT: vnnlib specs: image i is spec i mod #specs; its label is that spec's index. The image is a placeholder
+    # [lo, hi] box: each run parses its specs (lib/spec.py read_vnnlib_batch).
+    from constraintflow.lib.spec import vnnlib_specs, vnnlib_path
     if vnnlib_path(dataset):
-        specs = load_vnnlib_specs(vnnlib_path(dataset))
-        idx = torch.arange(batch_size) % specs['lo'].shape[0]
-        shape = tuple(specs['x_shape'].tolist())
-        image = torch.stack([specs['lo'][idx], specs['hi'][idx]], 1).reshape(batch_size, 2, *shape)
+        specs = vnnlib_specs()
+        idx = torch.arange(batch_size) % len(specs.spec_files(vnnlib_path(dataset)))
+        image = torch.zeros(batch_size, 2, *specs.input_shape(vnnlib_path(dataset)))
         return image.to(device), idx.to(device)
     #FEAT: box specs likewise trace on zero inputs of the shape named in the dataset.
     from constraintflow.lib.spec import parse_box_dataset
