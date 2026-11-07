@@ -42,6 +42,17 @@ def _dense_conv_weights(network_path):
     return _dense_weight_cache[network_path]
 
 
+_runtime_checked = set()
+
+
+#FIX FOR: product grids wrap weights as torch.cat([net_1_weight], dim=1), which the name match missed.
+def _is_dense_weight(ir, dense):
+    """A dense network weight, or a concatenation with one (it keeps that weight's dense columns)."""
+    if isinstance(ir, IrVar):
+        return ir.name in dense
+    return isinstance(ir, IrTorchCat) and any(isinstance(c, IrVar) and c.name in dense for c in ir.children)
+
+
 #FEAT: parameters of the generated build() and run().
 RUN_PARAMS = ("network_file, batch_size, eps, dataset_X, dataset_y, dataset, train, print_intermediate_results, "
               "no_sparsity, initializers=None, input_box=None")
@@ -1248,8 +1259,12 @@ class CodeGen(irVisitor.IRVisitor):
         weight = self.visit(node.children[1])
         #FIX FOR: conv_transpose2d checked every weight for channel selection on the GPU at run time (a D2H
         # per conv weight per batch); a network weight known to be dense at compile time skips the check.
-        if weight in _dense_conv_weights(globals_mod.network_path):
-            kwargs.append('may_select=False')
+        if globals_mod.network_path is not None:
+            if _is_dense_weight(node.children[1], _dense_conv_weights(globals_mod.network_path)):
+                kwargs.append('may_select=False')
+            elif weight not in _runtime_checked:
+                _runtime_checked.add(weight)
+                print(f'[convT] weight checked for channel selection at run time: {weight[:120]}')
         return (
             'conv_transpose2d(' + self.visit(node.children[0]) + ', ' + weight
             + (', ' + ', '.join(kwargs) if kwargs else '') + ')'
