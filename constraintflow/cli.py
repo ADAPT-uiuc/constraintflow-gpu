@@ -303,6 +303,8 @@ def simulacrum_compile(
     fused_matvec: Optional[bool] = typer.Option(None, "--fused-matvec/--no-fused-matvec", help="Lower pointwise-produced matvecs to row reductions."),
     #FEAT: Inductor post-grad pass merging matmuls that share a left operand.
     shared_lhs_mm: Optional[bool] = typer.Option(None, "--shared-lhs-mm/--no-shared-lhs-mm", help="Merge mm(x, W), mm(x, b) sharing x into one mm(x, [W | b]) (Inductor post-grad pass)."),
+    #FEAT: kernel @ patches compositions without col2im (optimizations/fold_padsum.py).
+    fold_padsum: Optional[bool] = typer.Option(None, "--fold-padsum/--no-fold-padsum", help="Rewrite einsum + F.fold patch compositions as a sum of padded slices (a gather instead of col2im). Default: with --dpe-opts on --device cpu only; not yet measured on the GPU."),
 ):
     """
     Compile a ConstraintFlow program through the whole simulacrum+reuse pipeline
@@ -322,7 +324,8 @@ def simulacrum_compile(
                'patch_factor': patch_factor, 'conv_chunks': conv_chunks, 'conv_sum': conv_sum,
                'transpose_grids': transpose_grids, 'grid_packed_bytes': grid_packed_bytes,
                'view_aliases': view_aliases, 'expression_limits': expression_limits,
-               'fused_matvec': fused_matvec, 'shared_lhs_mm': shared_lhs_mm}
+               'fused_matvec': fused_matvec, 'shared_lhs_mm': shared_lhs_mm,
+               'fold_padsum': fold_padsum if fold_padsum is not None else (dpe_opts and device == 'cpu')}
     opt_flags.set_enabled([n for n, v in choices.items() if (dpe_opts if v is None else v)])
     typer.echo('[opt-flags] off: ' + (', '.join(n for n in opt_flags.FLAGS if not opt_flags.enabled(n)) or 'none'))
     if target not in ('torch', 'jax'):

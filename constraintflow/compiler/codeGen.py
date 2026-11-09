@@ -418,6 +418,14 @@ class CodeGen(irVisitor.IRVisitor):
                 print('[conv-sum] {} shared-weight convolutions combined'.format(merged))
             if count:
                 sized = self._probe_sizes(node)
+        #FEAT: fold_padsum rewrites the einsum + F.fold compositions patch_factor left behind
+        # into a sum of padded slices (a gather instead of col2im).
+        if sized and getattr(node, 'flow_functional', False) and opt_flags.enabled('fold_padsum'):
+            from constraintflow.compiler.optimizations import fold_padsum
+            count = fold_padsum.run(node.flow_block)
+            print('[fold-padsum] {} einsum + fold compositions rewritten'.format(count))
+            if count:
+                sized = self._probe_sizes(node)
         if product_grids.get_flag() and sized and getattr(node, 'flow_functional', False):
             count = product_grids_pass.run(node.flow_block, self.visit, sized,
                                          getattr(node, 'flow_batch_size', 1))

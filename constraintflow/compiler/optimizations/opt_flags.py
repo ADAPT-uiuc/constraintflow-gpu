@@ -15,6 +15,7 @@ FLAGS = (
     'expression_limits',     # split expressions deeper than 64 into temporaries
     'fused_matvec',          # lower pointwise-produced matvecs to row reductions
     'shared_lhs_mm',         # Inductor pass: mm(x, W), mm(x, b) -> one mm(x, [W | b])
+    'fold_padsum',           # einsum + F.fold patch compositions -> sum of padded slices (jit: on for --device cpu)
 )
 
 # Analysis back-edges (def-use chains, parent links) can lead from one statement
