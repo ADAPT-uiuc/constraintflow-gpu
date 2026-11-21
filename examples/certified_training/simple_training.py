@@ -51,8 +51,10 @@ parser.add_argument("--scheduler_opts", type=str, default="start=3,length=60", h
 parser.add_argument("--bound_opts", type=str, default=None, choices=["same-slope", "zero-lb", "one-lb"],
                     help='bound options')
 parser.add_argument("--conv_mode", type=str, choices=["matrix", "patches"], default="patches")
+parser.add_argument("--no_lr_decay", action="store_true", help='constant learning rate (no halving)')  #FEAT
 parser.add_argument("--save_model", type=str, default='')
 parser.add_argument("--cf_cache_dir", type=str, default='cf_training_cache')  # CF-GPU: compiled programs
+parser.add_argument("--cf_no_cudagraphs", action="store_true", help='CF-GPU: compile without CUDA graphs')  #FEAT
 
 args = parser.parse_args()
 # CF-GPU: the cf-gpu programs each bound type needs (CROWN = DeepPoly; zid, zono, DP-stopKK have no auto_LiRPA counterpart)
@@ -211,7 +213,7 @@ def main(args):
     model = model_ori.to(args.device)
     batch_sizes = {args.batch_size} | {len(d.dataset) % args.batch_size for d in (train_data, test_data)} - {0}
     cf = TrainingBounds(model, dummy_input, args.data.lower(), TRAINING_METHODS[args.bound_type], batch_sizes,
-                        args.cf_cache_dir)  # CF-GPU
+                        args.cf_cache_dir, cudagraphs=not args.cf_no_cudagraphs)  # CF-GPU
 
     ## Step 4 prepare optimizer, epsilon scheduler and learning rate scheduler
     opt = optim.Adam(model.parameters(), lr=args.lr)
@@ -228,7 +230,7 @@ def main(args):
     else:
         timer = 0.0
         for t in range(1, args.num_epochs+1):
-            if eps_scheduler.reached_max_eps():
+            if eps_scheduler.reached_max_eps() and not args.no_lr_decay:  #FEAT: --no_lr_decay
                 # Only decay learning rate after reaching the maximum eps
                 lr_scheduler.step()
             print("Epoch {}, learning rate {}".format(t, lr_scheduler.get_lr()))

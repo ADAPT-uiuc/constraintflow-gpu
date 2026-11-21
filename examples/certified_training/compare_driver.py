@@ -117,6 +117,7 @@ class GPULoader:
 
 #FEAT: --normalize applies the sweeps' MNIST normalization (the ONNX loader drops the nets' own Sub/Div).
 NORMALIZE = False
+TIME_BUDGET = 0  # --time_budget (seconds); 0 = none
 
 
 class NormalizedLoader(torch.utils.data.DataLoader):
@@ -170,6 +171,13 @@ class NoStepOptimizer:
 def no_trailing_flatten(model):
     if isinstance(model[-1], torch.nn.Flatten):
         model[-1] = torch.nn.Identity()
+    #FIX FOR: the CIFAR ResNets end in Linear -> Reshape((classes,)), which blocked the same fold (N33 IBP looser
+    #         than cf-gpu's in training only); that Reshape is also a no-op on logits.
+    leaves = [(n, m) for n, m in model.named_modules() if not list(m.children()) and not isinstance(m, torch.nn.Identity)]
+    if (len(leaves) >= 2 and isinstance(leaves[-2][1], torch.nn.Linear) and type(leaves[-1][1]).__name__ == 'Reshape'
+            and tuple(leaves[-1][1].shape) == (leaves[-2][1].out_features,)):
+        parent, _, child = leaves[-1][0].rpartition('.')
+        setattr(model.get_submodule(parent), child, torch.nn.Identity())
     return model
 
 
@@ -215,6 +223,9 @@ class Recorder:
         setup_name = 'BoundedModule' if tool == 'lirpa' else 'TrainingBounds'
         setattr(st, setup_name, self._wrap_setup(getattr(st, setup_name)))
 
+    def timed_total(self):
+        return self.result.get('setup_seconds', 0) + sum(r['seconds'] for r in self.result['records'])
+
     def _wrap_loss(self, cls):
         losses = self.losses
 
@@ -259,6 +270,9 @@ class Recorder:
 
     def timed_train(self, *args, **kwargs):
         call = self.train_signature.bind(*args, **kwargs)
+        #FEAT: --time_budget: no new training epoch once the timed total (setup + every timed pass) reaches it.
+        if TIME_BUDGET and call.arguments['train'] and self.timed_total() >= TIME_BUDGET:
+            raise BudgetReached()
         if not self.warm:
             self.warm = True
             self.result['warmup_seconds'] = synced_seconds(self.warmup, call)
@@ -272,6 +286,19 @@ class Recorder:
         })
 
 
+class BudgetReached(Exception):
+    pass
+
+
+def reinit(model, seed):
+    """Every layer's own initialization, drawn from a private random state so the run's other draws are unchanged."""
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(seed)
+        for module in model.modules():
+            if hasattr(module, 'reset_parameters') and list(module.parameters(recurse=False)):
+                module.reset_parameters()
+
+
 def train(tool, st, out, ckpt_every=0):
     args = st.args
     recorder = Recorder(st, tool)
@@ -280,7 +307,7 @@ def train(tool, st, out, ckpt_every=0):
         start = time.perf_counter()
         compile_programs(models.Models[args.model](), dummy_input(args.data), args.data.lower(),
                          st.TRAINING_METHODS[args.bound_type], batch_sizes(args.batch_size, args.data),
-                         args.cf_cache_dir)
+                         args.cf_cache_dir, cudagraphs=not args.cf_no_cudagraphs)
         recorder.result['compile_seconds'] = time.perf_counter() - start
     args.save_model = args.save_model or os.path.join(out, 'ckpt')
     #FEAT: --ckpt_every: keep a copy of every Nth epoch's checkpoint (saved by simple_training after its untimed test pass).
@@ -293,7 +320,18 @@ def train(tool, st, out, ckpt_every=0):
             if path == args.save_model and obj['epoch'] % ckpt_every == 0:
                 save(obj, os.path.join(out, 'ckpts', f"epoch_{obj['epoch']:03d}.pt"))
         torch.save = save_and_keep
-    st.main(args)
+        #FEAT: also keep the starting weights (epoch 0), saved when simple_training builds its model (untimed).
+        build = models.Models[args.model]
+
+        def build_and_keep(*x, **k):
+            model = build(*x, **k)
+            save({'state_dict': model.state_dict(), 'epoch': 0}, os.path.join(out, 'ckpts', 'epoch_000.pt'))
+            return model
+        models.Models[args.model] = build_and_keep
+    try:
+        st.main(args)
+    except BudgetReached:
+        recorder.result['time_budget'] = TIME_BUDGET
     with open(os.path.join(out, 'record.json'), 'w') as f:
         json.dump(recorder.result, f)
 
@@ -329,7 +367,8 @@ def cf_bounder(model, method, args, sizes):
     #FEAT: MIX<w>-<X>: the certifier w/100 * X + (1 - w/100) * IBP (sound: a convex combination of lower bounds).
     parts = {'IBP': 1 - int(method[3:method.index('-')]) / 100, method.split('-', 1)[1]: int(method[3:method.index('-')]) / 100} \
         if method.startswith('MIX') else {method: 1.0}
-    cf = TrainingBounds(model, dummy_input(args.data), args.data.lower(), list(parts), sizes, args.cf_cache_dir)
+    cf = TrainingBounds(model, dummy_input(args.data), args.data.lower(), list(parts), sizes, args.cf_cache_dir,
+                        cudagraphs=not args.cf_no_cudagraphs)
 
     def bound(x, x_L, x_U, y):
         cf.begin_step()
@@ -471,7 +510,7 @@ def probe_memory(tool, st, net, sizes, out):
 
 
 def main():
-    global NORMALIZE
+    global NORMALIZE, TIME_BUDGET
     p = argparse.ArgumentParser()
     p.add_argument('--tool', choices=['lirpa', 'cf'], required=True)
     p.add_argument('--onnx', required=True)
@@ -486,12 +525,17 @@ def main():
     p.add_argument('--num_images', type=int, default=1000)
     p.add_argument('--eval_batch_size', type=int, default=100)
     p.add_argument('--gpu_data', action='store_true', help='GPULoader instead of DataLoader, for both tools (MNIST, CIFAR)')
+    p.add_argument('--time_budget', type=float, default=0,
+                   help='training: stop before the first epoch that would start past this many timed seconds')
+    p.add_argument('--reinit', action='store_true', help="train from fresh weights (each layer's own initialization, "
+                   "seeded by --seed) instead of the ONNX file's")
     p.add_argument('--normalize', action='store_true', help="the sweeps' MNIST normalization, for both tools")
     p.add_argument('rest', nargs=argparse.REMAINDER, help='simple_training.py args, after --')
     a = p.parse_args()
     os.makedirs(a.out, exist_ok=True)
     torch.backends.cuda.matmul.allow_tf32 = torch.backends.cudnn.allow_tf32 = False  # same precision in both
     NORMALIZE = a.normalize
+    TIME_BUDGET = a.time_budget
     if a.methods:
         #FEAT: cf-gpu accepts any training program (zono, DP-stopKK, ...) as a method.
         known = METHODS[a.tool] + (list(importlib.import_module('constraintflow.lib.training').PROGRAMS) if a.tool == 'cf' else [])
@@ -500,7 +544,14 @@ def main():
 
     net = os.path.splitext(os.path.basename(a.onnx))[0]
     st = load_script(a.tool, ['--model', net] + [r for r in a.rest if r != '--'])
-    models.Models[net] = lambda in_ch=1, in_dim=28: no_trailing_flatten(get_pytorch_from_onnx(a.onnx))
+
+    #FEAT: --reinit: fresh weights (seeded by --seed) instead of the ONNX file's, which then gives only the architecture.
+    def build_model(in_ch=1, in_dim=28):
+        model = no_trailing_flatten(get_pytorch_from_onnx(a.onnx))
+        if a.reinit:
+            reinit(model, st.args.seed)
+        return model
+    models.Models[net] = build_model
     if a.gpu_data:
         torch.utils.data.DataLoader = GPULoader
     elif NORMALIZE and st.args.data == 'MNIST':
