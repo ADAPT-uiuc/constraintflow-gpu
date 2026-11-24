@@ -247,7 +247,7 @@ def simulacrum_compile(
     device: str = typer.Option("cpu", help="Device mode: cpu, gpu (CUDA), or gpumac (Apple MPS)"),
     output_path: str = typer.Option("output/", help="Output path for generated code"),
     dense: bool = typer.Option(False, help="Use dense blocks by default"),
-    inductor: bool = typer.Option(True, "--inductor/--no-inductor", help="Compile flow() with torch.compile (Inductor). --no-inductor emits an eager flow(), as the row_chunks rewrite needs. `run` must be given the same choice."),
+    inductor: bool = typer.Option(True, "--inductor/--no-inductor", help="Compile flow() with torch.compile (Inductor), or emit an eager flow() with --no-inductor."),
     #FEAT: block sizes and batch rule for rows selected by row-invariant traversal stops.
     traversal_stop_chunk: str = typer.Option("128", "--traversal-stop-chunk", help="Rows per compiled kernel for traversal-stop selection; a comma list (e.g. 8,16,32,64,128,256,512) compiles one kernel per size and uses the smallest that fits."),
     traversal_stop_per_example: bool = typer.Option(False, "--traversal-stop-per-example", help="Keep each example's own stop decision, as the program states. Default: a row refined for any example takes the refined values for every example (auto_LiRPA's sparse rule)."),
@@ -408,7 +408,7 @@ def run(
     output_path: str = typer.Option("output/", help="Path where compiled program is stored"),
     compile: bool = typer.Option(False, help="Run compilation before execution"),
     dense: bool = typer.Option(False, help="Use dense blocks by default"),
-    inductor: bool = typer.Option(True, "--inductor/--no-inductor", help="Run with PyTorch Inductor; must match how the program was built (scepter --inductor/--no-inductor; the generic `compile` build runs with --no-inductor unless built with --compile-flow)."),
+    inductor: bool = typer.Option(True, "--inductor/--no-inductor", help="Does not compile anything itself (the build decides). --no-inductor turns the sparse library's checks and counters back on, which a generic `compile` build needs; a scepter build runs either way."),
     warmup: int = typer.Option(1, help="Number of warmup runs on different data before the timed runs (the first one compiles)"),
     repeat: int = typer.Option(1, "--repeat", help="Number of timed runs, each reported separately. Independent of --warmup: the warmup runs (if any) still happen once, before the first timed run."),
     num_images: int = typer.Option(0, "--num-images", help="Verify this many test images, batch-size at a time, one timed run per batch (batch i = images [i*batch_size, (i+1)*batch_size)); warmup j uses the images right after them. Requires --results-file; replaces --repeat. 0 (default): the --repeat protocol, every timed run on the first batch."),
@@ -419,9 +419,9 @@ def run(
     #FEAT: --profile-comm records CPU-GPU communication per timed batch (lib/comm_profile.py).
     profile_comm: bool = typer.Option(False, "--profile-comm", help="With --num-images: profile each timed batch with torch.profiler and add syncs, alloc_syncs, gpu_idle_pct and sync_calls to its results line; its time goes to profiled_time_s instead of time_s. Warmups are not profiled."),
     #FEAT: per-batch time limit.
-    batch_timeout: float = typer.Option(0.0, "--batch-timeout", min=0, help="With --num-images: end the process if one timed batch runs longer than this many seconds (faulthandler prints 'Timeout' and every thread's stack). Warmups: --warmup-timeout. 0: no limit."),
+    batch_timeout: float = typer.Option(1000.0, "--batch-timeout", min=0, help="With --num-images: end the process if one timed batch runs longer than this many seconds (faulthandler prints 'Timeout' and every thread's stack). Warmups: --warmup-timeout. 0: no limit."),
     #FEAT: per-warmup time limit.
-    warmup_timeout: float = typer.Option(0.0, "--warmup-timeout", min=0, help="With --num-images: end the process if one warmup run takes longer than this many seconds (faulthandler prints 'Timeout' and every thread's stack). 0: no limit."),
+    warmup_timeout: float = typer.Option(2500.0, "--warmup-timeout", min=0, help="With --num-images: end the process if one warmup run takes longer than this many seconds (faulthandler prints 'Timeout' and every thread's stack). 0: no limit."),
     save_bounds: bool = typer.Option(True, "--save-bounds/--no-save-bounds", help="Write each timed run's bounds to --bounds-file (one JSON line per run). With more than one run the bounds are saved instead of printed; --no-save-bounds prints them."),
     bounds_file: str = typer.Option(None, "--bounds-file", help="Where --save-bounds writes (default: <output-path>/bounds.jsonl)."),
 ):
