@@ -254,6 +254,8 @@ def simulacrum_compile(
     flow_segment_mb: float = typer.Option(8192.0, "--flow-segment-mb", help="Split the flow into regions with approximately this many MB of named allocations; Inductor compiles each region separately. This is a compilation-region budget, not a bound on total GPU memory. 0 keeps one region (needed by the row_chunks rewrite)."),
     cudagraphs: bool = typer.Option(False, "--cudagraphs/--no-cudagraphs", help="Compile flow() with mode='reduce-overhead' so a run replays one CUDA graph instead of launching each kernel. Cuts per-run launch overhead on small networks. Replays allocate from a private pool set up during warmup, so `run`'s per-run peak (max_memory_allocated) no longer counts flow intermediates. Requires --inductor."),
     center_radius: bool = typer.Option(True, "--center-radius/--no-center-radius", help="Concretize sign-selected bounds (c >= 0 ? c*u : c*l, and the final input-box concretization) as c*mid + |c|*rad, as auto_LiRPA does, and fold conv biases into the center conv. --no-center-radius restores original constraintflow's sign split c+*u + c-*l, which loses interval width in fp32 on narrow boxes."),
+    #FEAT: row-chunked back-substitution for networks that do not fit in GPU memory (compiler/optimizations/row_chunks.py).
+    row_chunks_gb: float = typer.Option(0.0, "--row-chunks-gb", help="Fit each back-substitution into this many GB of GPU memory by running it as a loop over chunks of neuron rows (bounds unchanged; for large networks such as ResNet50 or VGG16). Builds flow() eager and in one piece, and with --inductor compiles only the loop bodies. 0 = off."),
     memory_budget_mb: float = typer.Option(-1.0, "--memory-budget-mb", help="When the flow's estimated peak tensor memory exceeds this many MB, reorder it group by group and recompute large values instead of keeping them live (mem_plan). -1 (default) uses 70% of the CUDA device's memory; 0 disables."),
     #FEAT: --dtype on jit, so typer accepts it (applied from argv above).
     dtype: str = typer.Option("float32", "--dtype", help="float32, or float64 to compute every float tensor in fp64 (a precision oracle for bound mismatches; compile and run must agree). Read from argv before the imports; listed here so typer accepts it."),
@@ -275,6 +277,11 @@ def simulacrum_compile(
         raise typer.BadParameter('--cudagraphs requires --inductor')
     if flow_segment_mb < 0:
         raise typer.BadParameter('--flow-segment-mb must be nonnegative')
+    compile_bodies = inductor
+    if row_chunks_gb:
+        if cudagraphs or device != "gpu":
+            raise typer.BadParameter('--row-chunks-gb needs --device gpu and no --cudagraphs')
+        inductor, flow_segment_mb = False, 0.0   # the rewrite takes an eager flow() in one piece
     try:
         os.makedirs(output_path, exist_ok=True)
     except OSError as e:
@@ -365,6 +372,16 @@ def simulacrum_compile(
             globals.set_network_path(None)
             globals.traversal_stop_config = (128, True)
             globals.jit_store_clear()
+
+    if row_chunks_gb:
+        import subprocess
+        cmd = [sys.executable, "-m", "constraintflow.compiler.optimizations.row_chunks", output_path, "--network", network_file,
+               "--dataset", dataset, "--budget-gb", f"{row_chunks_gb:g}", "--batch-size", str(batch_size)] + (["--compile-bodies"] if compile_bodies else [])
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join(filter(None, [root, os.environ.get("PYTHONPATH")])))
+        if subprocess.run(cmd, env=env).returncode != 0:
+            typer.echo("Error: the row_chunks rewrite failed.")
+            raise typer.Exit(code=1)
 
     typer.echo("Specialization Complete! ✅")
     typer.echo(f"Specialized code written to: {os.path.abspath(output_path)}")

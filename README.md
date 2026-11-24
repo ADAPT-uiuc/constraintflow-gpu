@@ -99,6 +99,7 @@ constraintflow scepter example.cf --network <onnx> [OPTIONS]
 | `--inductor` / `--no-inductor`           | Compile the program with Inductor, or emit eager PyTorch code; `run` must be given the same choice           | on        |
 | `--traversal-stop-chunk`                 | Rows per compiled kernel for traversals that stop early per neuron; a comma list compiles one kernel per size | `128`     |
 | `--flow-segment-mb`                      | Split the program into regions of about this many MB that Inductor compiles separately; 0 keeps one region   | 8192      |
+| `--row-chunks-gb`                      | Fit each back-substitution into this many GB by running it over chunks of neuron rows (large networks); 0 = off | 0 |
 | `--memory-budget-mb`                     | Above this estimated peak memory, reorder the program and recompute large values; -1 = 70% of the GPU, 0 = off | -1        |
 | `--cudagraphs`                           | Replay one CUDA graph per run (needs `--inductor`)                                                           | False     |
 | `--dtype`                                | `float32` or `float64`; `run` must be given the same                                                         | `float32` |
@@ -141,6 +142,16 @@ constraintflow run example.cf [OPTIONS]
 | `--dtype`                      | `float32` or `float64`; must match the build | `float32`        |
 | `--tf32`                       | Use PyTorch's default TF32 convolutions; should match the build | False |
 
+#### Large networks: row chunking
+
+On networks whose back-substitution does not fit in GPU memory (e.g. ResNet50, VGG16), `scepter --row-chunks-gb <GB>`
+runs each back-substitution over that budget as a loop over chunks of neuron rows. This pass keeps the same bounds while dropping peak
+memory. `run` the build as usual:
+
+```bash
+constraintflow scepter example.cf --network net.onnx --dataset cifar --eps 4e-05 --batch-size 1 --device gpu --row-chunks-gb 40 --output-path out/
+constraintflow run example.cf --network net.onnx --dataset cifar --eps 4e-05 --batch-size 1 --device gpu --output-path out/
+```
 
 ---
 
